@@ -206,11 +206,27 @@ Use `bd` for issue tracking. Each task becomes a bead when started.
 - [x] SSE parser for Claude events
 - [x] Task assignment (explicit > metadata > heuristic)
 
-**Phase 2: Real-time & API** - IN PROGRESS
+**Phase 2: Real-time & API** - COMPLETE
 - [x] REST API with bearer token auth (addresses langley-yni)
 - [x] WebSocket server with origin validation
 - [x] Task assignment integrated into proxy
-- [ ] Basic frontend (flow list with WebSocket updates)
+- [x] Basic frontend (flow list with WebSocket updates)
+  - React + TypeScript + Vite
+  - Real-time flow updates via WebSocket
+  - Token-based authentication
+  - Method, host, path, status, tokens, cost display
+
+**Phase 3: Analytics Engine** - PENDING
+- [ ] Token/cost extraction from Claude responses
+- [ ] Tool analytics (extract tool invocations)
+- [ ] Task aggregation
+- [ ] Anomaly flags
+
+**Phase 4: Frontend Polish** - PENDING
+- [ ] Flow detail view
+- [ ] Filtering
+- [ ] Analytics dashboard
+- [ ] Anomaly alerts
 
 **Security Addressed:**
 - [x] langley-9qh: Credential redaction on-write
