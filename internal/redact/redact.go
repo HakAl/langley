@@ -57,8 +57,8 @@ func New(cfg *config.RedactionConfig) (*Redactor, error) {
 		`sk-[a-zA-Z0-9_-]{20,}|` +
 		// AWS access keys - AKIA followed by 16 alphanumeric
 		`AKIA[0-9A-Z]{16}|` +
-		// Google API keys - AIza followed by 35 chars
-		`AIza[0-9A-Za-z_-]{35}|` +
+		// Google API keys - AIza followed by 35+ chars
+		`AIza[0-9A-Za-z_-]{35,}|` +
 		// Generic key patterns (with optional JSON escaping)
 		`key-[a-zA-Z0-9_-]{20,}|` +
 		// api_key/api-key in JSON with optional escaped quotes
