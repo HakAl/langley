@@ -216,11 +216,17 @@ Use `bd` for issue tracking. Each task becomes a bead when started.
   - Token-based authentication
   - Method, host, path, status, tokens, cost display
 
-**Phase 3: Analytics Engine** - PENDING
-- [ ] Token/cost extraction from Claude responses
-- [ ] Tool analytics (extract tool invocations)
-- [ ] Task aggregation
-- [ ] Anomaly flags
+**Phase 3: Analytics Engine** - COMPLETE
+- [x] Token/cost extraction from Claude responses
+- [x] Tool analytics (extract tool invocations)
+- [x] Task aggregation
+- [x] Anomaly flags
+  - Analytics engine with pricing lookup
+  - Cost calculation (input/output/cache tokens)
+  - Task summaries (cost, tokens, duration per task)
+  - Tool usage statistics (invocations, success rate)
+  - Anomaly detection (large context, slow response, rapid repeats, high cost)
+  - API endpoints: /api/analytics/tasks, /api/analytics/tools, /api/analytics/cost/*
 
 **Phase 4: Frontend Polish** - PENDING
 - [ ] Flow detail view

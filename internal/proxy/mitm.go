@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anthropics/langley/internal/analytics"
 	"github.com/anthropics/langley/internal/config"
 	"github.com/anthropics/langley/internal/redact"
 	"github.com/anthropics/langley/internal/store"
@@ -30,6 +33,7 @@ type MITMProxy struct {
 	certCache    *langleytls.CertCache
 	redactor     *redact.Redactor
 	store        store.Store
+	analytics    *analytics.Engine
 	taskAssigner *task.Assigner
 	server       *http.Server
 	client       *http.Client
@@ -103,6 +107,13 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 		client:       client,
 		onFlow:       cfg.OnFlow,
 		onUpdate:     cfg.OnUpdate,
+	}
+
+	// Initialize analytics engine if we have a database connection
+	if cfg.Store != nil {
+		if db, ok := cfg.Store.DB().(*sql.DB); ok {
+			p.analytics = analytics.NewEngine(db)
+		}
 	}
 
 	p.server = &http.Server{
@@ -542,12 +553,171 @@ func (p *MITMProxy) saveFlow(flow *store.Flow) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Extract token usage and calculate cost for Claude traffic
+	if flow.Provider == "anthropic" && flow.ResponseBody != nil {
+		p.extractUsageAndCost(ctx, flow)
+	}
+
 	// Set expiration based on retention config
 	expiresAt := time.Now().AddDate(0, 0, p.cfg.Retention.FlowsTTLDays)
 	flow.ExpiresAt = &expiresAt
 
 	if err := p.store.SaveFlow(ctx, flow); err != nil {
 		p.logger.Error("failed to save flow", "flow_id", flow.ID, "error", err)
+	}
+}
+
+// extractUsageAndCost parses usage data from Claude responses and calculates cost.
+func (p *MITMProxy) extractUsageAndCost(ctx context.Context, flow *store.Flow) {
+	if flow.ResponseBody == nil {
+		return
+	}
+
+	body := *flow.ResponseBody
+
+	// For SSE responses, parse the event stream
+	if flow.IsSSE {
+		p.extractSSEUsage(flow, body)
+	} else {
+		// For non-streaming responses, parse as JSON
+		p.extractJSONUsage(flow, body)
+	}
+
+	// Calculate cost if we have token counts and analytics engine
+	if p.analytics != nil && flow.InputTokens != nil {
+		inputTokens := 0
+		outputTokens := 0
+		cacheCreation := 0
+		cacheRead := 0
+
+		if flow.InputTokens != nil {
+			inputTokens = *flow.InputTokens
+		}
+		if flow.OutputTokens != nil {
+			outputTokens = *flow.OutputTokens
+		}
+		if flow.CacheCreationTokens != nil {
+			cacheCreation = *flow.CacheCreationTokens
+		}
+		if flow.CacheReadTokens != nil {
+			cacheRead = *flow.CacheReadTokens
+		}
+
+		model := "unknown"
+		if flow.Model != nil {
+			model = *flow.Model
+		}
+
+		cost, costSource, err := p.analytics.CalculateCost(ctx, flow.Provider, model, inputTokens, outputTokens, cacheCreation, cacheRead)
+		if err == nil && costSource != "" {
+			flow.TotalCost = &cost
+			flow.CostSource = &costSource
+		}
+	}
+}
+
+// extractSSEUsage parses token usage from SSE event stream.
+func (p *MITMProxy) extractSSEUsage(flow *store.Flow, body string) {
+	lines := strings.Split(body, "\n")
+
+	var currentEventType string
+	var dataBuffer strings.Builder
+
+	for _, line := range lines {
+		if line == "" {
+			// End of event, process it
+			if currentEventType != "" && dataBuffer.Len() > 0 {
+				p.processSSEEvent(flow, currentEventType, dataBuffer.String())
+			}
+			currentEventType = ""
+			dataBuffer.Reset()
+			continue
+		}
+
+		if strings.HasPrefix(line, "event:") {
+			currentEventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			dataBuffer.WriteString(strings.TrimPrefix(line, "data:"))
+		}
+	}
+
+	// Handle final event if no trailing newline
+	if currentEventType != "" && dataBuffer.Len() > 0 {
+		p.processSSEEvent(flow, currentEventType, dataBuffer.String())
+	}
+}
+
+// processSSEEvent extracts data from a single SSE event.
+func (p *MITMProxy) processSSEEvent(flow *store.Flow, eventType, data string) {
+	var eventData map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &eventData); err != nil {
+		return
+	}
+
+	switch eventType {
+	case "message_start":
+		// Extract model and initial usage
+		if msg, ok := eventData["message"].(map[string]interface{}); ok {
+			if model, ok := msg["model"].(string); ok {
+				flow.Model = &model
+			}
+			if usage, ok := msg["usage"].(map[string]interface{}); ok {
+				if v, ok := usage["input_tokens"].(float64); ok {
+					i := int(v)
+					flow.InputTokens = &i
+				}
+				if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
+					c := int(v)
+					flow.CacheCreationTokens = &c
+				}
+				if v, ok := usage["cache_read_input_tokens"].(float64); ok {
+					c := int(v)
+					flow.CacheReadTokens = &c
+				}
+			}
+		}
+
+	case "message_delta":
+		// Extract final output token count
+		if usage, ok := eventData["usage"].(map[string]interface{}); ok {
+			if v, ok := usage["output_tokens"].(float64); ok {
+				o := int(v)
+				flow.OutputTokens = &o
+			}
+		}
+	}
+}
+
+// extractJSONUsage parses token usage from a non-streaming JSON response.
+func (p *MITMProxy) extractJSONUsage(flow *store.Flow, body string) {
+	var response map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		return
+	}
+
+	// Extract model
+	if model, ok := response["model"].(string); ok {
+		flow.Model = &model
+	}
+
+	// Extract usage
+	if usage, ok := response["usage"].(map[string]interface{}); ok {
+		if v, ok := usage["input_tokens"].(float64); ok {
+			i := int(v)
+			flow.InputTokens = &i
+		}
+		if v, ok := usage["output_tokens"].(float64); ok {
+			o := int(v)
+			flow.OutputTokens = &o
+		}
+		if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
+			c := int(v)
+			flow.CacheCreationTokens = &c
+		}
+		if v, ok := usage["cache_read_input_tokens"].(float64); ok {
+			c := int(v)
+			flow.CacheReadTokens = &c
+		}
 	}
 }
 

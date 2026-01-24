@@ -564,6 +564,11 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+// DB returns the underlying database connection for analytics queries.
+func (s *SQLiteStore) DB() interface{} {
+	return s.db
+}
+
 // scanFlow scans a flow from a single row.
 func (s *SQLiteStore) scanFlow(row *sql.Row) (*Flow, error) {
 	var flow Flow

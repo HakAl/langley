@@ -121,4 +121,7 @@ type Store interface {
 	// Maintenance
 	RunRetention(ctx context.Context) (deleted int64, err error)
 	Close() error
+
+	// DB returns the underlying database connection for analytics queries.
+	DB() interface{}
 }

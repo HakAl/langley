@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -10,16 +11,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anthropics/langley/internal/analytics"
 	"github.com/anthropics/langley/internal/config"
 	"github.com/anthropics/langley/internal/store"
 )
 
 // Server is the REST API server.
 type Server struct {
-	cfg    *config.Config
-	store  store.Store
-	logger *slog.Logger
-	mux    *http.ServeMux
+	cfg       *config.Config
+	store     store.Store
+	analytics *analytics.Engine
+	logger    *slog.Logger
+	mux       *http.ServeMux
 }
 
 // NewServer creates a new API server.
@@ -35,11 +38,23 @@ func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger) *
 		mux:    http.NewServeMux(),
 	}
 
+	// Initialize analytics engine if we have a database connection
+	if db, ok := dataStore.DB().(*sql.DB); ok {
+		s.analytics = analytics.NewEngine(db)
+	}
+
 	// Register routes
 	s.mux.HandleFunc("GET /api/flows", s.authMiddleware(s.listFlows))
 	s.mux.HandleFunc("GET /api/flows/{id}", s.authMiddleware(s.getFlow))
 	s.mux.HandleFunc("GET /api/flows/{id}/events", s.authMiddleware(s.getFlowEvents))
+	s.mux.HandleFunc("GET /api/flows/{id}/anomalies", s.authMiddleware(s.getFlowAnomalies))
 	s.mux.HandleFunc("GET /api/stats", s.authMiddleware(s.getStats))
+	s.mux.HandleFunc("GET /api/analytics/tasks", s.authMiddleware(s.getTaskAnalytics))
+	s.mux.HandleFunc("GET /api/analytics/tasks/{id}", s.authMiddleware(s.getTaskSummary))
+	s.mux.HandleFunc("GET /api/analytics/tools", s.authMiddleware(s.getToolAnalytics))
+	s.mux.HandleFunc("GET /api/analytics/cost/daily", s.authMiddleware(s.getCostByDay))
+	s.mux.HandleFunc("GET /api/analytics/cost/model", s.authMiddleware(s.getCostByModel))
+	s.mux.HandleFunc("GET /api/analytics/anomalies", s.authMiddleware(s.getAnomalies))
 	s.mux.HandleFunc("GET /api/health", s.healthCheck)
 
 	return s
@@ -204,13 +219,305 @@ func (s *Server) getFlowEvents(w http.ResponseWriter, r *http.Request) {
 
 // getStats returns aggregate statistics.
 func (s *Server) getStats(w http.ResponseWriter, r *http.Request) {
-	// For now, return basic stats
-	// Full analytics will be added in Phase 3
-	stats := StatsResponse{
-		Status:    "ok",
-		Timestamp: time.Now(),
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Parse time range (default: last 24 hours)
+	start, end := s.parseTimeRange(r)
+
+	if s.analytics == nil {
+		s.writeJSON(w, StatsResponse{Status: "analytics_unavailable", Timestamp: time.Now()})
+		return
 	}
-	s.writeJSON(w, stats)
+
+	stats, err := s.analytics.GetOverallStats(ctx, start, end)
+	if err != nil {
+		s.logger.Error("failed to get stats", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	s.writeJSON(w, OverallStatsResponse{
+		Status:           "ok",
+		Timestamp:        time.Now(),
+		TotalFlows:       stats.TotalFlows,
+		TotalCost:        stats.TotalCost,
+		TotalTokensIn:    stats.TotalTokensIn,
+		TotalTokensOut:   stats.TotalTokensOut,
+		TotalTasks:       stats.TotalTasks,
+		TotalToolCalls:   stats.TotalToolCalls,
+		AvgCostPerFlow:   stats.AvgCostPerFlow,
+		AvgTokensPerFlow: stats.AvgTokensPerFlow,
+		StartTime:        start,
+		EndTime:          end,
+	})
+}
+
+// getTaskAnalytics returns task-level analytics.
+func (s *Server) getTaskAnalytics(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if s.analytics == nil {
+		http.Error(w, "Analytics unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	start, end := s.parseTimeRange(r)
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+
+	summaries, err := s.analytics.ListTaskSummaries(ctx, start, end, limit)
+	if err != nil {
+		s.logger.Error("failed to get task summaries", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]TaskSummaryResponse, len(summaries))
+	for i, ts := range summaries {
+		response[i] = TaskSummaryResponse{
+			TaskID:         ts.TaskID,
+			FlowCount:      ts.FlowCount,
+			TotalTokensIn:  ts.TotalTokensIn,
+			TotalTokensOut: ts.TotalTokensOut,
+			TotalCost:      ts.TotalCost,
+			FirstSeen:      ts.FirstSeen,
+			LastSeen:       ts.LastSeen,
+			DurationMs:     ts.DurationMs,
+			Models:         ts.Models,
+			ToolsUsed:      ts.ToolsUsed,
+		}
+	}
+
+	s.writeJSON(w, response)
+}
+
+// getTaskSummary returns analytics for a single task.
+func (s *Server) getTaskSummary(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if s.analytics == nil {
+		http.Error(w, "Analytics unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	taskID := r.PathValue("id")
+	if taskID == "" {
+		http.Error(w, "Missing task ID", http.StatusBadRequest)
+		return
+	}
+
+	summary, err := s.analytics.GetTaskSummary(ctx, taskID)
+	if err != nil {
+		s.logger.Error("failed to get task summary", "task_id", taskID, "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	s.writeJSON(w, TaskSummaryResponse{
+		TaskID:         summary.TaskID,
+		FlowCount:      summary.FlowCount,
+		TotalTokensIn:  summary.TotalTokensIn,
+		TotalTokensOut: summary.TotalTokensOut,
+		TotalCost:      summary.TotalCost,
+		FirstSeen:      summary.FirstSeen,
+		LastSeen:       summary.LastSeen,
+		DurationMs:     summary.DurationMs,
+		Models:         summary.Models,
+		ToolsUsed:      summary.ToolsUsed,
+	})
+}
+
+// getToolAnalytics returns tool usage analytics.
+func (s *Server) getToolAnalytics(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if s.analytics == nil {
+		http.Error(w, "Analytics unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	start, end := s.parseTimeRange(r)
+
+	stats, err := s.analytics.GetToolStats(ctx, start, end)
+	if err != nil {
+		s.logger.Error("failed to get tool stats", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]ToolStatsResponse, len(stats))
+	for i, ts := range stats {
+		response[i] = ToolStatsResponse{
+			ToolName:        ts.ToolName,
+			InvocationCount: ts.InvocationCount,
+			SuccessCount:    ts.SuccessCount,
+			FailureCount:    ts.FailureCount,
+			SuccessRate:     ts.SuccessRate,
+			TotalCost:       ts.TotalCost,
+			AvgDurationMs:   ts.AvgDurationMs,
+			TotalTokensIn:   ts.TotalTokensIn,
+			TotalTokensOut:  ts.TotalTokensOut,
+		}
+	}
+
+	s.writeJSON(w, response)
+}
+
+// getCostByDay returns daily cost breakdown.
+func (s *Server) getCostByDay(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if s.analytics == nil {
+		http.Error(w, "Analytics unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	start, end := s.parseTimeRange(r)
+
+	periods, err := s.analytics.GetCostByDay(ctx, start, end)
+	if err != nil {
+		s.logger.Error("failed to get daily costs", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]CostPeriodResponse, len(periods))
+	for i, p := range periods {
+		response[i] = CostPeriodResponse{
+			Period:         p.Period,
+			FlowCount:      p.FlowCount,
+			TotalCost:      p.TotalCost,
+			TotalTokensIn:  p.TotalTokensIn,
+			TotalTokensOut: p.TotalTokensOut,
+		}
+	}
+
+	s.writeJSON(w, response)
+}
+
+// getCostByModel returns cost breakdown by model.
+func (s *Server) getCostByModel(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if s.analytics == nil {
+		http.Error(w, "Analytics unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	start, end := s.parseTimeRange(r)
+
+	models, err := s.analytics.GetCostByModel(ctx, start, end)
+	if err != nil {
+		s.logger.Error("failed to get model costs", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]CostPeriodResponse, len(models))
+	for i, m := range models {
+		response[i] = CostPeriodResponse{
+			Period:         m.Period, // Model name
+			FlowCount:      m.FlowCount,
+			TotalCost:      m.TotalCost,
+			TotalTokensIn:  m.TotalTokensIn,
+			TotalTokensOut: m.TotalTokensOut,
+		}
+	}
+
+	s.writeJSON(w, response)
+}
+
+// getFlowAnomalies returns anomalies for a specific flow.
+func (s *Server) getFlowAnomalies(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if s.analytics == nil {
+		http.Error(w, "Analytics unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	flowID := r.PathValue("id")
+	if flowID == "" {
+		http.Error(w, "Missing flow ID", http.StatusBadRequest)
+		return
+	}
+
+	anomalies, err := s.analytics.DetectFlowAnomalies(ctx, flowID, nil)
+	if err != nil {
+		s.logger.Error("failed to detect anomalies", "flow_id", flowID, "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]AnomalyResponse, len(anomalies))
+	for i, a := range anomalies {
+		response[i] = toAnomalyResponse(a)
+	}
+
+	s.writeJSON(w, response)
+}
+
+// getAnomalies returns recent anomalies.
+func (s *Server) getAnomalies(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	if s.analytics == nil {
+		http.Error(w, "Analytics unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Default to last hour
+	since := time.Now().Add(-1 * time.Hour)
+	if v := r.URL.Query().Get("since"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			since = t
+		}
+	}
+
+	anomalies, err := s.analytics.ListRecentAnomalies(ctx, since, nil)
+	if err != nil {
+		s.logger.Error("failed to list anomalies", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]AnomalyResponse, len(anomalies))
+	for i, a := range anomalies {
+		response[i] = toAnomalyResponse(a)
+	}
+
+	s.writeJSON(w, response)
+}
+
+// parseTimeRange extracts start/end times from query params (default: last 24 hours).
+func (s *Server) parseTimeRange(r *http.Request) (start, end time.Time) {
+	end = time.Now()
+	start = end.Add(-24 * time.Hour)
+
+	if v := r.URL.Query().Get("start"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			start = t
+		}
+	}
+	if v := r.URL.Query().Get("end"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			end = t
+		}
+	}
+
+	return start, end
 }
 
 // healthCheck returns server health status.
@@ -278,6 +585,83 @@ type EventResponse struct {
 type StatsResponse struct {
 	Status    string    `json:"status"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// OverallStatsResponse is the detailed stats response.
+type OverallStatsResponse struct {
+	Status           string    `json:"status"`
+	Timestamp        time.Time `json:"timestamp"`
+	TotalFlows       int       `json:"total_flows"`
+	TotalCost        float64   `json:"total_cost"`
+	TotalTokensIn    int       `json:"total_tokens_in"`
+	TotalTokensOut   int       `json:"total_tokens_out"`
+	TotalTasks       int       `json:"total_tasks"`
+	TotalToolCalls   int       `json:"total_tool_calls"`
+	AvgCostPerFlow   float64   `json:"avg_cost_per_flow"`
+	AvgTokensPerFlow float64   `json:"avg_tokens_per_flow"`
+	StartTime        time.Time `json:"start_time"`
+	EndTime          time.Time `json:"end_time"`
+}
+
+// TaskSummaryResponse is the API response for task analytics.
+type TaskSummaryResponse struct {
+	TaskID         string    `json:"task_id"`
+	FlowCount      int       `json:"flow_count"`
+	TotalTokensIn  int       `json:"total_tokens_in"`
+	TotalTokensOut int       `json:"total_tokens_out"`
+	TotalCost      float64   `json:"total_cost"`
+	FirstSeen      time.Time `json:"first_seen"`
+	LastSeen       time.Time `json:"last_seen"`
+	DurationMs     int64     `json:"duration_ms"`
+	Models         []string  `json:"models,omitempty"`
+	ToolsUsed      []string  `json:"tools_used,omitempty"`
+}
+
+// ToolStatsResponse is the API response for tool analytics.
+type ToolStatsResponse struct {
+	ToolName        string  `json:"tool_name"`
+	InvocationCount int     `json:"invocation_count"`
+	SuccessCount    int     `json:"success_count"`
+	FailureCount    int     `json:"failure_count"`
+	SuccessRate     float64 `json:"success_rate"`
+	TotalCost       float64 `json:"total_cost"`
+	AvgDurationMs   float64 `json:"avg_duration_ms"`
+	TotalTokensIn   int     `json:"total_tokens_in"`
+	TotalTokensOut  int     `json:"total_tokens_out"`
+}
+
+// CostPeriodResponse is the API response for cost breakdowns.
+type CostPeriodResponse struct {
+	Period         string  `json:"period"`
+	FlowCount      int     `json:"flow_count"`
+	TotalCost      float64 `json:"total_cost"`
+	TotalTokensIn  int     `json:"total_tokens_in"`
+	TotalTokensOut int     `json:"total_tokens_out"`
+}
+
+// AnomalyResponse is the API response for anomalies.
+type AnomalyResponse struct {
+	Type        string    `json:"type"`
+	FlowID      string    `json:"flow_id"`
+	TaskID      *string   `json:"task_id,omitempty"`
+	Timestamp   time.Time `json:"timestamp"`
+	Severity    string    `json:"severity"`
+	Description string    `json:"description"`
+	Value       float64   `json:"value"`
+	Threshold   float64   `json:"threshold"`
+}
+
+func toAnomalyResponse(a *analytics.Anomaly) AnomalyResponse {
+	return AnomalyResponse{
+		Type:        string(a.Type),
+		FlowID:      a.FlowID,
+		TaskID:      a.TaskID,
+		Timestamp:   a.Timestamp,
+		Severity:    a.Severity,
+		Description: a.Description,
+		Value:       a.Value,
+		Threshold:   a.Threshold,
+	}
 }
 
 func toFlowSummary(f *store.Flow) FlowSummary {
