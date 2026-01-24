@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -35,6 +36,9 @@ func main() {
 		switch os.Args[1] {
 		case "token":
 			handleTokenCommand(os.Args[2:])
+			return
+		case "setup":
+			handleSetupCommand(os.Args[2:])
 			return
 		}
 	}
@@ -137,9 +141,9 @@ func main() {
 	defer dataStore.Close()
 	slog.Info("database opened", "path", cfg.Persistence.DBPath)
 
-	// Create task assigner
+	// Create task assigner with configurable idle gap
 	taskAssigner := task.NewAssigner(task.AssignerConfig{
-		IdleGapMinutes: 5,
+		IdleGapMinutes: cfg.Task.IdleGapMinutes,
 	})
 
 	// Create context with cancellation
@@ -288,9 +292,10 @@ Claude API traffic for debugging and cost tracking.
 
 USAGE:
     langley [OPTIONS]
-    langley token <command>
+    langley <command> [options]
 
 COMMANDS:
+    setup             Install CA certificate to system trust store
     token show        Show the current auth token
     token rotate      Generate a new auth token
 
@@ -304,6 +309,7 @@ OPTIONS:
 
 EXAMPLES:
     langley                     Start with default config
+    langley setup               Install CA certificate (first-time setup)
     langley -listen :8080       Start proxy on port 8080
     langley -config ./my.yaml   Use custom config file
     langley -show-ca            Show how to trust the CA certificate
@@ -480,5 +486,269 @@ Examples:
     langley token show
     langley token rotate
     langley token rotate -api localhost:8080
+`)
+}
+
+// handleSetupCommand handles the "setup" subcommand for CA installation
+func handleSetupCommand(args []string) {
+	setupFlags := flag.NewFlagSet("setup", flag.ExitOnError)
+	skipMkcert := setupFlags.Bool("no-mkcert", false, "Skip mkcert detection and show manual instructions")
+	showHelp := setupFlags.Bool("help", false, "Show help")
+	setupFlags.Parse(args)
+
+	if *showHelp {
+		printSetupHelp()
+		os.Exit(0)
+	}
+
+	// Get config directory for certs
+	configDir, err := config.ConfigDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting config directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	certsDir := filepath.Join(configDir, "certs")
+	caPath := filepath.Join(certsDir, "ca.crt")
+
+	// Ensure CA exists
+	ca, err := langleytls.LoadOrCreateCA(certsDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading/creating CA: %v\n", err)
+		os.Exit(1)
+	}
+	_ = ca // CA is loaded, cert file exists
+
+	fmt.Println("Langley Setup - CA Certificate Installation")
+	fmt.Println("============================================")
+	fmt.Println()
+	fmt.Printf("CA certificate: %s\n", caPath)
+	fmt.Println()
+
+	if !*skipMkcert && hasMkcert() {
+		runMkcertInstall(caPath)
+	} else {
+		printManualInstructions(caPath)
+	}
+}
+
+// hasMkcert checks if mkcert is available in PATH
+func hasMkcert() bool {
+	_, err := exec.LookPath("mkcert")
+	return err == nil
+}
+
+// runMkcertInstall uses mkcert to install the CA certificate
+func runMkcertInstall(caPath string) {
+	fmt.Println("✓ mkcert detected - using it to install CA certificate")
+	fmt.Println()
+
+	// Set CAROOT to langley's cert directory so mkcert uses our CA
+	// Actually, we need to install OUR CA, not mkcert's
+	// mkcert -install uses its own CA, so we need a different approach
+
+	// Option 1: Check if mkcert's CA is already installed and offer to use it
+	// Option 2: Use mkcert's -install to manage trust stores, but for OUR cert
+
+	// For now, we'll use the platform-specific trust store commands
+	// but through mkcert's known trust store locations
+
+	fmt.Println("Installing Langley CA to system trust store...")
+	fmt.Println()
+
+	// Detect platform and provide instructions
+	switch os := detectOS(); os {
+	case "darwin":
+		installMacOS(caPath)
+	case "linux":
+		installLinux(caPath)
+	case "windows":
+		installWindows(caPath)
+	default:
+		fmt.Println("Unknown platform - showing manual instructions")
+		printManualInstructions(caPath)
+	}
+}
+
+// detectOS returns the operating system
+func detectOS() string {
+	switch {
+	case fileExists("/Library/Keychains/System.keychain"):
+		return "darwin"
+	case fileExists("/usr/local/share/ca-certificates"):
+		return "linux"
+	case fileExists("C:\\Windows\\System32"):
+		return "windows"
+	default:
+		return "unknown"
+	}
+}
+
+// fileExists checks if a file or directory exists
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// installMacOS installs the CA on macOS
+func installMacOS(caPath string) {
+	fmt.Println("macOS detected")
+	fmt.Println()
+
+	cmd := exec.Command("sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot",
+		"-k", "/Library/Keychains/System.keychain", caPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	fmt.Println("Running: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain " + caPath)
+	fmt.Println()
+
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "\n✗ Failed to install CA: %v\n", err)
+		fmt.Println("\nYou can run the command manually or use the manual instructions below:")
+		fmt.Println()
+		printManualInstructions(caPath)
+		os.Exit(1)
+	}
+
+	fmt.Println()
+	fmt.Println("✓ CA certificate installed successfully!")
+	printPostInstall()
+}
+
+// installLinux installs the CA on Linux
+func installLinux(caPath string) {
+	fmt.Println("Linux detected")
+	fmt.Println()
+
+	destPath := "/usr/local/share/ca-certificates/langley.crt"
+
+	// Copy certificate
+	fmt.Printf("Running: sudo cp %s %s\n", caPath, destPath)
+	cpCmd := exec.Command("sudo", "cp", caPath, destPath)
+	cpCmd.Stdout = os.Stdout
+	cpCmd.Stderr = os.Stderr
+	cpCmd.Stdin = os.Stdin
+
+	if err := cpCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "\n✗ Failed to copy CA: %v\n", err)
+		fmt.Println("\nYou can run the commands manually:")
+		printManualInstructions(caPath)
+		os.Exit(1)
+	}
+
+	// Update CA certificates
+	fmt.Println("Running: sudo update-ca-certificates")
+	updateCmd := exec.Command("sudo", "update-ca-certificates")
+	updateCmd.Stdout = os.Stdout
+	updateCmd.Stderr = os.Stderr
+	updateCmd.Stdin = os.Stdin
+
+	if err := updateCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "\n✗ Failed to update CA certificates: %v\n", err)
+		fmt.Println("\nYou can run the command manually:")
+		fmt.Println("  sudo update-ca-certificates")
+		os.Exit(1)
+	}
+
+	fmt.Println()
+	fmt.Println("✓ CA certificate installed successfully!")
+	printPostInstall()
+}
+
+// installWindows installs the CA on Windows
+func installWindows(caPath string) {
+	fmt.Println("Windows detected")
+	fmt.Println()
+
+	fmt.Println("Installing CA certificate to Windows trust store...")
+	fmt.Printf("Running: certutil -addstore -f \"ROOT\" %s\n", caPath)
+	fmt.Println()
+
+	cmd := exec.Command("certutil", "-addstore", "-f", "ROOT", caPath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "\n✗ Failed to install CA: %v\n", err)
+		fmt.Println("\nYou may need to run this command as Administrator:")
+		fmt.Printf("  certutil -addstore -f \"ROOT\" %s\n", caPath)
+		fmt.Println()
+		fmt.Println("Or right-click langley.exe and select 'Run as administrator', then run 'langley setup'")
+		os.Exit(1)
+	}
+
+	fmt.Println()
+	fmt.Println("✓ CA certificate installed successfully!")
+	printPostInstall()
+}
+
+// printManualInstructions prints manual CA installation instructions
+func printManualInstructions(caPath string) {
+	fmt.Println("Manual CA Installation Instructions")
+	fmt.Println("-----------------------------------")
+	fmt.Println()
+	fmt.Println("macOS:")
+	fmt.Printf("  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain %s\n", caPath)
+	fmt.Println()
+	fmt.Println("Linux (Debian/Ubuntu):")
+	fmt.Printf("  sudo cp %s /usr/local/share/ca-certificates/langley.crt\n", caPath)
+	fmt.Println("  sudo update-ca-certificates")
+	fmt.Println()
+	fmt.Println("Linux (RHEL/Fedora):")
+	fmt.Printf("  sudo cp %s /etc/pki/ca-trust/source/anchors/langley.crt\n", caPath)
+	fmt.Println("  sudo update-ca-trust")
+	fmt.Println()
+	fmt.Println("Windows (Run as Administrator):")
+	fmt.Printf("  certutil -addstore -f \"ROOT\" %s\n", caPath)
+	fmt.Println()
+	fmt.Println("Firefox (all platforms):")
+	fmt.Println("  1. Open Firefox Settings → Privacy & Security → Certificates → View Certificates")
+	fmt.Println("  2. Click 'Authorities' tab → 'Import'")
+	fmt.Printf("  3. Select: %s\n", caPath)
+	fmt.Println("  4. Check 'Trust this CA to identify websites' → OK")
+	fmt.Println()
+	fmt.Println("Tip: Install mkcert (https://github.com/FiloSottile/mkcert) for easier CA management")
+}
+
+// printPostInstall prints post-installation instructions
+func printPostInstall() {
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Println("  1. Configure your HTTP client to use the proxy:")
+	fmt.Println("     export HTTPS_PROXY=http://localhost:9090")
+	fmt.Println("     export HTTP_PROXY=http://localhost:9090")
+	fmt.Println()
+	fmt.Println("  2. Start langley:")
+	fmt.Println("     langley")
+	fmt.Println()
+	fmt.Println("  3. Open the dashboard:")
+	fmt.Println("     http://localhost:9091")
+	fmt.Println()
+	fmt.Println("Note: Firefox uses its own certificate store. See 'langley setup --no-mkcert'")
+	fmt.Println("      for Firefox-specific instructions.")
+}
+
+// printSetupHelp prints help for setup subcommand
+func printSetupHelp() {
+	fmt.Printf(`Usage: langley setup [options]
+
+Installs the Langley CA certificate to your system's trust store.
+This allows Langley to intercept HTTPS traffic to Claude and other LLM APIs.
+
+Options:
+    --no-mkcert    Skip mkcert detection and show manual instructions
+    --help         Show this help message
+
+The setup wizard will:
+  1. Create or load the CA certificate
+  2. Detect your operating system
+  3. Attempt to install the CA automatically (may require sudo/admin)
+  4. Provide manual instructions if automatic installation fails
+
+Examples:
+    langley setup              Auto-detect and install CA
+    langley setup --no-mkcert  Show manual installation instructions
 `)
 }

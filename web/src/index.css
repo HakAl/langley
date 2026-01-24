@@ -687,3 +687,137 @@ header h1 {
     text-align: right;
   }
 }
+
+/* Settings view */
+.settings-view {
+  max-width: 600px;
+  padding: 1rem 0;
+}
+
+.settings-view h2 {
+  margin: 0 0 1.5rem 0;
+  font-size: 1.5rem;
+}
+
+.settings-section {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.settings-section h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1rem;
+}
+
+.settings-description {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin: 0 0 1.5rem 0;
+}
+
+.setting-row {
+  margin-bottom: 1rem;
+}
+
+.setting-row label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+}
+
+.setting-input-group {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.setting-input-group input[type="number"] {
+  width: 100px;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.setting-input-group input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.setting-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.setting-help {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 0.5rem 0 0 0;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.primary-btn {
+  padding: 0.625rem 1.25rem;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 0.875rem;
+  transition: background 0.15s;
+}
+
+.primary-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.primary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.secondary-btn {
+  padding: 0.625rem 1.25rem;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: all 0.15s;
+}
+
+.secondary-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.settings-info {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.settings-info h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.settings-info p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}

@@ -232,12 +232,15 @@ var hopByHopHeaders = []string{
 
 // removeHopByHopHeaders removes hop-by-hop headers from the header map.
 func removeHopByHopHeaders(h http.Header) {
+	// Get Connection header value before we delete it
+	conn := h.Get("Connection")
+
 	for _, header := range hopByHopHeaders {
 		h.Del(header)
 	}
 
 	// Also remove headers listed in Connection header
-	if conn := h.Get("Connection"); conn != "" {
+	if conn != "" {
 		for _, f := range strings.Split(conn, ",") {
 			if f = strings.TrimSpace(f); f != "" {
 				h.Del(f)

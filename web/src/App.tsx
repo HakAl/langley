@@ -87,7 +87,11 @@ interface CostPeriod {
   total_tokens_out: number
 }
 
-type View = 'flows' | 'analytics' | 'tasks' | 'tools' | 'anomalies'
+type View = 'flows' | 'analytics' | 'tasks' | 'tools' | 'anomalies' | 'settings'
+
+interface Settings {
+  idle_gap_minutes: number
+}
 
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('langley_token') || '')
@@ -102,6 +106,9 @@ function App() {
   const [tools, setTools] = useState<ToolStats[]>([])
   const [anomalies, setAnomalies] = useState<Anomaly[]>([])
   const [dailyCosts, setDailyCosts] = useState<CostPeriod[]>([])
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [idleGapInput, setIdleGapInput] = useState(5)
   const wsRef = useRef<WebSocket | null>(null)
 
   // Filters
@@ -203,6 +210,36 @@ function App() {
     if (data) setDailyCosts(data)
   }, [apiFetch])
 
+  const fetchSettings = useCallback(async () => {
+    const data = await apiFetch('/api/settings')
+    if (data) setSettings(data)
+  }, [apiFetch])
+
+  const updateSettings = useCallback(async (newSettings: Partial<Settings>) => {
+    if (!token) return false
+    setSettingsSaving(true)
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(newSettings)
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setSettings(data)
+        return true
+      }
+      return false
+    } catch {
+      return false
+    } finally {
+      setSettingsSaving(false)
+    }
+  }, [token])
+
   const fetchFlowDetail = useCallback(async (id: string) => {
     const data = await apiFetch(`/api/flows/${id}`)
     if (data) setSelectedFlow(data)
@@ -232,13 +269,20 @@ function App() {
       fetchTools()
     } else if (view === 'anomalies') {
       fetchAnomalies()
+    } else if (view === 'settings') {
+      fetchSettings()
     }
-  }, [view, token, fetchStats, fetchDailyCosts, fetchTasks, fetchTools, fetchAnomalies])
+  }, [view, token, fetchStats, fetchDailyCosts, fetchTasks, fetchTools, fetchAnomalies, fetchSettings])
 
   const handleSetToken = () => {
     localStorage.setItem('langley_token', tokenInput)
     setToken(tokenInput)
   }
+
+  // Update idle gap input when settings load
+  useEffect(() => {
+    if (settings) setIdleGapInput(settings.idle_gap_minutes)
+  }, [settings])
 
   // Filter flows
   const filteredFlows = flows.filter(flow => {
@@ -278,6 +322,9 @@ function App() {
       <button className={view === 'tools' ? 'active' : ''} onClick={() => setView('tools')}>Tools</button>
       <button className={view === 'anomalies' ? 'active' : ''} onClick={() => setView('anomalies')}>
         Anomalies {anomalies.length > 0 && <span className="badge error">{anomalies.length}</span>}
+      </button>
+      <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}>
+        Settings
       </button>
     </nav>
   )
@@ -568,6 +615,73 @@ function App() {
     </div>
   )
 
+  // Handle settings save
+  const handleSaveSettings = async () => {
+    const success = await updateSettings({ idle_gap_minutes: idleGapInput })
+    if (success) {
+      // Settings saved successfully
+    }
+  }
+
+  // Render settings view
+  const renderSettings = () => (
+    <div className="settings-view">
+      <h2>Settings</h2>
+
+      <div className="settings-section">
+        <h3>Task Grouping</h3>
+        <p className="settings-description">
+          Langley groups API calls into tasks based on timing. When there's a gap of inactivity,
+          a new task is started.
+        </p>
+
+        <div className="setting-row">
+          <label htmlFor="idle-gap">Idle Gap (minutes)</label>
+          <div className="setting-input-group">
+            <input
+              id="idle-gap"
+              type="number"
+              min={1}
+              max={60}
+              value={idleGapInput}
+              onChange={(e) => setIdleGapInput(parseInt(e.target.value) || 1)}
+            />
+            <span className="setting-hint">1-60 minutes</span>
+          </div>
+          <p className="setting-help">
+            Minutes of inactivity before starting a new task. Lower values create more granular tasks.
+          </p>
+        </div>
+      </div>
+
+      <div className="settings-actions">
+        <button
+          className="primary-btn"
+          onClick={handleSaveSettings}
+          disabled={settingsSaving || idleGapInput === settings?.idle_gap_minutes}
+        >
+          {settingsSaving ? 'Saving...' : 'Save Settings'}
+        </button>
+        {idleGapInput !== settings?.idle_gap_minutes && (
+          <button
+            className="secondary-btn"
+            onClick={() => setIdleGapInput(settings?.idle_gap_minutes ?? 5)}
+          >
+            Reset
+          </button>
+        )}
+      </div>
+
+      <div className="settings-info">
+        <h3>Note</h3>
+        <p>
+          Changes to task grouping settings apply to new API calls only. Existing tasks
+          are not affected.
+        </p>
+      </div>
+    </div>
+  )
+
   return (
     <div className="app">
       <header>
@@ -602,6 +716,7 @@ function App() {
             {view === 'tasks' && renderTasks()}
             {view === 'tools' && renderTools()}
             {view === 'anomalies' && renderAnomalies()}
+            {view === 'settings' && renderSettings()}
           </div>
 
           {selectedFlow && view === 'flows' && renderFlowDetail()}

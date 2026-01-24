@@ -88,6 +88,8 @@ func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger, o
 	s.mux.HandleFunc("GET /api/health", s.healthCheck)
 	s.mux.HandleFunc("POST /api/checkpoint", s.authMiddleware(s.checkpoint))
 	s.mux.HandleFunc("POST /api/admin/reload", s.authMiddleware(s.adminReload))
+	s.mux.HandleFunc("GET /api/settings", s.authMiddleware(s.getSettings))
+	s.mux.HandleFunc("PUT /api/settings", s.authMiddleware(s.updateSettings))
 
 	return s
 }
@@ -718,6 +720,53 @@ func (s *Server) adminReload(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, response)
 }
 
+// getSettings returns current server settings.
+func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
+	settings := SettingsResponse{
+		IdleGapMinutes: s.cfg.Task.IdleGapMinutes,
+		// Add more settings as needed
+	}
+	s.writeJSON(w, settings)
+}
+
+// updateSettings updates server settings and persists to config file.
+func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
+	if s.cfgPath == "" {
+		http.Error(w, "Config path not set - settings update not supported", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req SettingsUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate settings
+	if req.IdleGapMinutes != nil {
+		if *req.IdleGapMinutes < 1 || *req.IdleGapMinutes > 60 {
+			http.Error(w, "idle_gap_minutes must be between 1 and 60", http.StatusBadRequest)
+			return
+		}
+		s.cfg.Task.IdleGapMinutes = *req.IdleGapMinutes
+	}
+
+	// Save config to file
+	if err := s.cfg.Save(s.cfgPath); err != nil {
+		s.logger.Error("failed to save config", "error", err)
+		http.Error(w, "Failed to save config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.logger.Info("settings updated", "idle_gap_minutes", s.cfg.Task.IdleGapMinutes)
+
+	// Return updated settings
+	settings := SettingsResponse{
+		IdleGapMinutes: s.cfg.Task.IdleGapMinutes,
+	}
+	s.writeJSON(w, settings)
+}
+
 // isLocalhost checks if the remote address is from localhost.
 func isLocalhost(remoteAddr string) bool {
 	// Handle various address formats:
@@ -896,6 +945,16 @@ type CheckpointResponse struct {
 	PagesCheckpointed int       `json:"pages_checkpointed"`
 	Blocked           bool      `json:"was_blocked"`
 	Timestamp         time.Time `json:"timestamp"`
+}
+
+// SettingsResponse is the API response for settings.
+type SettingsResponse struct {
+	IdleGapMinutes int `json:"idle_gap_minutes"`
+}
+
+// SettingsUpdateRequest is the request body for updating settings.
+type SettingsUpdateRequest struct {
+	IdleGapMinutes *int `json:"idle_gap_minutes,omitempty"`
 }
 
 func toAnomalyResponse(a *analytics.Anomaly) AnomalyResponse {

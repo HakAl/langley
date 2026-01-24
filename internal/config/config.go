@@ -22,6 +22,12 @@ type Config struct {
 	Retention   RetentionConfig   `yaml:"retention"`
 	Redaction   RedactionConfig   `yaml:"redaction"`
 	Auth        AuthConfig        `yaml:"auth"`
+	Task        TaskConfig        `yaml:"task"`
+}
+
+// TaskConfig configures task grouping behavior.
+type TaskConfig struct {
+	IdleGapMinutes int `yaml:"idle_gap_minutes"` // Minutes of inactivity before starting new task
 }
 
 // ProxyConfig configures the HTTP/TLS proxy.
@@ -123,6 +129,9 @@ func DefaultConfig() *Config {
 		},
 		Auth: AuthConfig{
 			Token: "", // Generated on first run if empty
+		},
+		Task: TaskConfig{
+			IdleGapMinutes: 5, // Default 5 minutes between tasks
 		},
 	}
 }

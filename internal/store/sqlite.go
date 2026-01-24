@@ -35,6 +35,12 @@ func NewSQLiteStore(dbPath string, retention *config.RetentionConfig) (*SQLiteSt
 		return nil, fmt.Errorf("connecting to database: %w", err)
 	}
 
+	// Enable foreign keys for CASCADE behavior
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enabling foreign keys: %w", err)
+	}
+
 	// SECURITY: Set restrictive file permissions (2.2.11)
 	// Database may contain sensitive request/response data
 	if err := setSecureFilePermissions(dbPath); err != nil {
