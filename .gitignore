@@ -34,3 +34,9 @@ certs/
 
 # Task file
 team_task.md
+
+# Playwright
+.playwright-mcp/
+
+# Windows artifacts
+nul
