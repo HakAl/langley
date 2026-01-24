@@ -259,13 +259,19 @@ func (c *Config) applyEnvOverrides() {
 	}
 }
 
-// generateToken generates a cryptographically random auth token.
-func generateToken() (string, error) {
+// GenerateToken generates a cryptographically random auth token.
+// Exported for use by CLI commands (token rotate).
+func GenerateToken() (string, error) {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
 	}
 	return "langley_" + hex.EncodeToString(bytes), nil
+}
+
+// generateToken is an internal alias for backwards compatibility
+func generateToken() (string, error) {
+	return GenerateToken()
 }
 
 // Listen returns the listen address, handling host:port vs listen field.

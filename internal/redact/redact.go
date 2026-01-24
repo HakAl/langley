@@ -25,10 +25,11 @@ const (
 
 // Redactor handles credential redaction.
 type Redactor struct {
-	cfg            *config.RedactionConfig
-	headerPatterns []*regexp.Regexp
-	apiKeyPattern  *regexp.Regexp
-	base64Pattern  *regexp.Regexp
+	cfg                   *config.RedactionConfig
+	headerPatterns        []*regexp.Regexp
+	apiKeyPattern         *regexp.Regexp
+	base64Pattern         *regexp.Regexp
+	jsonCredentialPattern *regexp.Regexp
 }
 
 // New creates a new Redactor with the given configuration.
@@ -72,6 +73,12 @@ func New(cfg *config.RedactionConfig) (*Redactor, error) {
 
 	// Base64 image pattern (data URLs and raw base64 in JSON)
 	r.base64Pattern = regexp.MustCompile(`(?i)(data:image/[^;]+;base64,)[A-Za-z0-9+/=]{100,}|"(source|data)":\s*\{\s*"type":\s*"base64"[^}]*"data":\s*"[A-Za-z0-9+/=]{100,}"`)
+
+	// JSON credential field patterns (2.2.13)
+	// Matches: "password": "...", "secret": "...", "credential": "...", etc.
+	// Also catches variations like "api_secret", "db_password", "user_credential"
+	// Handles both regular and JSON-escaped quotes
+	r.jsonCredentialPattern = regexp.MustCompile(`(?i)"([^"]*(?:password|secret|credential)[^"]*)":\s*"([^"\\]*(?:\\.[^"\\]*)*)"`)
 
 	return r, nil
 }
@@ -177,6 +184,20 @@ func (r *Redactor) RedactBody(body string) string {
 				return RedactedImageValue
 			}
 			return RedactedImageValue
+		})
+	}
+
+	// Redact JSON credential fields (2.2.13)
+	// Matches "password", "secret", "credential" keys and redacts their values
+	if r.cfg.RedactAPIKeys { // Use same config flag as API keys
+		result = r.jsonCredentialPattern.ReplaceAllStringFunc(result, func(match string) string {
+			// Find the colon and value portion
+			colonIdx := strings.Index(match, ":")
+			if colonIdx > 0 {
+				keyPart := match[:colonIdx+1] // Keep the key name and colon
+				return keyPart + ` "` + RedactedValue + `"`
+			}
+			return match
 		})
 	}
 

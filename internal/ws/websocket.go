@@ -209,14 +209,24 @@ func (h *Hub) ClientCount() int {
 
 // Handler returns an HTTP handler for WebSocket connections.
 // Uses constant-time comparison to prevent timing attacks.
+// NOTE: Token is read from h.cfg.Auth.Token to support hot-reload.
+// WebSocket connections authenticated at connect time continue working
+// with the token that was valid at connection time (grace period behavior).
 func (h *Hub) Handler(authToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Read current token from config (supports hot-reload)
+		// Fall back to passed token if config is nil
+		currentToken := authToken
+		if h.cfg != nil {
+			currentToken = h.cfg.Auth.Token
+		}
+
 		// Authenticate using constant-time comparison
 		token := r.URL.Query().Get("token")
-		tokenMatch := subtle.ConstantTimeCompare([]byte(token), []byte(authToken)) == 1
+		tokenMatch := subtle.ConstantTimeCompare([]byte(token), []byte(currentToken)) == 1
 
 		auth := r.Header.Get("Authorization")
-		expectedAuth := "Bearer " + authToken
+		expectedAuth := "Bearer " + currentToken
 		authMatch := subtle.ConstantTimeCompare([]byte(auth), []byte(expectedAuth)) == 1
 
 		if !tokenMatch && !authMatch {

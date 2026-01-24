@@ -19,26 +19,53 @@ import (
 
 // Server is the REST API server.
 type Server struct {
-	cfg       *config.Config
-	store     store.Store
-	analytics *analytics.Engine
-	logger    *slog.Logger
-	mux       *http.ServeMux
-	startTime time.Time
+	cfg         *config.Config
+	cfgPath     string // Path to config file for reload
+	store       store.Store
+	analytics   *analytics.Engine
+	logger      *slog.Logger
+	mux         *http.ServeMux
+	startTime   time.Time
+	onReload    func(newToken string) // Callback when token changes
+	rateLimiter *RateLimiter          // Rate limiter for API requests
+}
+
+// ServerOption configures the API server.
+type ServerOption func(*Server)
+
+// WithConfigPath sets the config file path for reload support.
+func WithConfigPath(path string) ServerOption {
+	return func(s *Server) {
+		s.cfgPath = path
+	}
+}
+
+// WithOnReload sets a callback to be called when config is reloaded.
+// The callback receives the new auth token.
+func WithOnReload(fn func(newToken string)) ServerOption {
+	return func(s *Server) {
+		s.onReload = fn
+	}
 }
 
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger) *Server {
+func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger, opts ...ServerOption) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
 
 	s := &Server{
-		cfg:       cfg,
-		store:     dataStore,
-		logger:    logger,
-		mux:       http.NewServeMux(),
-		startTime: time.Now(),
+		cfg:         cfg,
+		store:       dataStore,
+		logger:      logger,
+		mux:         http.NewServeMux(),
+		startTime:   time.Now(),
+		rateLimiter: NewRateLimiter(20, 100), // 20 req/sec sustained, 100 burst (2.2.9)
+	}
+
+	// Apply options
+	for _, opt := range opts {
+		opt(s)
 	}
 
 	// Initialize analytics engine if we have a database connection
@@ -60,26 +87,36 @@ func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger) *
 	s.mux.HandleFunc("GET /api/analytics/anomalies", s.authMiddleware(s.getAnomalies))
 	s.mux.HandleFunc("GET /api/health", s.healthCheck)
 	s.mux.HandleFunc("POST /api/checkpoint", s.authMiddleware(s.checkpoint))
+	s.mux.HandleFunc("POST /api/admin/reload", s.authMiddleware(s.adminReload))
 
 	return s
 }
 
 // Handler returns the HTTP handler for the API.
+// Applies middleware chain: CORS -> Rate Limit -> routes
 func (s *Server) Handler() http.Handler {
-	return s.corsMiddleware(s.mux)
+	// Chain: CORS -> Rate Limit -> actual handlers
+	return s.corsMiddleware(s.rateLimiter.Middleware(s.mux))
 }
 
 // authMiddleware wraps a handler with bearer token authentication.
 // Uses constant-time comparison to prevent timing attacks.
+// SECURITY: Rejects tokens in URL query params - use Authorization header instead.
+// (WebSocket connections use separate handler that allows query params since browsers
+// cannot set custom headers for WebSocket upgrades.)
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Check Authorization header
-		auth := r.Header.Get("Authorization")
-		if auth == "" {
-			// Also check query param for WebSocket compatibility
-			auth = "Bearer " + r.URL.Query().Get("token")
+		// SECURITY: Reject tokens in URL query params (2.2.7)
+		// Tokens in URLs are logged by proxies, browsers, and servers - use header instead.
+		// By the time we see the request, the token is already exposed to intermediate proxies.
+		if r.URL.Query().Get("token") != "" {
+			s.logger.Warn("rejected token in URL", "path", r.URL.Path, "remote", r.RemoteAddr)
+			http.Error(w, "Token in URL is not allowed. Use Authorization header instead.", http.StatusBadRequest)
+			return
 		}
 
+		// Check Authorization header
+		auth := r.Header.Get("Authorization")
 		expected := "Bearer " + s.cfg.Auth.Token
 
 		// Use constant-time comparison to prevent timing attacks
@@ -634,6 +671,79 @@ func (s *Server) checkpoint(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("WAL checkpoint", "pages_before", walPagesBefore, "pages_after", walPagesAfter, "blocked", blocked)
 	s.writeJSON(w, response)
+}
+
+// adminReload reloads configuration from disk.
+// SECURITY: Requires authentication and localhost-only access.
+func (s *Server) adminReload(w http.ResponseWriter, r *http.Request) {
+	// Security: Only allow from localhost
+	remoteAddr := r.RemoteAddr
+	if !isLocalhost(remoteAddr) {
+		s.logger.Warn("admin reload rejected: not localhost", "remote", remoteAddr)
+		http.Error(w, "Admin endpoints are localhost-only", http.StatusForbidden)
+		return
+	}
+
+	if s.cfgPath == "" {
+		http.Error(w, "Config path not set - reload not supported", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Reload config from disk
+	newCfg, err := config.Load(s.cfgPath)
+	if err != nil {
+		s.logger.Error("failed to reload config", "error", err)
+		http.Error(w, "Failed to reload config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	oldToken := s.cfg.Auth.Token
+	newToken := newCfg.Auth.Token
+
+	// Update the token in current config
+	s.cfg.Auth.Token = newToken
+
+	// Notify callback if registered (e.g., to update WebSocket handler)
+	if s.onReload != nil {
+		s.onReload(newToken)
+	}
+
+	s.logger.Info("config reloaded", "token_changed", oldToken != newToken)
+
+	response := map[string]interface{}{
+		"success":       true,
+		"token_changed": oldToken != newToken,
+		"timestamp":     time.Now(),
+	}
+	s.writeJSON(w, response)
+}
+
+// isLocalhost checks if the remote address is from localhost.
+func isLocalhost(remoteAddr string) bool {
+	// Handle various address formats:
+	// - "127.0.0.1:8080" (IPv4 with port)
+	// - "127.0.0.1" (IPv4 without port)
+	// - "[::1]:8080" (IPv6 with port)
+	// - "::1" (IPv6 without port)
+
+	host := remoteAddr
+
+	// Check for IPv6 with port: [::1]:port
+	if strings.HasPrefix(host, "[") {
+		if idx := strings.Index(host, "]:"); idx != -1 {
+			host = host[1:idx] // Extract between [ and ]
+		} else if strings.HasSuffix(host, "]") {
+			host = host[1 : len(host)-1] // Just [::1] without port
+		}
+	} else if strings.Contains(host, ":") && !strings.Contains(host, "::") {
+		// IPv4 with port: last colon separates host:port
+		// But not IPv6 which has multiple colons
+		if idx := strings.LastIndex(host, ":"); idx != -1 {
+			host = host[:idx]
+		}
+	}
+
+	return host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, v interface{}) {

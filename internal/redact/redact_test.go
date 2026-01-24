@@ -257,6 +257,78 @@ func TestRedactGeminiKeys(t *testing.T) {
 	}
 }
 
+// TestRedactJSONCredentialFields verifies credential fields are redacted (2.2.13).
+func TestRedactJSONCredentialFields(t *testing.T) {
+	r, _ := New(testConfig())
+
+	tests := []struct {
+		name       string
+		input      string
+		wantRedact string // substring that should NOT appear
+	}{
+		{
+			name:       "password field",
+			input:      `{"username": "admin", "password": "supersecret123"}`,
+			wantRedact: "supersecret123",
+		},
+		{
+			name:       "secret field",
+			input:      `{"api_secret": "myverysecretvalue", "id": "123"}`,
+			wantRedact: "myverysecretvalue",
+		},
+		{
+			name:       "credential field",
+			input:      `{"user_credential": "abc123xyz", "type": "oauth"}`,
+			wantRedact: "abc123xyz",
+		},
+		{
+			name:       "db_password variant",
+			input:      `{"db_password": "dbpass456", "host": "localhost"}`,
+			wantRedact: "dbpass456",
+		},
+		{
+			name:       "client_secret variant",
+			input:      `{"client_id": "app1", "client_secret": "clientsecretvalue"}`,
+			wantRedact: "clientsecretvalue",
+		},
+		{
+			name:       "multiple credential fields",
+			input:      `{"password": "pass1", "api_secret": "secret1", "db_credential": "cred1"}`,
+			wantRedact: "pass1",
+		},
+		{
+			name:       "preserves non-credential fields",
+			input:      `{"password": "secret", "username": "admin", "server": "localhost"}`,
+			wantRedact: "secret",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := r.RedactBody(tt.input)
+			if strings.Contains(got, tt.wantRedact) {
+				t.Errorf("RedactBody() = %q, should not contain %q", got, tt.wantRedact)
+			}
+			// Verify [REDACTED] appears
+			if !strings.Contains(got, RedactedValue) {
+				t.Errorf("RedactBody() = %q, should contain %q", got, RedactedValue)
+			}
+		})
+	}
+
+	// Test that non-credential fields are preserved
+	t.Run("non-credential fields preserved", func(t *testing.T) {
+		input := `{"password": "secret", "username": "admin", "server": "localhost"}`
+		got := r.RedactBody(input)
+		if !strings.Contains(got, `"username": "admin"`) {
+			t.Errorf("username field was incorrectly modified: %s", got)
+		}
+		if !strings.Contains(got, `"server": "localhost"`) {
+			t.Errorf("server field was incorrectly modified: %s", got)
+		}
+	})
+}
+
 // TestRedactBase64Images verifies base64 image data is redacted.
 func TestRedactBase64Images(t *testing.T) {
 	r, _ := New(testConfig())

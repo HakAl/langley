@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -27,6 +29,20 @@ func NewSQLiteStore(dbPath string, retention *config.RetentionConfig) (*SQLiteSt
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
+	// Force a connection to ensure the file is created
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("connecting to database: %w", err)
+	}
+
+	// SECURITY: Set restrictive file permissions (2.2.11)
+	// Database may contain sensitive request/response data
+	if err := setSecureFilePermissions(dbPath); err != nil {
+		// Log warning but don't fail - Windows may not support this
+		// The file will still be created, just with default permissions
+		_ = err // Intentionally ignoring - best effort
+	}
+
 	// Set connection pool (SQLite with WAL can handle some concurrency)
 	db.SetMaxOpenConns(1) // SQLite is single-writer
 	db.SetMaxIdleConns(1)
@@ -43,6 +59,31 @@ func NewSQLiteStore(dbPath string, retention *config.RetentionConfig) (*SQLiteSt
 	}
 
 	return store, nil
+}
+
+// setSecureFilePermissions sets restrictive permissions on the database file.
+// On Unix: 0600 (owner read/write only)
+// On Windows: This is best-effort as file permissions work differently
+func setSecureFilePermissions(path string) error {
+	if runtime.GOOS == "windows" {
+		// Windows doesn't use Unix permissions
+		// File security is handled via ACLs, which is more complex
+		// For a single-user local tool, this is acceptable
+		return nil
+	}
+
+	// Unix: Set 0600 on database and WAL files
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("setting permissions on %s: %w", path, err)
+	}
+
+	// Also try to set permissions on WAL and SHM files if they exist
+	walPath := path + "-wal"
+	shmPath := path + "-shm"
+	os.Chmod(walPath, 0600) // Ignore errors - files may not exist yet
+	os.Chmod(shmPath, 0600)
+
+	return nil
 }
 
 // migrate runs database migrations.

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -28,7 +30,16 @@ var (
 )
 
 func main() {
-	// CLI flags
+	// Check for subcommands first
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "token":
+			handleTokenCommand(os.Args[2:])
+			return
+		}
+	}
+
+	// CLI flags for main server mode
 	configPath := flag.String("config", "", "Path to config file")
 	listenAddr := flag.String("listen", "", "Proxy listen address (overrides config)")
 	apiAddr := flag.String("api", "localhost:9091", "API server listen address")
@@ -52,6 +63,17 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
+
+	// Determine actual config path for reload support
+	actualConfigPath := *configPath
+	if actualConfigPath == "" {
+		var pathErr error
+		actualConfigPath, pathErr = config.DefaultConfigPath()
+		if pathErr != nil {
+			slog.Error("failed to get default config path", "error", pathErr)
+			os.Exit(1)
+		}
+	}
 
 	// Load config
 	cfg, err := config.Load(*configPath)
@@ -137,8 +159,15 @@ func main() {
 	wsHub := ws.NewHub(cfg, logger)
 	go wsHub.Run(ctx)
 
-	// Create API server
-	apiServer := api.NewServer(cfg, dataStore, logger)
+	// Create API server with reload support
+	apiServer := api.NewServer(cfg, dataStore, logger,
+		api.WithConfigPath(actualConfigPath),
+		api.WithOnReload(func(newToken string) {
+			slog.Info("token reloaded", "token_length", len(newToken))
+			// Note: WebSocket hub reads token from cfg.Auth.Token directly,
+			// which is updated by the reload handler
+		}),
+	)
 	apiMux := http.NewServeMux()
 	apiMux.Handle("/", apiServer.Handler())
 	apiMux.HandleFunc("/ws", wsHub.Handler(cfg.Auth.Token))
@@ -259,6 +288,11 @@ Claude API traffic for debugging and cost tracking.
 
 USAGE:
     langley [OPTIONS]
+    langley token <command>
+
+COMMANDS:
+    token show        Show the current auth token
+    token rotate      Generate a new auth token
 
 OPTIONS:
     -config <path>    Path to configuration file
@@ -273,6 +307,8 @@ EXAMPLES:
     langley -listen :8080       Start proxy on port 8080
     langley -config ./my.yaml   Use custom config file
     langley -show-ca            Show how to trust the CA certificate
+    langley token show          Show current auth token
+    langley token rotate        Generate and save a new auth token
 
 CONFIGURATION:
     Config file locations (in order of precedence):
@@ -290,5 +326,159 @@ DASHBOARD:
     You'll need the auth token shown at startup to connect.
 
 For more information, see: https://github.com/anthropics/langley
+`)
+}
+
+// handleTokenCommand handles the "token" subcommand
+func handleTokenCommand(args []string) {
+	tokenFlags := flag.NewFlagSet("token", flag.ExitOnError)
+	configPath := tokenFlags.String("config", "", "Path to config file")
+	apiAddr := tokenFlags.String("api", "localhost:9091", "API server address for reload")
+
+	if len(args) == 0 {
+		printTokenHelp()
+		os.Exit(1)
+	}
+
+	subcommand := args[0]
+	tokenFlags.Parse(args[1:])
+
+	switch subcommand {
+	case "show":
+		tokenShow(*configPath)
+	case "rotate":
+		tokenRotate(*configPath, *apiAddr)
+	case "help", "-help", "--help":
+		printTokenHelp()
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown token command: %s\n", subcommand)
+		printTokenHelp()
+		os.Exit(1)
+	}
+}
+
+// tokenShow displays the current auth token
+func tokenShow(configPath string) {
+	cfg, cfgPath, err := loadConfigForToken(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Config:  %s\n", cfgPath)
+	fmt.Printf("Token:   %s\n", cfg.Auth.Token)
+}
+
+// tokenRotate generates a new token and saves it
+func tokenRotate(configPath string, apiAddr string) {
+	cfg, cfgPath, err := loadConfigForToken(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	oldToken := cfg.Auth.Token
+
+	// Generate new token using config package's function
+	newToken, err := config.GenerateToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating token: %v\n", err)
+		os.Exit(1)
+	}
+
+	cfg.Auth.Token = newToken
+
+	// Save config
+	if err := cfg.Save(cfgPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Config:     %s\n", cfgPath)
+	fmt.Printf("Old token:  %s\n", oldToken)
+	fmt.Printf("New token:  %s\n", newToken)
+	fmt.Println()
+
+	// Try to notify running server
+	if reloadRunningServer(apiAddr, oldToken) {
+		fmt.Println("✓ Running server notified - new token is active immediately")
+	} else {
+		fmt.Println("Note: Restart langley for the new token to take effect")
+		fmt.Println("      (Or the server is not running on " + apiAddr + ")")
+	}
+}
+
+// loadConfigForToken loads config without generating a new token if missing
+func loadConfigForToken(configPath string) (*config.Config, string, error) {
+	cfg := config.DefaultConfig()
+
+	// Determine config path
+	var cfgPath string
+	var err error
+	if configPath != "" {
+		cfgPath = configPath
+	} else {
+		cfgPath, err = config.DefaultConfigPath()
+		if err != nil {
+			return nil, "", fmt.Errorf("getting default config path: %w", err)
+		}
+	}
+
+	// Load from file
+	cfg, err = config.Load(configPath)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return cfg, cfgPath, nil
+}
+
+// reloadRunningServer attempts to notify a running server to reload its config
+func reloadRunningServer(apiAddr, oldToken string) bool {
+	url := fmt.Sprintf("http://%s/api/admin/reload", apiAddr)
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(nil))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+oldToken)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	// Read response body to check status
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusOK {
+		return true
+	}
+
+	// Log the error for debugging
+	if resp.StatusCode != http.StatusNotFound {
+		fmt.Fprintf(os.Stderr, "Reload request failed: %d - %s\n", resp.StatusCode, string(body))
+	}
+	return false
+}
+
+// printTokenHelp prints help for token subcommand
+func printTokenHelp() {
+	fmt.Printf(`Usage: langley token <command> [options]
+
+Commands:
+    show        Show the current auth token
+    rotate      Generate a new auth token and save to config
+
+Options:
+    -config <path>    Path to configuration file
+    -api <addr>       API server address for reload notification (default: localhost:9091)
+
+Examples:
+    langley token show
+    langley token rotate
+    langley token rotate -api localhost:8080
 `)
 }
