@@ -5,16 +5,21 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
+	"github.com/anthropics/langley/internal/api"
 	"github.com/anthropics/langley/internal/config"
 	"github.com/anthropics/langley/internal/proxy"
 	"github.com/anthropics/langley/internal/redact"
 	"github.com/anthropics/langley/internal/store"
+	"github.com/anthropics/langley/internal/task"
 	langleytls "github.com/anthropics/langley/internal/tls"
+	"github.com/anthropics/langley/internal/ws"
 )
 
 var (
@@ -25,7 +30,8 @@ var (
 func main() {
 	// CLI flags
 	configPath := flag.String("config", "", "Path to config file")
-	listenAddr := flag.String("listen", "", "Listen address (overrides config)")
+	listenAddr := flag.String("listen", "", "Proxy listen address (overrides config)")
+	apiAddr := flag.String("api", "localhost:9091", "API server listen address")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	showCA := flag.Bool("show-ca", false, "Show CA certificate path and exit")
 	flag.Parse()
@@ -85,7 +91,7 @@ func main() {
 	}
 
 	// Create cert cache
-	certCache := langleytls.NewCertCache(ca, 1000) // LRU max 1000 certs
+	certCache := langleytls.NewCertCache(ca, 1000)
 
 	// Create redactor
 	redactor, err := redact.New(&cfg.Redaction)
@@ -103,8 +109,10 @@ func main() {
 	defer dataStore.Close()
 	slog.Info("database opened", "path", cfg.Persistence.DBPath)
 
-	// Print auth token on first run
-	slog.Info("auth token", "token", cfg.Auth.Token)
+	// Create task assigner
+	taskAssigner := task.NewAssigner(task.AssignerConfig{
+		IdleGapMinutes: 5,
+	})
 
 	// Create context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -119,16 +127,40 @@ func main() {
 		cancel()
 	}()
 
+	// Create WebSocket hub
+	wsHub := ws.NewHub(cfg, logger)
+	go wsHub.Run(ctx)
+
+	// Create API server
+	apiServer := api.NewServer(cfg, dataStore, logger)
+	apiMux := http.NewServeMux()
+	apiMux.Handle("/", apiServer.Handler())
+	apiMux.HandleFunc("/ws", wsHub.Handler(cfg.Auth.Token))
+
+	// Start API server
+	go func() {
+		srv := &http.Server{
+			Addr:    *apiAddr,
+			Handler: apiMux,
+		}
+		slog.Info("API server starting", "addr", *apiAddr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("API server error", "error", err)
+		}
+	}()
+
 	// Create and start MITM proxy
 	mitmProxy, err := proxy.NewMITMProxy(proxy.MITMProxyConfig{
-		Config:    cfg,
-		Logger:    logger,
-		CA:        ca,
-		CertCache: certCache,
-		Redactor:  redactor,
-		Store:     dataStore,
+		Config:       cfg,
+		Logger:       logger,
+		CA:           ca,
+		CertCache:    certCache,
+		Redactor:     redactor,
+		Store:        dataStore,
+		TaskAssigner: taskAssigner,
 		OnFlow: func(flow *store.Flow) {
 			slog.Debug("flow started", "id", flow.ID, "host", flow.Host, "method", flow.Method)
+			wsHub.BroadcastFlowStart(flow)
 		},
 		OnUpdate: func(flow *store.Flow) {
 			status := 0
@@ -136,6 +168,7 @@ func main() {
 				status = *flow.StatusCode
 			}
 			slog.Debug("flow completed", "id", flow.ID, "status", status, "sse", flow.IsSSE)
+			wsHub.BroadcastFlowComplete(flow)
 		},
 	})
 	if err != nil {
@@ -143,18 +176,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("starting langley proxy",
-		"listen", cfg.Proxy.ListenAddr(),
-		"ca", filepath.Join(certsDir, "ca.crt"),
+	slog.Info("starting langley",
+		"proxy", cfg.Proxy.ListenAddr(),
+		"api", *apiAddr,
 	)
 	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  Proxy:  http://%s\n", cfg.Proxy.ListenAddr())
-	fmt.Fprintf(os.Stderr, "  CA:     %s\n", filepath.Join(certsDir, "ca.crt"))
-	fmt.Fprintf(os.Stderr, "  DB:     %s\n", cfg.Persistence.DBPath)
-	fmt.Fprintf(os.Stderr, "  Token:  %s\n", cfg.Auth.Token)
-	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  Configure your client to use this proxy.\n")
-	fmt.Fprintf(os.Stderr, "  Trust the CA certificate to intercept HTTPS traffic.\n")
+	fmt.Fprintf(os.Stderr, "  Proxy:     http://%s\n", cfg.Proxy.ListenAddr())
+	fmt.Fprintf(os.Stderr, "  API:       http://%s\n", *apiAddr)
+	fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", *apiAddr)
+	fmt.Fprintf(os.Stderr, "  CA:        %s\n", filepath.Join(certsDir, "ca.crt"))
+	fmt.Fprintf(os.Stderr, "  DB:        %s\n", cfg.Persistence.DBPath)
+	fmt.Fprintf(os.Stderr, "  Token:     %s\n", cfg.Auth.Token)
 	fmt.Fprintf(os.Stderr, "\n")
 
 	if err := mitmProxy.Serve(ctx); err != nil && err != context.Canceled {
@@ -162,5 +194,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Give API server time to finish
+	time.Sleep(100 * time.Millisecond)
 	slog.Info("langley shutdown complete")
 }

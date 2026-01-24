@@ -17,21 +17,23 @@ import (
 	"github.com/anthropics/langley/internal/config"
 	"github.com/anthropics/langley/internal/redact"
 	"github.com/anthropics/langley/internal/store"
+	"github.com/anthropics/langley/internal/task"
 	langleytls "github.com/anthropics/langley/internal/tls"
 	"github.com/google/uuid"
 )
 
 // MITMProxy is an intercepting proxy that captures TLS traffic.
 type MITMProxy struct {
-	cfg       *config.Config
-	logger    *slog.Logger
-	ca        *langleytls.CA
-	certCache *langleytls.CertCache
-	redactor  *redact.Redactor
-	store     store.Store
-	server    *http.Server
-	client    *http.Client
-	shutdown  sync.WaitGroup
+	cfg          *config.Config
+	logger       *slog.Logger
+	ca           *langleytls.CA
+	certCache    *langleytls.CertCache
+	redactor     *redact.Redactor
+	store        store.Store
+	taskAssigner *task.Assigner
+	server       *http.Server
+	client       *http.Client
+	shutdown     sync.WaitGroup
 
 	// Callbacks for real-time updates
 	onFlow   func(*store.Flow)
@@ -40,14 +42,15 @@ type MITMProxy struct {
 
 // MITMProxyConfig holds configuration for creating a MITM proxy.
 type MITMProxyConfig struct {
-	Config    *config.Config
-	Logger    *slog.Logger
-	CA        *langleytls.CA
-	CertCache *langleytls.CertCache
-	Redactor  *redact.Redactor
-	Store     store.Store
-	OnFlow    func(*store.Flow)
-	OnUpdate  func(*store.Flow)
+	Config       *config.Config
+	Logger       *slog.Logger
+	CA           *langleytls.CA
+	CertCache    *langleytls.CertCache
+	Redactor     *redact.Redactor
+	Store        store.Store
+	TaskAssigner *task.Assigner
+	OnFlow       func(*store.Flow)
+	OnUpdate     func(*store.Flow)
 }
 
 // NewMITMProxy creates a new MITM proxy.
@@ -90,15 +93,16 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 	}
 
 	p := &MITMProxy{
-		cfg:       cfg.Config,
-		logger:    cfg.Logger,
-		ca:        cfg.CA,
-		certCache: cfg.CertCache,
-		redactor:  cfg.Redactor,
-		store:     cfg.Store,
-		client:    client,
-		onFlow:    cfg.OnFlow,
-		onUpdate:  cfg.OnUpdate,
+		cfg:          cfg.Config,
+		logger:       cfg.Logger,
+		ca:           cfg.CA,
+		certCache:    cfg.CertCache,
+		redactor:     cfg.Redactor,
+		store:        cfg.Store,
+		taskAssigner: cfg.TaskAssigner,
+		client:       client,
+		onFlow:       cfg.OnFlow,
+		onUpdate:     cfg.OnUpdate,
 	}
 
 	p.server = &http.Server{
@@ -178,6 +182,13 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		FlowIntegrity:        "complete",
 		Provider:             "other",
 		RequestBodyTruncated: reqBodyTruncated,
+	}
+
+	// Assign task
+	if p.taskAssigner != nil {
+		assignment := p.taskAssigner.Assign(r.Host, r.Header, reqBody)
+		flow.TaskID = &assignment.TaskID
+		flow.TaskSource = &assignment.Source
 	}
 
 	// Redact and store request
@@ -391,6 +402,13 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 		FlowIntegrity:        "complete",
 		Provider:             "other",
 		RequestBodyTruncated: reqBodyTruncated,
+	}
+
+	// Assign task
+	if p.taskAssigner != nil {
+		assignment := p.taskAssigner.Assign(host, r.Header, reqBody)
+		flow.TaskID = &assignment.TaskID
+		flow.TaskSource = &assignment.Source
 	}
 
 	// Redact and store request

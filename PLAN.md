@@ -196,16 +196,21 @@ Use `bd` for issue tracking. Each task becomes a bead when started.
 - [x] Directory structure created
 - [x] Basic HTTP proxy working
 
-**Phase 1: Foundation** - IN PROGRESS
+**Phase 1: Foundation** - COMPLETE
 - [x] Config system with YAML/CLI/env layering
 - [x] TLS infrastructure (CA generation, cert cache with LRU)
 - [x] MITM proxy with TLS interception
 - [x] Redaction layer (headers, API keys, base64 images)
 - [x] SQLite persistence with migrations
-- [x] Priority queue (code complete, not yet integrated)
-- [ ] SSE parser for Claude events
-- [ ] Task assignment (explicit > metadata > heuristic)
-- [ ] Async writer with batching
+- [x] Priority queue (code complete)
+- [x] SSE parser for Claude events
+- [x] Task assignment (explicit > metadata > heuristic)
+
+**Phase 2: Real-time & API** - IN PROGRESS
+- [x] REST API with bearer token auth (addresses langley-yni)
+- [x] WebSocket server with origin validation
+- [x] Task assignment integrated into proxy
+- [ ] Basic frontend (flow list with WebSocket updates)
 
 **Security Addressed:**
 - [x] langley-9qh: Credential redaction on-write
