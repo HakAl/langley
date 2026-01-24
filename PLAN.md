@@ -228,11 +228,18 @@ Use `bd` for issue tracking. Each task becomes a bead when started.
   - Anomaly detection (large context, slow response, rapid repeats, high cost)
   - API endpoints: /api/analytics/tasks, /api/analytics/tools, /api/analytics/cost/*
 
-**Phase 4: Frontend Polish** - PENDING
-- [ ] Flow detail view
-- [ ] Filtering
-- [ ] Analytics dashboard
-- [ ] Anomaly alerts
+**Phase 4: Frontend Polish** - COMPLETE
+- [x] Flow detail view
+- [x] Filtering
+- [x] Analytics dashboard
+- [x] Anomaly alerts
+  - Detail panel with request/response info, headers, usage, cost
+  - Filter by host, task ID, status code
+  - Analytics dashboard with stats cards and daily cost chart
+  - Tasks view with aggregated metrics per task
+  - Tools view with invocation counts and success rates
+  - Anomalies view with severity indicators and flow links
+  - Responsive layout for mobile
 
 **Security Addressed:**
 - [x] langley-9qh: Credential redaction on-write
