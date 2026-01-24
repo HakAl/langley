@@ -23,6 +23,7 @@ import (
 	"github.com/anthropics/langley/internal/task"
 	langleytls "github.com/anthropics/langley/internal/tls"
 	"github.com/anthropics/langley/internal/ws"
+	"github.com/anthropics/langley/web"
 )
 
 var (
@@ -173,8 +174,9 @@ func main() {
 		}),
 	)
 	apiMux := http.NewServeMux()
-	apiMux.Handle("/", apiServer.Handler())
+	apiMux.Handle("/api/", apiServer.Handler())
 	apiMux.HandleFunc("/ws", wsHub.Handler(cfg.Auth.Token))
+	apiMux.Handle("/", web.Handler()) // Serve embedded dashboard
 
 	// Create API server instance for graceful shutdown
 	apiSrv := &http.Server{
