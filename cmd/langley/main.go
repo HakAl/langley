@@ -34,7 +34,13 @@ func main() {
 	apiAddr := flag.String("api", "localhost:9091", "API server listen address")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	showCA := flag.Bool("show-ca", false, "Show CA certificate path and exit")
+	showHelp := flag.Bool("help", false, "Show help")
 	flag.Parse()
+
+	if *showHelp {
+		printHelp()
+		os.Exit(0)
+	}
 
 	if *showVersion {
 		fmt.Printf("langley %s (%s)\n", version, commit)
@@ -137,15 +143,35 @@ func main() {
 	apiMux.Handle("/", apiServer.Handler())
 	apiMux.HandleFunc("/ws", wsHub.Handler(cfg.Auth.Token))
 
+	// Create API server instance for graceful shutdown
+	apiSrv := &http.Server{
+		Addr:    *apiAddr,
+		Handler: apiMux,
+	}
+
 	// Start API server
 	go func() {
-		srv := &http.Server{
-			Addr:    *apiAddr,
-			Handler: apiMux,
-		}
 		slog.Info("API server starting", "addr", *apiAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := apiSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("API server error", "error", err)
+		}
+	}()
+
+	// Start retention cleanup goroutine
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+
+		// Run immediately on startup
+		runRetention(dataStore, logger)
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runRetention(dataStore, logger)
+			}
 		}
 	}()
 
@@ -194,7 +220,71 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Give API server time to finish
-	time.Sleep(100 * time.Millisecond)
+	// Graceful shutdown of API server
+	slog.Info("shutting down API server")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := apiSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("API server shutdown error", "error", err)
+	}
+
 	slog.Info("langley shutdown complete")
+}
+
+// runRetention deletes expired data
+func runRetention(dataStore store.Store, logger *slog.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	deleted, err := dataStore.RunRetention(ctx)
+	if err != nil {
+		logger.Error("retention cleanup failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		logger.Info("retention cleanup completed", "deleted", deleted)
+	}
+}
+
+// printHelp prints usage information
+func printHelp() {
+	fmt.Printf(`Langley - Claude Traffic Proxy
+
+Langley is an intercepting proxy that captures, persists, and analyzes
+Claude API traffic for debugging and cost tracking.
+
+USAGE:
+    langley [OPTIONS]
+
+OPTIONS:
+    -config <path>    Path to configuration file
+    -listen <addr>    Proxy listen address (default: from config or localhost:9090)
+    -api <addr>       API/WebSocket server address (default: localhost:9091)
+    -version          Show version information
+    -show-ca          Show CA certificate path and trust instructions
+    -help             Show this help message
+
+EXAMPLES:
+    langley                     Start with default config
+    langley -listen :8080       Start proxy on port 8080
+    langley -config ./my.yaml   Use custom config file
+    langley -show-ca            Show how to trust the CA certificate
+
+CONFIGURATION:
+    Config file locations (in order of precedence):
+    - Path specified with -config
+    - %%APPDATA%%\langley\langley.yaml (Windows)
+    - ~/.config/langley/langley.yaml (Unix)
+
+    Environment variables can override config:
+    - LANGLEY_PROXY_LISTEN       Proxy listen address
+    - LANGLEY_AUTH_TOKEN         API authentication token
+    - LANGLEY_PERSISTENCE_DBPATH Database path
+
+DASHBOARD:
+    Access the web dashboard at http://localhost:9091 (or your -api address)
+    You'll need the auth token shown at startup to connect.
+
+For more information, see: https://github.com/anthropics/langley
+`)
 }

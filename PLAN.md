@@ -241,6 +241,13 @@ Use `bd` for issue tracking. Each task becomes a bead when started.
   - Anomalies view with severity indicators and flow links
   - Responsive layout for mobile
 
+**Phase 5: Polish & Ship** - COMPLETE
+- [x] Graceful shutdown (API server, retention goroutine)
+- [x] Retention cleanup (hourly, TTL enforcement)
+- [x] CLI polish (help text, version, proper flags)
+- [x] Documentation (README with setup guide, API reference)
+- [ ] Blog post
+
 **Security Addressed:**
 - [x] langley-9qh: Credential redaction on-write
 - [x] langley-xpi: CA key file permissions (0600)
