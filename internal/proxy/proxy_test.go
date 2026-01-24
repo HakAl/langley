@@ -644,6 +644,82 @@ func TestMITMProxy_BodyTruncation(t *testing.T) {
 	}
 }
 
+// TestMITMProxy_RawBodyStorageOff verifies that RawBodyStorage=false prevents body storage.
+func TestMITMProxy_RawBodyStorageOff(t *testing.T) {
+	t.Parallel()
+
+	testBody := "test request body"
+	responseBody := "test response body"
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(responseBody))
+	}))
+	defer upstream.Close()
+
+	cfg := testConfig()
+	logger := testLogger()
+
+	tmpDir := t.TempDir()
+	ca, _ := langleytls.LoadOrCreateCA(tmpDir)
+	certCache := langleytls.NewCertCache(ca, 100)
+
+	// Create redactor with RawBodyStorage=false (the default)
+	redactor, _ := redact.New(&config.RedactionConfig{
+		RawBodyStorage: false, // Explicitly OFF
+	})
+	mockStore := newMockStore()
+
+	var capturedFlow *store.Flow
+	proxy, _ := NewMITMProxy(MITMProxyConfig{
+		Config:    cfg,
+		Logger:    logger,
+		CA:        ca,
+		CertCache: certCache,
+		Redactor:  redactor,
+		Store:     mockStore,
+		OnUpdate: func(flow *store.Flow) {
+			capturedFlow = flow
+		},
+	})
+
+	proxyServer := httptest.NewServer(proxy)
+	defer proxyServer.Close()
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(mustParseURL(t, proxyServer.URL)),
+		},
+	}
+
+	req, _ := http.NewRequest("POST", upstream.URL+"/test", strings.NewReader(testBody))
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// With RawBodyStorage=false, bodies should NOT be stored
+	if capturedFlow == nil {
+		t.Fatal("expected captured flow")
+	}
+	if capturedFlow.RequestBody != nil {
+		t.Errorf("RequestBody should be nil when RawBodyStorage=false, got %q", *capturedFlow.RequestBody)
+	}
+	if capturedFlow.ResponseBody != nil {
+		t.Errorf("ResponseBody should be nil when RawBodyStorage=false, got %q", *capturedFlow.ResponseBody)
+	}
+
+	// Verify that metadata is still captured
+	if capturedFlow.Method != "POST" {
+		t.Errorf("Method = %q, want POST", capturedFlow.Method)
+	}
+	if capturedFlow.StatusCode == nil || *capturedFlow.StatusCode != 200 {
+		t.Error("StatusCode should be 200")
+	}
+}
+
 func TestNewMITMProxy_Validation(t *testing.T) {
 	t.Parallel()
 

@@ -209,7 +209,8 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Redact and store request
 	if p.redactor != nil {
 		flow.RequestHeaders = redact.HeadersToMap(p.redactor.RedactHeaders(r.Header))
-		if len(reqBody) > 0 {
+		// Only store body if RawBodyStorage is enabled (default: OFF for security)
+		if p.redactor.ShouldStoreRawBody() && len(reqBody) > 0 {
 			redacted := p.redactor.RedactBody(string(reqBody))
 			flow.RequestBody = &redacted
 		}
@@ -282,7 +283,8 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Finalize flow
 	if p.redactor != nil {
 		flow.ResponseHeaders = redact.HeadersToMap(p.redactor.RedactHeaders(resp.Header))
-		if respBody.Len() > 0 {
+		// Only store body if RawBodyStorage is enabled (default: OFF for security)
+		if p.redactor.ShouldStoreRawBody() && respBody.Len() > 0 {
 			redacted := p.redactor.RedactBody(respBody.String())
 			flow.ResponseBody = &redacted
 		}
@@ -436,7 +438,8 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 	// Redact and store request
 	if p.redactor != nil {
 		flow.RequestHeaders = redact.HeadersToMap(p.redactor.RedactHeaders(r.Header))
-		if len(reqBody) > 0 {
+		// Only store body if RawBodyStorage is enabled (default: OFF for security)
+		if p.redactor.ShouldStoreRawBody() && len(reqBody) > 0 {
 			redacted := p.redactor.RedactBody(string(reqBody))
 			flow.RequestBody = &redacted
 		}
@@ -532,7 +535,8 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 	// Finalize flow
 	if p.redactor != nil {
 		flow.ResponseHeaders = redact.HeadersToMap(p.redactor.RedactHeaders(resp.Header))
-		if respBody.Len() > 0 {
+		// Only store body if RawBodyStorage is enabled (default: OFF for security)
+		if p.redactor.ShouldStoreRawBody() && respBody.Len() > 0 {
 			redacted := p.redactor.RedactBody(respBody.String())
 			flow.ResponseBody = &redacted
 		}
