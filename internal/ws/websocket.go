@@ -3,6 +3,7 @@ package ws
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -207,16 +208,20 @@ func (h *Hub) ClientCount() int {
 }
 
 // Handler returns an HTTP handler for WebSocket connections.
+// Uses constant-time comparison to prevent timing attacks.
 func (h *Hub) Handler(authToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Authenticate
+		// Authenticate using constant-time comparison
 		token := r.URL.Query().Get("token")
-		if token != authToken {
-			auth := r.Header.Get("Authorization")
-			if auth != "Bearer "+authToken {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
+		tokenMatch := subtle.ConstantTimeCompare([]byte(token), []byte(authToken)) == 1
+
+		auth := r.Header.Get("Authorization")
+		expectedAuth := "Bearer " + authToken
+		authMatch := subtle.ConstantTimeCompare([]byte(auth), []byte(expectedAuth)) == 1
+
+		if !tokenMatch && !authMatch {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
 		}
 
 		conn, err := upgrader.Upgrade(w, r, nil)
