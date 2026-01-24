@@ -18,6 +18,7 @@ import (
 
 	"github.com/anthropics/langley/internal/analytics"
 	"github.com/anthropics/langley/internal/config"
+	"github.com/anthropics/langley/internal/parser"
 	"github.com/anthropics/langley/internal/redact"
 	"github.com/anthropics/langley/internal/store"
 	"github.com/anthropics/langley/internal/task"
@@ -42,6 +43,7 @@ type MITMProxy struct {
 	// Callbacks for real-time updates
 	onFlow   func(*store.Flow)
 	onUpdate func(*store.Flow)
+	onEvent  func(*store.Event)
 }
 
 // MITMProxyConfig holds configuration for creating a MITM proxy.
@@ -55,6 +57,7 @@ type MITMProxyConfig struct {
 	TaskAssigner *task.Assigner
 	OnFlow       func(*store.Flow)
 	OnUpdate     func(*store.Flow)
+	OnEvent      func(*store.Event) // Called for each SSE event parsed
 }
 
 // NewMITMProxy creates a new MITM proxy.
@@ -107,6 +110,7 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 		client:       client,
 		onFlow:       cfg.OnFlow,
 		onUpdate:     cfg.OnUpdate,
+		onEvent:      cfg.OnEvent,
 	}
 
 	// Initialize analytics engine if we have a database connection
@@ -262,10 +266,17 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	var respBody bytes.Buffer
 	maxBody := p.cfg.Persistence.BodyMaxBytes
 	limitedWriter := &limitedBuffer{buf: &respBody, max: maxBody}
-	multiWriter := io.MultiWriter(w, limitedWriter)
 
-	if _, err := io.Copy(multiWriter, resp.Body); err != nil {
-		p.logger.Debug("error copying response", "error", err)
+	// Use SSE parser for event-stream responses
+	if flow.IsSSE {
+		if err := p.streamSSEWithParser(flowID, resp.Body, w, limitedWriter); err != nil {
+			p.logger.Debug("error streaming SSE response", "error", err)
+		}
+	} else {
+		multiWriter := io.MultiWriter(w, limitedWriter)
+		if _, err := io.Copy(multiWriter, resp.Body); err != nil {
+			p.logger.Debug("error copying response", "error", err)
+		}
 	}
 
 	// Finalize flow
@@ -505,10 +516,16 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 		return
 	}
 
-	// Stream body
-	multiWriter := io.MultiWriter(clientConn, limitedWriter)
-	if _, err := io.Copy(multiWriter, resp.Body); err != nil {
-		p.logger.Debug("error streaming response", "error", err)
+	// Stream body - use SSE parser for event-stream responses
+	if flow.IsSSE {
+		if err := p.streamSSEWithParser(flowID, resp.Body, clientConn, limitedWriter); err != nil {
+			p.logger.Debug("error streaming SSE response", "error", err)
+		}
+	} else {
+		multiWriter := io.MultiWriter(clientConn, limitedWriter)
+		if _, err := io.Copy(multiWriter, resp.Body); err != nil {
+			p.logger.Debug("error streaming response", "error", err)
+		}
 	}
 	resp.Body.Close()
 
@@ -719,6 +736,53 @@ func (p *MITMProxy) extractJSONUsage(flow *store.Flow, body string) {
 			flow.CacheReadTokens = &c
 		}
 	}
+}
+
+// streamSSEWithParser streams SSE response body while parsing events.
+// It writes to the client, captures to buffer, and emits parsed events.
+func (p *MITMProxy) streamSSEWithParser(flowID string, reader io.Reader, client io.Writer, capture *limitedBuffer) error {
+	// Create a pipe to tee the data
+	pr, pw := io.Pipe()
+
+	// Create event channel
+	eventsCh := make(chan *store.Event, 100)
+
+	// Start SSE parser in goroutine
+	sseParser := parser.NewSSEParserWithLogger(flowID, eventsCh, p.logger)
+	var parseErr error
+	go func() {
+		parseErr = sseParser.Parse(pr)
+		close(eventsCh)
+	}()
+
+	// Create a multi-writer: client + capture + parser pipe
+	mw := io.MultiWriter(client, capture, pw)
+
+	// Copy data through the multi-writer
+	_, err := io.Copy(mw, reader)
+	pw.Close() // Signal parser that we're done
+
+	// Process events as they come in
+	for event := range eventsCh {
+		// Persist event
+		if p.store != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if saveErr := p.store.SaveEvent(ctx, event); saveErr != nil {
+				p.logger.Error("failed to save SSE event", "flow_id", flowID, "error", saveErr)
+			}
+			cancel()
+		}
+
+		// Broadcast event via callback
+		if p.onEvent != nil {
+			p.onEvent(event)
+		}
+	}
+
+	if err != nil {
+		return err
+	}
+	return parseErr
 }
 
 // limitedBuffer is a writer that stops writing after max bytes.

@@ -42,9 +42,28 @@ func New(cfg *config.RedactionConfig) (*Redactor, error) {
 		r.headerPatterns = append(r.headerPatterns, re)
 	}
 
-	// API key pattern: sk-..., key-..., etc.
-	// Matches common API key formats
-	r.apiKeyPattern = regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9_-]{20,}|key-[a-zA-Z0-9_-]{20,}|api[_-]?key[=:]["']?[a-zA-Z0-9_-]{20,})`)
+	// API key patterns for multiple providers
+	// Handles both plain and JSON-escaped strings (\" instead of ")
+	// Patterns:
+	// - Anthropic: sk-ant-... (Claude API)
+	// - OpenAI: sk-... (OpenAI API)
+	// - AWS: AKIA... (AWS access key)
+	// - Google: AIza... (Google AI/Firebase)
+	// - Generic: key-..., api_key=...
+	r.apiKeyPattern = regexp.MustCompile(`(?i)(` +
+		// Anthropic keys - sk-ant-api03-...
+		`sk-ant-[a-zA-Z0-9_-]{20,}|` +
+		// OpenAI keys - sk-...
+		`sk-[a-zA-Z0-9_-]{20,}|` +
+		// AWS access keys - AKIA followed by 16 alphanumeric
+		`AKIA[0-9A-Z]{16}|` +
+		// Google API keys - AIza followed by 35 chars
+		`AIza[0-9A-Za-z_-]{35}|` +
+		// Generic key patterns (with optional JSON escaping)
+		`key-[a-zA-Z0-9_-]{20,}|` +
+		// api_key/api-key in JSON with optional escaped quotes
+		`api[_-]?key[=:]\\?"?[a-zA-Z0-9_-]{20,}` +
+		`)`)
 
 	// Base64 image pattern (data URLs and raw base64 in JSON)
 	r.base64Pattern = regexp.MustCompile(`(?i)(data:image/[^;]+;base64,)[A-Za-z0-9+/=]{100,}|"(source|data)":\s*\{\s*"type":\s*"base64"[^}]*"data":\s*"[A-Za-z0-9+/=]{100,}"`)
@@ -102,13 +121,22 @@ func (r *Redactor) RedactBody(body string) string {
 	// Redact API keys
 	if r.cfg.RedactAPIKeys {
 		result = r.apiKeyPattern.ReplaceAllStringFunc(result, func(match string) string {
-			// Keep the prefix for context, redact the actual key
-			if strings.Contains(strings.ToLower(match), "sk-") {
+			matchLower := strings.ToLower(match)
+
+			// Keep provider prefix for debugging context
+			switch {
+			case strings.HasPrefix(matchLower, "sk-ant-"):
+				return "sk-ant-" + RedactedValue
+			case strings.HasPrefix(matchLower, "sk-"):
 				return "sk-" + RedactedValue
-			}
-			if strings.Contains(strings.ToLower(match), "key-") {
+			case strings.HasPrefix(match, "AKIA"):
+				return "AKIA" + RedactedValue
+			case strings.HasPrefix(match, "AIza"):
+				return "AIza" + RedactedValue
+			case strings.HasPrefix(matchLower, "key-"):
 				return "key-" + RedactedValue
 			}
+
 			// For api_key=... patterns, keep the structure
 			parts := strings.SplitN(match, "=", 2)
 			if len(parts) == 2 {

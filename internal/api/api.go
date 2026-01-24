@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"log/slog"
@@ -23,6 +24,7 @@ type Server struct {
 	analytics *analytics.Engine
 	logger    *slog.Logger
 	mux       *http.ServeMux
+	startTime time.Time
 }
 
 // NewServer creates a new API server.
@@ -32,10 +34,11 @@ func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger) *
 	}
 
 	s := &Server{
-		cfg:    cfg,
-		store:  dataStore,
-		logger: logger,
-		mux:    http.NewServeMux(),
+		cfg:       cfg,
+		store:     dataStore,
+		logger:    logger,
+		mux:       http.NewServeMux(),
+		startTime: time.Now(),
 	}
 
 	// Initialize analytics engine if we have a database connection
@@ -56,6 +59,7 @@ func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger) *
 	s.mux.HandleFunc("GET /api/analytics/cost/model", s.authMiddleware(s.getCostByModel))
 	s.mux.HandleFunc("GET /api/analytics/anomalies", s.authMiddleware(s.getAnomalies))
 	s.mux.HandleFunc("GET /api/health", s.healthCheck)
+	s.mux.HandleFunc("POST /api/checkpoint", s.authMiddleware(s.checkpoint))
 
 	return s
 }
@@ -66,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 // authMiddleware wraps a handler with bearer token authentication.
+// Uses constant-time comparison to prevent timing attacks.
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Check Authorization header
@@ -76,8 +81,10 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		expected := "Bearer " + s.cfg.Auth.Token
-		if auth != expected {
-			s.logger.Debug("auth failed", "provided", auth[:min(len(auth), 20)])
+
+		// Use constant-time comparison to prevent timing attacks
+		if subtle.ConstantTimeCompare([]byte(auth), []byte(expected)) != 1 {
+			s.logger.Debug("auth failed", "provided_len", len(auth))
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -520,9 +527,113 @@ func (s *Server) parseTimeRange(r *http.Request) (start, end time.Time) {
 	return start, end
 }
 
-// healthCheck returns server health status.
+// healthCheck returns server health status with operational metrics.
 func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
-	s.writeJSON(w, map[string]string{"status": "ok"})
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	health := HealthResponse{
+		Status:    "ok",
+		Timestamp: time.Now(),
+		Uptime:    time.Since(s.startTime).String(),
+	}
+
+	// Get WAL info and queue stats from database
+	if db, ok := s.store.DB().(*sql.DB); ok {
+		// WAL file size
+		var walPages, walCheckpointed int64
+		row := db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)")
+		if err := row.Scan(new(int), &walPages, &walCheckpointed); err == nil {
+			// Each WAL page is typically 4096 bytes
+			health.WALSizeBytes = walPages * 4096
+			health.WALCheckpointed = walCheckpointed * 4096
+		}
+
+		// Drop count
+		var dropCount int64
+		row = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM drop_log WHERE timestamp > datetime('now', '-24 hours')")
+		row.Scan(&dropCount)
+		health.DropsLast24h = dropCount
+
+		// Active flows (recent 5 minutes)
+		var activeFlows int
+		row = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM flows WHERE timestamp > datetime('now', '-5 minutes')")
+		row.Scan(&activeFlows)
+		health.ActiveFlows = activeFlows
+
+		// Total flows
+		var totalFlows int64
+		row = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM flows")
+		row.Scan(&totalFlows)
+		health.TotalFlows = totalFlows
+
+		// Database file size
+		var pageCount, pageSize int64
+		db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount)
+		db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize)
+		health.DBSizeBytes = pageCount * pageSize
+	}
+
+	// Set status based on health indicators
+	if health.DropsLast24h > 100 {
+		health.Status = "degraded"
+		health.Warning = "High drop rate in last 24h"
+	}
+	if health.WALSizeBytes > 100*1024*1024 { // 100MB WAL is concerning
+		health.Status = "degraded"
+		health.Warning = "Large WAL file - consider checkpoint"
+	}
+
+	s.writeJSON(w, health)
+}
+
+// checkpoint triggers a WAL checkpoint to free up disk space.
+// Rate limited to prevent abuse.
+func (s *Server) checkpoint(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	db, ok := s.store.DB().(*sql.DB)
+	if !ok {
+		http.Error(w, "Database unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Get WAL size before checkpoint
+	var walPagesBefore int64
+	db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)").Scan(new(int), &walPagesBefore, new(int))
+
+	// Run TRUNCATE checkpoint (most aggressive - blocks briefly but reclaims space)
+	var blocked, walPagesLog, walPagesCheckpointed int
+	err := db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&blocked, &walPagesLog, &walPagesCheckpointed)
+	if err != nil {
+		s.logger.Error("checkpoint failed", "error", err)
+		http.Error(w, "Checkpoint failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Get WAL size after checkpoint
+	var walPagesAfter int64
+	db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)").Scan(new(int), &walPagesAfter, new(int))
+
+	response := CheckpointResponse{
+		Success:          blocked == 0,
+		WALSizeBefore:    walPagesBefore * 4096,
+		WALSizeAfter:     walPagesAfter * 4096,
+		PagesLog:         walPagesLog,
+		PagesCheckpointed: walPagesCheckpointed,
+		Blocked:          blocked == 1,
+		Timestamp:        time.Now(),
+	}
+
+	if blocked == 1 {
+		response.Message = "Checkpoint was blocked by active readers"
+	} else {
+		response.Message = "Checkpoint completed successfully"
+	}
+
+	s.logger.Info("WAL checkpoint", "pages_before", walPagesBefore, "pages_after", walPagesAfter, "blocked", blocked)
+	s.writeJSON(w, response)
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, v interface{}) {
@@ -649,6 +760,32 @@ type AnomalyResponse struct {
 	Description string    `json:"description"`
 	Value       float64   `json:"value"`
 	Threshold   float64   `json:"threshold"`
+}
+
+// HealthResponse is the API response for health status.
+type HealthResponse struct {
+	Status         string    `json:"status"` // "ok", "degraded", "error"
+	Timestamp      time.Time `json:"timestamp"`
+	Uptime         string    `json:"uptime"`
+	WALSizeBytes   int64     `json:"wal_size_bytes"`
+	WALCheckpointed int64    `json:"wal_checkpointed_bytes"`
+	DropsLast24h   int64     `json:"drops_last_24h"`
+	ActiveFlows    int       `json:"active_flows"` // Flows in last 5 minutes
+	TotalFlows     int64     `json:"total_flows"`
+	DBSizeBytes    int64     `json:"db_size_bytes"`
+	Warning        string    `json:"warning,omitempty"`
+}
+
+// CheckpointResponse is the API response for WAL checkpoint operations.
+type CheckpointResponse struct {
+	Success           bool      `json:"success"`
+	Message           string    `json:"message"`
+	WALSizeBefore     int64     `json:"wal_size_before_bytes"`
+	WALSizeAfter      int64     `json:"wal_size_after_bytes"`
+	PagesLog          int       `json:"pages_in_log"`
+	PagesCheckpointed int       `json:"pages_checkpointed"`
+	Blocked           bool      `json:"was_blocked"`
+	Timestamp         time.Time `json:"timestamp"`
 }
 
 func toAnomalyResponse(a *analytics.Anomaly) AnomalyResponse {

@@ -30,12 +30,25 @@ var EventPriority = map[string]string{
 	"content_block_delta": queue.PriorityLow,
 }
 
+// SSE parser limits to prevent resource exhaustion
+const (
+	maxLineSize       = 1024 * 1024       // 1MB max per line
+	maxEventDataSize  = 2 * 1024 * 1024   // 2MB max accumulated data per event
+	maxEventsPerFlow  = 10000             // 10K events per flow
+)
+
 // SSEParser parses Server-Sent Events streams.
 type SSEParser struct {
-	flowID    string
-	sequence  int
-	eventsCh  chan *store.Event
-	doneCh    chan struct{}
+	flowID       string
+	sequence     int
+	eventsCh     chan *store.Event
+	doneCh       chan struct{}
+	logger       Logger
+}
+
+// Logger interface for SSE parser (allows injection for testing)
+type Logger interface {
+	Warn(msg string, args ...any)
 }
 
 // NewSSEParser creates a new SSE parser for a flow.
@@ -45,16 +58,34 @@ func NewSSEParser(flowID string, eventsCh chan *store.Event) *SSEParser {
 		sequence: 0,
 		eventsCh: eventsCh,
 		doneCh:   make(chan struct{}),
+		logger:   nil, // No logging by default
+	}
+}
+
+// NewSSEParserWithLogger creates a new SSE parser with logging support.
+func NewSSEParserWithLogger(flowID string, eventsCh chan *store.Event, logger Logger) *SSEParser {
+	return &SSEParser{
+		flowID:   flowID,
+		sequence: 0,
+		eventsCh: eventsCh,
+		doneCh:   make(chan struct{}),
+		logger:   logger,
 	}
 }
 
 // Parse reads SSE events from a reader and sends them to the events channel.
 // Returns when the reader is exhausted or an error occurs.
+// Enforces limits: 1MB per line, 2MB per event, 10K events per flow.
 func (p *SSEParser) Parse(r io.Reader) error {
 	scanner := bufio.NewScanner(r)
+	// Set buffer limits: 256KB initial, 1MB max per line
+	buf := make([]byte, 0, 256*1024)
+	scanner.Buffer(buf, maxLineSize)
 
 	var eventType string
 	var dataLines []string
+	var accumulatedSize int
+	var eventCount int
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -63,17 +94,37 @@ func (p *SSEParser) Parse(r io.Reader) error {
 			// Empty line = end of event
 			if eventType != "" && len(dataLines) > 0 {
 				data := strings.Join(dataLines, "\n")
-				p.emitEvent(eventType, data)
+				p.emitEvent(eventType, data, accumulatedSize > maxEventDataSize)
+				eventCount++
+
+				// Check event count limit
+				if eventCount >= maxEventsPerFlow {
+					if p.logger != nil {
+						p.logger.Warn("SSE event count limit reached", "flow_id", p.flowID, "limit", maxEventsPerFlow)
+					}
+					break
+				}
 			}
 			eventType = ""
 			dataLines = nil
+			accumulatedSize = 0
 			continue
 		}
 
 		if strings.HasPrefix(line, "event:") {
 			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		} else if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimPrefix(line, "data:"))
+			dataLine := strings.TrimPrefix(line, "data:")
+			// Only accumulate up to the limit, but track total size
+			if accumulatedSize < maxEventDataSize {
+				dataLines = append(dataLines, dataLine)
+			}
+			accumulatedSize += len(dataLine) + 1 // +1 for newline
+
+			// Log warning when approaching limit
+			if accumulatedSize > maxEventDataSize && p.logger != nil {
+				p.logger.Warn("SSE event exceeds size limit, truncating", "flow_id", p.flowID, "size", accumulatedSize, "limit", maxEventDataSize)
+			}
 		} else if strings.HasPrefix(line, ":") {
 			// Comment, ignore
 			continue
@@ -83,7 +134,7 @@ func (p *SSEParser) Parse(r io.Reader) error {
 	// Handle final event if no trailing newline
 	if eventType != "" && len(dataLines) > 0 {
 		data := strings.Join(dataLines, "\n")
-		p.emitEvent(eventType, data)
+		p.emitEvent(eventType, data, accumulatedSize > maxEventDataSize)
 	}
 
 	close(p.doneCh)
@@ -91,7 +142,7 @@ func (p *SSEParser) Parse(r io.Reader) error {
 }
 
 // emitEvent creates and sends an event.
-func (p *SSEParser) emitEvent(eventType, data string) {
+func (p *SSEParser) emitEvent(eventType, data string, truncated bool) {
 	p.sequence++
 
 	// Parse JSON data
@@ -99,6 +150,11 @@ func (p *SSEParser) emitEvent(eventType, data string) {
 	if err := json.Unmarshal([]byte(data), &eventData); err != nil {
 		// Store raw data if not valid JSON
 		eventData = map[string]interface{}{"raw": data}
+	}
+
+	// Mark truncated events
+	if truncated {
+		eventData["_truncated"] = true
 	}
 
 	// Determine priority

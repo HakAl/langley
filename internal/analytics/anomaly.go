@@ -287,5 +287,78 @@ func (e *Engine) ListRecentAnomalies(ctx context.Context, since time.Time, thres
 		allAnomalies = append(allAnomalies, rapidRepeats...)
 	}
 
+	// Check drop_log for recent drops
+	dropAnomalies, err := e.getDropLogAnomalies(ctx, since)
+	if err == nil {
+		allAnomalies = append(allAnomalies, dropAnomalies...)
+	}
+
 	return allAnomalies, nil
+}
+
+// getDropLogAnomalies surfaces recent dropped events from the drop_log table.
+func (e *Engine) getDropLogAnomalies(ctx context.Context, since time.Time) ([]*Anomaly, error) {
+	// Aggregate drops by flow and priority
+	rows, err := e.db.QueryContext(ctx, `
+		SELECT
+			flow_id,
+			priority,
+			COUNT(*) as drop_count,
+			MIN(timestamp) as first_drop,
+			MAX(timestamp) as last_drop,
+			GROUP_CONCAT(DISTINCT reason) as reasons
+		FROM drop_log
+		WHERE timestamp >= ?
+		GROUP BY flow_id, priority
+		ORDER BY drop_count DESC
+		LIMIT 50
+	`, since.Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var anomalies []*Anomaly
+	for rows.Next() {
+		var flowID *string
+		var priority string
+		var dropCount int
+		var firstDrop, lastDrop, reasons string
+
+		if err := rows.Scan(&flowID, &priority, &dropCount, &firstDrop, &lastDrop, &reasons); err != nil {
+			continue
+		}
+
+		timestamp, _ := time.Parse(time.RFC3339Nano, firstDrop)
+
+		// Determine severity based on priority of dropped events
+		severity := "info"
+		if priority == "high" {
+			severity = "critical"
+		} else if priority == "medium" {
+			severity = "warning"
+		}
+
+		desc := "Dropped " + priority + " priority events"
+		if reasons != "" {
+			desc += ": " + reasons
+		}
+
+		fid := ""
+		if flowID != nil {
+			fid = *flowID
+		}
+
+		anomalies = append(anomalies, &Anomaly{
+			Type:        AnomalyDroppedEvents,
+			FlowID:      fid,
+			Timestamp:   timestamp,
+			Severity:    severity,
+			Description: desc,
+			Value:       float64(dropCount),
+			Threshold:   0, // Any drop is notable
+		})
+	}
+
+	return anomalies, rows.Err()
 }

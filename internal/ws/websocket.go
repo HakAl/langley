@@ -119,17 +119,31 @@ func (h *Hub) Run(ctx context.Context) {
 				continue
 			}
 
+			// Collect clients to remove under read lock (no mutation)
 			h.mu.RLock()
+			var toRemove []*Client
 			for client := range h.clients {
 				select {
 				case client.send <- data:
 				default:
-					// Client buffer full, disconnect
-					close(client.send)
-					delete(h.clients, client)
+					// Client buffer full, mark for removal
+					toRemove = append(toRemove, client)
 				}
 			}
 			h.mu.RUnlock()
+
+			// Remove slow clients under write lock
+			if len(toRemove) > 0 {
+				h.mu.Lock()
+				for _, client := range toRemove {
+					// Double-check membership to avoid double-close if unregister ran concurrently
+					if _, ok := h.clients[client]; ok {
+						delete(h.clients, client)
+						close(client.send)
+					}
+				}
+				h.mu.Unlock()
+			}
 
 		case <-pingTicker.C:
 			h.Broadcast(&Message{

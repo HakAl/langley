@@ -126,11 +126,19 @@ persistence:
   db_path: "langley.db"
   body_max_bytes: 1048576  # 1MB
 
-# Credential redaction patterns
+# Credential redaction
 redaction:
-  patterns:
-    - "sk-[a-zA-Z0-9]+"      # OpenAI keys
-    - "key-[a-zA-Z0-9]+"     # Generic API keys
+  always_redact_headers:     # Headers always redacted
+    - "authorization"
+    - "x-api-key"
+    - "cookie"
+    - "set-cookie"
+  pattern_redact_headers:    # Regex patterns for headers
+    - "^x-.*-token$"
+    - "^x-.*-key$"
+  redact_api_keys: true      # Redact sk-*, AKIA*, AIza* patterns in body
+  redact_base64_images: true # Replace base64 images with placeholders
+  raw_body_storage: false    # Store redacted bodies (security: keep OFF)
 
 # Data retention
 retention:
@@ -143,9 +151,11 @@ retention:
 
 | Variable | Description |
 |----------|-------------|
-| `LANGLEY_PROXY_LISTEN` | Proxy listen address |
+| `LANGLEY_LISTEN` | Proxy listen address (e.g., `localhost:9090`) |
 | `LANGLEY_AUTH_TOKEN` | API authentication token |
-| `LANGLEY_PERSISTENCE_DBPATH` | Database file path |
+| `LANGLEY_DB_PATH` | Database file path |
+
+**Note**: Relative paths in `LANGLEY_DB_PATH` are relative to the current working directory. When running as a Windows service, use absolute paths or set the service's "Start in" directory.
 
 ## CLI Reference
 

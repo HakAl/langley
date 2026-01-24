@@ -196,6 +196,10 @@ func main() {
 			slog.Debug("flow completed", "id", flow.ID, "status", status, "sse", flow.IsSSE)
 			wsHub.BroadcastFlowComplete(flow)
 		},
+		OnEvent: func(event *store.Event) {
+			slog.Debug("SSE event", "flow_id", event.FlowID, "type", event.EventType, "seq", event.Sequence)
+			wsHub.BroadcastEvent(event)
+		},
 	})
 	if err != nil {
 		slog.Error("failed to create proxy", "error", err)
@@ -277,9 +281,9 @@ CONFIGURATION:
     - ~/.config/langley/langley.yaml (Unix)
 
     Environment variables can override config:
-    - LANGLEY_PROXY_LISTEN       Proxy listen address
+    - LANGLEY_LISTEN             Proxy listen address
     - LANGLEY_AUTH_TOKEN         API authentication token
-    - LANGLEY_PERSISTENCE_DBPATH Database path
+    - LANGLEY_DB_PATH            Database path
 
 DASHBOARD:
     Access the web dashboard at http://localhost:9091 (or your -api address)
