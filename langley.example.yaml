@@ -1,0 +1,45 @@
+# Langley Configuration Example
+# Copy to ~/.config/langley/config.yaml (Linux/Mac) or %APPDATA%\langley\config.yaml (Windows)
+
+proxy:
+  listen: "localhost:9090"
+
+memory:
+  max_flows: 1000
+  max_events_per_flow: 500
+
+persistence:
+  # db_path: defaults to config dir
+  body_max_bytes: 1048576  # 1MB
+  event_batch_size: 50
+  event_batch_timeout_ms: 1000
+  queue_max_size: 10000
+
+analytics:
+  anomaly_context_tokens: 100000
+  anomaly_tool_delay_ms: 30000
+  anomaly_rapid_calls_window_s: 10
+  anomaly_rapid_calls_threshold: 5
+
+retention:
+  flows_ttl_days: 30
+  events_ttl_days: 7
+  bodies_ttl_days: 3
+  drop_log_ttl_days: 7
+
+redaction:
+  always_redact_headers:
+    - authorization
+    - x-api-key
+    - cookie
+    - set-cookie
+  pattern_redact_headers:
+    - "^x-.*-token$"
+    - "^x-.*-key$"
+  redact_api_keys: true
+  redact_base64_images: true
+  raw_body_storage: false  # SECURITY: Keep this OFF unless you need forensic data
+
+auth:
+  # token: auto-generated on first run if not set
+  # Can also set via LANGLEY_AUTH_TOKEN environment variable

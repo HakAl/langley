@@ -1,0 +1,36 @@
+# Claude
+.claude
+
+# Go binaries (root only)
+/langley
+/langley.exe
+*.test
+*.test.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (contains secrets)
+config.yaml
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Node (for frontend)
+node_modules/
+web/dist/
+
+# Certs (generated)
+certs/
+
+# Task file
+team_task.md
