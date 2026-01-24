@@ -109,6 +109,7 @@ func DefaultConfig() *Config {
 			AlwaysRedactHeaders: []string{
 				"authorization",
 				"x-api-key",
+				"x-amz-security-token", // AWS session tokens
 				"cookie",
 				"set-cookie",
 			},

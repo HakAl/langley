@@ -442,6 +442,25 @@ func TestRedactMixedContent(t *testing.T) {
 	}
 }
 
+// TestRedactInputSizeLimit verifies large bodies skip redaction.
+func TestRedactInputSizeLimit(t *testing.T) {
+	r, _ := New(testConfig())
+
+	// Create body just under the limit - should be redacted
+	underLimit := strings.Repeat("x", MaxRedactionInputSize-100) + "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"
+	result := r.RedactBody(underLimit)
+	if strings.Contains(result, "abcdefghijklmnopqrstuvwxyz") {
+		t.Error("body under limit should have keys redacted")
+	}
+
+	// Create body over the limit - should skip redaction
+	overLimit := strings.Repeat("x", MaxRedactionInputSize+100) + "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"
+	result = r.RedactBody(overLimit)
+	if result != overLimit {
+		t.Error("body over limit should be returned as-is")
+	}
+}
+
 // Benchmark for performance verification (Phase 2.0.8 requirement)
 func BenchmarkRedactBody1MB(b *testing.B) {
 	r, _ := New(testConfig())

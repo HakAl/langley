@@ -16,6 +16,11 @@ const (
 
 	// RedactedImageValue is the replacement for redacted base64 images.
 	RedactedImageValue = "[IMAGE base64 redacted]"
+
+	// MaxRedactionInputSize is the maximum body size to attempt redaction on.
+	// Bodies larger than this are returned as-is to avoid regex performance issues.
+	// Security note: Very large bodies may contain secrets but regex on them is expensive.
+	MaxRedactionInputSize = 1024 * 1024 // 1MB
 )
 
 // Redactor handles credential redaction.
@@ -115,7 +120,14 @@ func (r *Redactor) shouldRedactHeader(name string) bool {
 
 // RedactBody redacts sensitive content in a body string.
 // Returns the redacted body.
+// Bodies larger than MaxRedactionInputSize (1MB) are returned as-is
+// to avoid regex performance issues on very large payloads.
 func (r *Redactor) RedactBody(body string) string {
+	// Skip redaction for very large bodies to avoid performance issues
+	if len(body) > MaxRedactionInputSize {
+		return body
+	}
+
 	result := body
 
 	// Redact API keys
