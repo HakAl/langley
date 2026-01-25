@@ -12,8 +12,7 @@ func NewRegistry() *Registry {
 			&Anthropic{},
 			&OpenAI{},
 			&Bedrock{},
-			// Add new providers here:
-			// &Gemini{},
+			&Gemini{},
 		},
 	}
 }

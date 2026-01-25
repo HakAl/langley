@@ -15,6 +15,7 @@ func TestRegistry_Detect(t *testing.T) {
 		{"claude.ai", "anthropic"},
 		{"api.openai.com", "openai"},
 		{"bedrock-runtime.us-east-1.amazonaws.com", "bedrock"},
+		{"generativelanguage.googleapis.com", "gemini"},
 		{"example.com", ""},
 	}
 
@@ -46,6 +47,7 @@ func TestRegistry_Get(t *testing.T) {
 		{"anthropic", false},
 		{"openai", false},
 		{"bedrock", false},
+		{"gemini", false},
 		{"unknown", true},
 	}
 
