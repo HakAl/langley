@@ -987,3 +987,33 @@ kbd {
   min-width: 1.5rem;
   text-align: center;
 }
+
+/* Export confirmation modal */
+.export-modal {
+  max-width: 360px;
+}
+
+.export-confirm-body {
+  padding: 1.25rem;
+}
+
+.export-confirm-body p {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.export-confirm-body p.warning {
+  margin-top: 0.75rem;
+  color: var(--warning);
+  font-size: 0.8125rem;
+}
+
+.export-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-tertiary);
+}

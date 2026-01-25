@@ -125,6 +125,7 @@ function App() {
   // Keyboard navigation
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [showHelp, setShowHelp] = useState(false)
+  const [exportConfig, setExportConfig] = useState<{format: string, rowCount: number} | null>(null)
   const hostFilterRef = useRef<HTMLInputElement>(null)
 
   // Filters
@@ -277,7 +278,12 @@ function App() {
     if (data) setSelectedFlow(data)
   }, [apiFetch])
 
-  const handleExport = useCallback(async (format: string) => {
+  // startExport is defined after filteredFlows below
+
+  const confirmExport = useCallback(async () => {
+    if (!exportConfig) return
+    const { format } = exportConfig
+
     // Build export URL with current filters
     const params = new URLSearchParams()
     params.set('format', format)
@@ -307,8 +313,10 @@ function App() {
       URL.revokeObjectURL(url)
     } catch (err) {
       console.error('Export failed:', err)
+    } finally {
+      setExportConfig(null)
     }
-  }, [hostFilter, taskFilter, token])
+  }, [exportConfig, hostFilter, taskFilter, token])
 
   // Initial load
   useEffect(() => {
@@ -370,6 +378,12 @@ function App() {
     if (statusFilter === 'error' && flow.status_code && flow.status_code < 400) return false
     return true
   })
+
+  // Export handlers (after filteredFlows is defined)
+  const startExport = useCallback((format: string) => {
+    // Show confirmation with row count
+    setExportConfig({ format, rowCount: filteredFlows.length })
+  }, [filteredFlows.length])
 
   // Get current navigable list based on view
   const getNavigableItems = useCallback(() => {
@@ -532,7 +546,7 @@ function App() {
           <select
             onChange={(e) => {
               if (e.target.value) {
-                handleExport(e.target.value)
+                startExport(e.target.value)
                 e.target.value = '' // Reset after selection
               }
             }}
@@ -984,6 +998,29 @@ function App() {
                 <tr><td><kbd>?</kbd></td><td>Toggle this help</td></tr>
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {exportConfig && (
+        <div className="help-overlay" onClick={() => setExportConfig(null)}>
+          <div className="help-modal export-modal" onClick={e => e.stopPropagation()}>
+            <div className="help-header">
+              <h2>Export Flows</h2>
+              <button className="close-btn" onClick={() => setExportConfig(null)}>×</button>
+            </div>
+            <div className="export-confirm-body">
+              <p>
+                Export <strong>{exportConfig.rowCount}</strong> flow{exportConfig.rowCount !== 1 ? 's' : ''} as <strong>{exportConfig.format.toUpperCase()}</strong>
+              </p>
+              {exportConfig.format === 'csv' && exportConfig.rowCount > 10000 && (
+                <p className="warning">CSV exports are limited to 10,000 rows.</p>
+              )}
+            </div>
+            <div className="export-confirm-actions">
+              <button className="secondary-btn" onClick={() => setExportConfig(null)}>Cancel</button>
+              <button className="primary-btn" onClick={confirmExport}>Download</button>
+            </div>
           </div>
         </div>
       )}
