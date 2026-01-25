@@ -19,6 +19,7 @@ import (
 	"github.com/anthropics/langley/internal/analytics"
 	"github.com/anthropics/langley/internal/config"
 	"github.com/anthropics/langley/internal/parser"
+	"github.com/anthropics/langley/internal/provider"
 	"github.com/anthropics/langley/internal/redact"
 	"github.com/anthropics/langley/internal/store"
 	"github.com/anthropics/langley/internal/task"
@@ -36,6 +37,7 @@ type MITMProxy struct {
 	store        store.Store
 	analytics    *analytics.Engine
 	taskAssigner *task.Assigner
+	providers    *provider.Registry
 	server       *http.Server
 	client       *http.Client
 	shutdown     sync.WaitGroup
@@ -107,6 +109,7 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 		redactor:     cfg.Redactor,
 		store:        cfg.Store,
 		taskAssigner: cfg.TaskAssigner,
+		providers:    provider.NewRegistry(),
 		client:       client,
 		onFlow:       cfg.OnFlow,
 		onUpdate:     cfg.OnUpdate,
@@ -297,9 +300,9 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	flow.ResponseBodyTruncated = limitedWriter.truncated
 
-	// Detect Claude traffic and extract model
-	if strings.Contains(r.Host, "anthropic") || strings.Contains(r.Host, "claude") {
-		flow.Provider = "anthropic"
+	// Detect provider from host
+	if prov := p.providers.Detect(r.Host); prov != nil {
+		flow.Provider = prov.Name()
 	}
 
 	// Save flow
@@ -451,9 +454,9 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 		}
 	}
 
-	// Detect provider
-	if strings.Contains(host, "anthropic") || strings.Contains(host, "claude") {
-		flow.Provider = "anthropic"
+	// Detect provider from host
+	if prov := p.providers.Detect(host); prov != nil {
+		flow.Provider = prov.Name()
 	}
 
 	// Notify flow started
@@ -574,9 +577,11 @@ func (p *MITMProxy) saveFlow(flow *store.Flow) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Extract token usage and calculate cost for Claude traffic
-	if flow.Provider == "anthropic" && flow.ResponseBody != nil {
-		p.extractUsageAndCost(ctx, flow)
+	// Extract token usage and calculate cost if we have a known provider
+	if flow.ResponseBody != nil {
+		if prov := p.providers.Get(flow.Provider); prov != nil {
+			p.extractUsageAndCost(ctx, flow, prov)
+		}
 	}
 
 	// Set expiration based on retention config
@@ -588,20 +593,30 @@ func (p *MITMProxy) saveFlow(flow *store.Flow) {
 	}
 }
 
-// extractUsageAndCost parses usage data from Claude responses and calculates cost.
-func (p *MITMProxy) extractUsageAndCost(ctx context.Context, flow *store.Flow) {
+// extractUsageAndCost parses usage data from provider responses and calculates cost.
+func (p *MITMProxy) extractUsageAndCost(ctx context.Context, flow *store.Flow, prov provider.Provider) {
 	if flow.ResponseBody == nil {
 		return
 	}
 
-	body := *flow.ResponseBody
-
-	// For SSE responses, parse the event stream
-	if flow.IsSSE {
-		p.extractSSEUsage(flow, body)
-	} else {
-		// For non-streaming responses, parse as JSON
-		p.extractJSONUsage(flow, body)
+	// Use provider to parse usage
+	usage, err := prov.ParseUsage([]byte(*flow.ResponseBody), flow.IsSSE)
+	if err == nil && usage != nil {
+		if usage.Model != "" {
+			flow.Model = &usage.Model
+		}
+		if usage.InputTokens > 0 {
+			flow.InputTokens = &usage.InputTokens
+		}
+		if usage.OutputTokens > 0 {
+			flow.OutputTokens = &usage.OutputTokens
+		}
+		if usage.CacheCreationTokens > 0 {
+			flow.CacheCreationTokens = &usage.CacheCreationTokens
+		}
+		if usage.CacheReadTokens > 0 {
+			flow.CacheReadTokens = &usage.CacheReadTokens
+		}
 	}
 
 	// Calculate cost if we have token counts and analytics engine

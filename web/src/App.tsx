@@ -110,6 +110,9 @@ function App() {
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [idleGapInput, setIdleGapInput] = useState(5)
   const wsRef = useRef<WebSocket | null>(null)
+  const reconnectTimeoutRef = useRef<number | null>(null)
+  const reconnectAttemptsRef = useRef(0)
+  const MAX_RECONNECT_ATTEMPTS = 5
 
   // Filters
   const [hostFilter, setHostFilter] = useState('')
@@ -136,16 +139,32 @@ function App() {
     if (!token) return
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
+    // Clear any pending reconnect timeout
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+
     const ws = new WebSocket(`ws://${window.location.host}/ws?token=${token}`)
 
     ws.onopen = () => {
       setConnected(true)
       setError(null)
+      reconnectAttemptsRef.current = 0 // Reset on successful connection
     }
 
     ws.onclose = () => {
       setConnected(false)
-      setTimeout(() => connect(), 3000)
+      wsRef.current = null
+
+      // Exponential backoff with max attempts
+      if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000)
+        reconnectAttemptsRef.current++
+        reconnectTimeoutRef.current = window.setTimeout(() => connect(), delay)
+      } else {
+        setError('Connection lost. Refresh to reconnect.')
+      }
     }
 
     ws.onerror = () => {
@@ -253,6 +272,11 @@ function App() {
       connect()
     }
     return () => {
+      // Clear pending reconnect timeout
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+        reconnectTimeoutRef.current = null
+      }
       wsRef.current?.close()
     }
   }, [token, fetchFlows, fetchStats, connect])

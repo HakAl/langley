@@ -198,7 +198,7 @@ async function authenticate(page: Page) {
 test.describe('Authentication', () => {
   test('shows token input when not authenticated', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByPlaceholder('Enter auth token')).toBeVisible();
+    await expect(page.getByPlaceholder('Enter auth token (langley_...)')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Connect' })).toBeVisible();
   });
 
@@ -206,7 +206,7 @@ test.describe('Authentication', () => {
     await setupMocks(page);
     await page.goto('/');
 
-    await page.getByPlaceholder('Enter auth token').fill('my-test-token');
+    await page.getByPlaceholder('Enter auth token (langley_...)').fill('my-test-token');
     await page.getByRole('button', { name: 'Connect' }).click();
 
     const token = await page.evaluate(() => localStorage.getItem('langley_token'));
@@ -218,7 +218,7 @@ test.describe('Authentication', () => {
     await page.goto('/');
     await authenticate(page);
 
-    await expect(page.getByPlaceholder('Enter auth token')).not.toBeVisible();
+    await expect(page.getByPlaceholder('Enter auth token (langley_...)')).not.toBeVisible();
   });
 });
 
