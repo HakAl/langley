@@ -11,8 +11,8 @@ func NewRegistry() *Registry {
 		providers: []Provider{
 			&Anthropic{},
 			&OpenAI{},
+			&Bedrock{},
 			// Add new providers here:
-			// &Bedrock{},
 			// &Gemini{},
 		},
 	}
