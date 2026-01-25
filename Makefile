@@ -1,7 +1,7 @@
 # Langley Makefile
-# Requires: Go 1.21+, Node 18+, Git Bash (Windows)
+# Requires: Go 1.21+, Node 18+
 
-.PHONY: all build run dev test clean help install-deps lint check
+.PHONY: all build run dev test clean help install-deps lint check stop stop-frontend stop-backend
 
 # Default target
 all: build
@@ -44,7 +44,15 @@ dev-backend-debug:
 	go run ./cmd/langley -debug
 
 dev-frontend: ## Run frontend dev server
-	cd web && npx vite
+	cd web && npm run dev
+
+stop: stop-frontend stop-backend ## Kill all dev processes (Windows: after Ctrl+C)
+
+stop-frontend: ## Kill orphaned vite process
+	cd web && npm stop
+
+stop-backend: ## Kill orphaned langley process
+	npx --yes kill-port 9090
 
 run: build ## Build and run production binary
 	./langley.exe
