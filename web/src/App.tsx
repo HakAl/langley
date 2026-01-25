@@ -102,8 +102,6 @@ const getInitialTheme = (): 'dark' | 'light' => {
 
 function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>(getInitialTheme)
-  const [token, setToken] = useState(() => localStorage.getItem('langley_token') || '')
-  const [tokenInput, setTokenInput] = useState(token)
   const [flows, setFlows] = useState<Flow[]>([])
   const [selectedFlow, setSelectedFlow] = useState<Flow | null>(null)
   const [connected, setConnected] = useState(false)
@@ -133,24 +131,24 @@ function App() {
   const [taskFilter, setTaskFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'error'>('all')
 
-  // API helper
+  // API helper - uses HTTP-only cookie for auth (auto-set by server)
   const apiFetch = useCallback(async (path: string) => {
-    if (!token) return null
     try {
       const res = await fetch(path, {
-        headers: { 'Authorization': `Bearer ${token}` }
+        credentials: 'include' // Send cookies
       })
       if (res.ok) return res.json()
-      if (res.status === 401) setError('Invalid token')
+      if (res.status === 401 || res.status === 403) {
+        setError('Authentication failed - ensure you are accessing from localhost')
+      }
       return null
     } catch {
       return null
     }
-  }, [token])
+  }, [])
 
-  // WebSocket connection
+  // WebSocket connection - uses HTTP-only cookie for auth (browser sends automatically)
   const connect = useCallback(() => {
-    if (!token) return
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
     // Clear any pending reconnect timeout
@@ -159,7 +157,8 @@ function App() {
       reconnectTimeoutRef.current = null
     }
 
-    const ws = new WebSocket(`ws://${window.location.host}/ws?token=${token}`)
+    // Browser automatically sends cookies for same-origin WebSocket connections
+    const ws = new WebSocket(`ws://${window.location.host}/ws`)
 
     ws.onopen = () => {
       setConnected(true)
@@ -210,7 +209,7 @@ function App() {
     }
 
     wsRef.current = ws
-  }, [token])
+  }, [])
 
   // Fetch data
   const fetchFlows = useCallback(async () => {
@@ -249,15 +248,12 @@ function App() {
   }, [apiFetch])
 
   const updateSettings = useCallback(async (newSettings: Partial<Settings>) => {
-    if (!token) return false
     setSettingsSaving(true)
     try {
       const res = await fetch('/api/settings', {
         method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(newSettings)
       })
       if (res.ok) {
@@ -271,7 +267,7 @@ function App() {
     } finally {
       setSettingsSaving(false)
     }
-  }, [token])
+  }, [])
 
   const fetchFlowDetail = useCallback(async (id: string) => {
     const data = await apiFetch(`/api/flows/${id}`)
@@ -292,7 +288,7 @@ function App() {
 
     try {
       const response = await fetch(`/api/flows/export?${params.toString()}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+        credentials: 'include'
       })
       if (!response.ok) throw new Error('Export failed')
 
@@ -316,15 +312,13 @@ function App() {
     } finally {
       setExportConfig(null)
     }
-  }, [exportConfig, hostFilter, taskFilter, token])
+  }, [exportConfig, hostFilter, taskFilter])
 
-  // Initial load
+  // Initial load - auto-connect on mount (cookie auth happens automatically)
   useEffect(() => {
-    if (token) {
-      fetchFlows()
-      fetchStats()
-      connect()
-    }
+    fetchFlows()
+    fetchStats()
+    connect()
     return () => {
       // Clear pending reconnect timeout
       if (reconnectTimeoutRef.current) {
@@ -333,11 +327,10 @@ function App() {
       }
       wsRef.current?.close()
     }
-  }, [token, fetchFlows, fetchStats, connect])
+  }, [fetchFlows, fetchStats, connect])
 
   // Load view-specific data
   useEffect(() => {
-    if (!token) return
     if (view === 'analytics') {
       fetchStats()
       fetchDailyCosts()
@@ -350,12 +343,7 @@ function App() {
     } else if (view === 'settings') {
       fetchSettings()
     }
-  }, [view, token, fetchStats, fetchDailyCosts, fetchTasks, fetchTools, fetchAnomalies, fetchSettings])
-
-  const handleSetToken = () => {
-    localStorage.setItem('langley_token', tokenInput)
-    setToken(tokenInput)
-  }
+  }, [view, fetchStats, fetchDailyCosts, fetchTasks, fetchTools, fetchAnomalies, fetchSettings])
 
   // Update idle gap input when settings load
   useEffect(() => {
@@ -959,19 +947,6 @@ function App() {
       </header>
 
       <div className="container">
-        {!token && (
-          <div className="token-input">
-            <input
-              type="text"
-              placeholder="Enter auth token (langley_...)"
-              value={tokenInput}
-              onChange={(e) => setTokenInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSetToken()}
-            />
-            <button onClick={handleSetToken}>Connect</button>
-          </div>
-        )}
-
         {error && <div className="error-banner">{error}</div>}
 
         <div className="main-content">

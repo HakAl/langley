@@ -17,17 +17,24 @@ import (
 	"github.com/anthropics/langley/internal/store"
 )
 
+// sessionCookieName must match the cookie name used in api package.
+const sessionCookieName = "langley_session"
+
+// isLocalhostOrigin checks if the Origin header indicates a localhost request.
+func isLocalhostOrigin(origin string) bool {
+	return strings.HasPrefix(origin, "http://localhost") ||
+		strings.HasPrefix(origin, "http://127.0.0.1") ||
+		strings.HasPrefix(origin, "https://localhost") ||
+		strings.HasPrefix(origin, "https://127.0.0.1")
+}
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		// Only allow localhost origins (addresses langley-yni)
+		// Only allow localhost origins
 		origin := r.Header.Get("Origin")
-		return origin == "" ||
-			strings.HasPrefix(origin, "http://localhost") ||
-			strings.HasPrefix(origin, "http://127.0.0.1") ||
-			strings.HasPrefix(origin, "https://localhost") ||
-			strings.HasPrefix(origin, "https://127.0.0.1")
+		return origin == "" || isLocalhostOrigin(origin)
 	},
 }
 
@@ -210,26 +217,53 @@ func (h *Hub) ClientCount() int {
 // Handler returns an HTTP handler for WebSocket connections.
 // Uses constant-time comparison to prevent timing attacks.
 // NOTE: Token is read from h.cfg.Auth.Token to support hot-reload.
-// WebSocket connections authenticated at connect time continue working
-// with the token that was valid at connection time (grace period behavior).
+//
+// Authentication modes (checked in order):
+// 1. Session cookie - browser sends automatically
+// 2. Authorization header - for CLI
+// 3. Token query param - for CLI (WebSocket can't set headers easily)
 func (h *Hub) Handler(authToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Read current token from config (supports hot-reload)
-		// Fall back to passed token if config is nil
 		currentToken := authToken
 		if h.cfg != nil {
 			currentToken = h.cfg.Auth.Token
 		}
 
-		// Authenticate using constant-time comparison
-		token := r.URL.Query().Get("token")
-		tokenMatch := subtle.ConstantTimeCompare([]byte(token), []byte(currentToken)) == 1
+		authenticated := false
 
-		auth := r.Header.Get("Authorization")
-		expectedAuth := "Bearer " + currentToken
-		authMatch := subtle.ConstantTimeCompare([]byte(auth), []byte(expectedAuth)) == 1
+		// 1. Check session cookie first
+		cookie, err := r.Cookie(sessionCookieName)
+		if err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(currentToken)) == 1 {
+			authenticated = true
+		}
 
-		if !tokenMatch && !authMatch {
+		// 2. Check Authorization header
+		if !authenticated {
+			auth := r.Header.Get("Authorization")
+			expectedAuth := "Bearer " + currentToken
+			if subtle.ConstantTimeCompare([]byte(auth), []byte(expectedAuth)) == 1 {
+				authenticated = true
+			}
+		}
+
+		// 3. Check token query param (for CLI tools that can't set headers)
+		if !authenticated {
+			token := r.URL.Query().Get("token")
+			if subtle.ConstantTimeCompare([]byte(token), []byte(currentToken)) == 1 {
+				authenticated = true
+			}
+		}
+
+		// Validate Origin if present (security check)
+		origin := r.Header.Get("Origin")
+		if origin != "" && !isLocalhostOrigin(origin) {
+			h.logger.Warn("rejected non-localhost WebSocket origin", "origin", origin)
+			http.Error(w, "Forbidden: non-localhost origin", http.StatusForbidden)
+			return
+		}
+
+		if !authenticated {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}

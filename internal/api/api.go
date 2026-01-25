@@ -104,34 +104,91 @@ func (s *Server) Handler() http.Handler {
 	return s.corsMiddleware(s.rateLimiter.Middleware(s.mux))
 }
 
-// authMiddleware wraps a handler with bearer token authentication.
-// Uses constant-time comparison to prevent timing attacks.
-// SECURITY: Rejects tokens in URL query params - use Authorization header instead.
-// (WebSocket connections use separate handler that allows query params since browsers
-// cannot set custom headers for WebSocket upgrades.)
+// sessionCookieName is the HTTP-only cookie used for browser authentication.
+const sessionCookieName = "langley_session"
+
+// isLocalhostOrigin checks if the Origin header indicates a localhost request.
+func isLocalhostOrigin(origin string) bool {
+	return strings.HasPrefix(origin, "http://localhost") ||
+		strings.HasPrefix(origin, "http://127.0.0.1") ||
+		strings.HasPrefix(origin, "https://localhost") ||
+		strings.HasPrefix(origin, "https://127.0.0.1")
+}
+
+// authMiddleware wraps a handler with authentication.
+//
+// Authentication modes (checked in order):
+// 1. Session cookie - browser sends automatically after first request
+// 2. Authorization header - for CLI/automation (curl, scripts)
+// 3. Localhost Origin - auto-sets cookie for browser's first request
+//
+// SECURITY: Defense in depth - Origin check + cookie + HttpOnly + SameSite=Strict
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// SECURITY: Reject tokens in URL query params (2.2.7)
-		// Tokens in URLs are logged by proxies, browsers, and servers - use header instead.
-		// By the time we see the request, the token is already exposed to intermediate proxies.
+		// SECURITY: Reject tokens in URL query params FIRST
+		// URL tokens are logged by proxies/browsers - always reject regardless of other auth
 		if r.URL.Query().Get("token") != "" {
 			s.logger.Warn("rejected token in URL", "path", r.URL.Path, "remote", r.RemoteAddr)
 			http.Error(w, "Token in URL is not allowed. Use Authorization header instead.", http.StatusBadRequest)
 			return
 		}
 
-		// Check Authorization header
-		auth := r.Header.Get("Authorization")
-		expected := "Bearer " + s.cfg.Auth.Token
-
-		// Use constant-time comparison to prevent timing attacks
-		if subtle.ConstantTimeCompare([]byte(auth), []byte(expected)) != 1 {
-			s.logger.Debug("auth failed", "provided_len", len(auth))
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		// 1. Check session cookie first (works for same-origin browser requests)
+		cookie, err := r.Cookie(sessionCookieName)
+		if err == nil && subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.cfg.Auth.Token)) == 1 {
+			next(w, r)
 			return
 		}
 
-		next(w, r)
+		// 2. Check Authorization header (for CLI/automation)
+		auth := r.Header.Get("Authorization")
+		expected := "Bearer " + s.cfg.Auth.Token
+		if subtle.ConstantTimeCompare([]byte(auth), []byte(expected)) == 1 {
+			next(w, r)
+			return
+		}
+
+		// 3. Check if this is a browser request from localhost (auto-set cookie)
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if !isLocalhostOrigin(origin) {
+				s.logger.Warn("rejected non-localhost origin", "origin", origin, "path", r.URL.Path)
+				http.Error(w, "Forbidden: non-localhost origin", http.StatusForbidden)
+				return
+			}
+			// Localhost origin - set cookie and authenticate
+			http.SetCookie(w, &http.Cookie{
+				Name:     sessionCookieName,
+				Value:    s.cfg.Auth.Token,
+				Path:     "/",
+				HttpOnly: true,
+				Secure:   false,
+				SameSite: http.SameSiteLaxMode, // Lax allows same-site navigation
+			})
+			s.logger.Debug("set session cookie for localhost origin", "remote", r.RemoteAddr)
+			next(w, r)
+			return
+		}
+
+		// 4. Check for Sec-Fetch-Site header (modern browsers send this even without Origin)
+		secFetchSite := r.Header.Get("Sec-Fetch-Site")
+		if secFetchSite == "same-origin" || secFetchSite == "same-site" {
+			// Same-origin browser request without cookie - set one
+			http.SetCookie(w, &http.Cookie{
+				Name:     sessionCookieName,
+				Value:    s.cfg.Auth.Token,
+				Path:     "/",
+				HttpOnly: true,
+				Secure:   false,
+				SameSite: http.SameSiteLaxMode,
+			})
+			s.logger.Debug("set session cookie for same-origin request", "remote", r.RemoteAddr)
+			next(w, r)
+			return
+		}
+
+		s.logger.Debug("auth failed", "has_cookie", err == nil, "has_auth", auth != "", "origin", origin, "sec_fetch", secFetchSite)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
 }
 
@@ -140,17 +197,13 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 
-		// Only allow localhost origins (addresses langley-yni origin validation)
-		if origin != "" {
-			if strings.HasPrefix(origin, "http://localhost") ||
-				strings.HasPrefix(origin, "http://127.0.0.1") ||
-				strings.HasPrefix(origin, "https://localhost") ||
-				strings.HasPrefix(origin, "https://127.0.0.1") {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-				w.Header().Set("Access-Control-Max-Age", "86400")
-			}
+		// Only allow localhost origins
+		if origin != "" && isLocalhostOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Credentials", "true") // Allow cookies
+			w.Header().Set("Access-Control-Max-Age", "86400")
 		}
 
 		if r.Method == "OPTIONS" {
