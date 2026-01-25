@@ -1,0 +1,1014 @@
+openapi: 3.0.3
+info:
+  title: Langley API
+  description: |
+    REST API for Langley, an HTTPS intercepting proxy for monitoring LLM API traffic.
+
+    ## Authentication
+
+    All endpoints (except `/api/health`) require authentication via one of:
+    - **Bearer token**: `Authorization: Bearer <token>`
+    - **Session cookie**: `langley_session` cookie (auto-set for localhost browser requests)
+
+    The auth token is shown at startup and stored in `config.yaml`.
+
+    ## Rate Limiting
+
+    API requests are rate-limited to 20 req/sec sustained with 100 burst capacity.
+    When rate limited, you'll receive a `429 Too Many Requests` response.
+  version: 1.0.0
+  contact:
+    name: Langley
+    url: https://github.com/anthropics/langley
+
+servers:
+  - url: http://localhost:9091
+    description: Default API server
+
+tags:
+  - name: Flows
+    description: HTTP request/response pairs captured by the proxy
+  - name: Analytics
+    description: Cost, task, and tool analytics
+  - name: System
+    description: Health, settings, and administrative operations
+
+paths:
+  /api/flows:
+    get:
+      summary: List flows
+      description: Returns a paginated list of captured HTTP flows
+      tags: [Flows]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of flows to return (1-100)
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+        - name: offset
+          in: query
+          description: Number of flows to skip
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: host
+          in: query
+          description: Filter by host
+          schema:
+            type: string
+          example: api.anthropic.com
+        - name: task_id
+          in: query
+          description: Filter by task ID
+          schema:
+            type: string
+        - name: model
+          in: query
+          description: Filter by model name
+          schema:
+            type: string
+          example: claude-3-5-sonnet-20241022
+        - name: start_time
+          in: query
+          description: Filter flows after this time (RFC3339)
+          schema:
+            type: string
+            format: date-time
+        - name: end_time
+          in: query
+          description: Filter flows before this time (RFC3339)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: List of flow summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FlowSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /api/flows/count:
+    get:
+      summary: Count flows
+      description: Returns the count of flows matching the given filters
+      tags: [Flows]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: host
+          in: query
+          schema:
+            type: string
+        - name: task_id
+          in: query
+          schema:
+            type: string
+        - name: model
+          in: query
+          schema:
+            type: string
+        - name: start_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Flow count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+                    example: 42
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/flows/export:
+    get:
+      summary: Export flows
+      description: |
+        Export flows in various formats for analysis.
+
+        Supports streaming for large exports. The response includes:
+        - `X-Export-Row-Count` header with total rows exported (NDJSON/CSV)
+        - `X-Export-Truncated-Bodies` header if any bodies were truncated
+      tags: [Flows]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: format
+          in: query
+          description: Export format
+          schema:
+            type: string
+            enum: [ndjson, json, csv]
+            default: ndjson
+        - name: include_bodies
+          in: query
+          description: Include request/response bodies
+          schema:
+            type: boolean
+            default: false
+        - name: max_rows
+          in: query
+          description: Maximum rows to export (0 = unlimited)
+          schema:
+            type: integer
+            default: 0
+        - name: host
+          in: query
+          schema:
+            type: string
+        - name: task_id
+          in: query
+          schema:
+            type: string
+        - name: model
+          in: query
+          schema:
+            type: string
+        - name: start_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_time
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Exported flows
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: Suggested filename
+            X-Export-Row-Count:
+              schema:
+                type: integer
+              description: Total rows exported
+            X-Export-Truncated-Bodies:
+              schema:
+                type: integer
+              description: Number of flows with truncated bodies
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: Newline-delimited JSON
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+            text/csv:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/flows/{id}:
+    get:
+      summary: Get flow details
+      description: Returns full details for a specific flow including headers and bodies
+      tags: [Flows]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Flow ID (UUID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Flow details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowDetail'
+        '404':
+          description: Flow not found
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/flows/{id}/events:
+    get:
+      summary: Get flow events
+      description: Returns SSE events for a streaming flow
+      tags: [Flows]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of SSE events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Event'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/flows/{id}/anomalies:
+    get:
+      summary: Get flow anomalies
+      description: Detects anomalies for a specific flow (high token usage, long delays, etc.)
+      tags: [Flows]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of detected anomalies
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Anomaly'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Analytics unavailable
+
+  /api/stats:
+    get:
+      summary: Get overall statistics
+      description: Returns aggregate statistics for a time range (default last 24 hours)
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: start
+          in: query
+          description: Start of time range (RFC3339)
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          description: End of time range (RFC3339)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Overall statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverallStats'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/analytics/tasks:
+    get:
+      summary: List task summaries
+      description: Returns aggregated metrics for tasks in a time range
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: start
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          description: Maximum tasks to return (1-100)
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: List of task summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TaskSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Analytics unavailable
+
+  /api/analytics/tasks/{id}:
+    get:
+      summary: Get task summary
+      description: Returns aggregated metrics for a specific task
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Analytics unavailable
+
+  /api/analytics/tools:
+    get:
+      summary: Get tool statistics
+      description: Returns usage statistics for tools
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: start
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Tool statistics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ToolStats'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Analytics unavailable
+
+  /api/analytics/cost/daily:
+    get:
+      summary: Get daily cost breakdown
+      description: Returns cost aggregated by day
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: start
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Daily cost breakdown
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CostPeriod'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Analytics unavailable
+
+  /api/analytics/cost/model:
+    get:
+      summary: Get cost by model
+      description: Returns cost breakdown by model
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: start
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Cost by model
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CostPeriod'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Analytics unavailable
+
+  /api/analytics/anomalies:
+    get:
+      summary: List recent anomalies
+      description: Returns anomalies detected across all flows
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: since
+          in: query
+          description: Return anomalies since this time (default last hour)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: List of anomalies
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Anomaly'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Analytics unavailable
+
+  /api/health:
+    get:
+      summary: Health check
+      description: |
+        Returns server health status and operational metrics.
+        This endpoint does NOT require authentication.
+      tags: [System]
+      responses:
+        '200':
+          description: Health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+
+  /api/checkpoint:
+    post:
+      summary: Trigger WAL checkpoint
+      description: |
+        Forces a SQLite WAL checkpoint to reclaim disk space.
+        Use this if the WAL file grows too large.
+      tags: [System]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Checkpoint result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckpointResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/settings:
+    get:
+      summary: Get settings
+      description: Returns current server settings
+      tags: [System]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Current settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      summary: Update settings
+      description: Updates server settings and persists to config file
+      tags: [System]
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingsUpdate'
+      responses:
+        '200':
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Settings'
+        '400':
+          description: Invalid settings
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /ws:
+    get:
+      summary: WebSocket connection
+      description: |
+        Real-time flow and event updates via WebSocket.
+
+        ## Authentication
+
+        Authenticate via one of:
+        - Session cookie (`langley_session`)
+        - Query parameter (`?token=<token>`)
+        - Authorization header (`Bearer <token>`)
+
+        ## Message Types
+
+        - `flow_start` - New flow started
+        - `flow_update` - Flow updated (partial response)
+        - `flow_complete` - Flow completed
+        - `event` - SSE event parsed
+        - `ping` - Keep-alive (every 30s)
+
+        ## Message Format
+
+        ```json
+        {
+          "type": "flow_start",
+          "timestamp": "2024-01-15T10:30:00Z",
+          "data": { ... }
+        }
+        ```
+      tags: [System]
+      responses:
+        '101':
+          description: Switching protocols to WebSocket
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Bearer token from config.yaml
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: langley_session
+      description: Session cookie (auto-set for localhost)
+
+  responses:
+    Unauthorized:
+      description: Authentication required
+      content:
+        text/plain:
+          schema:
+            type: string
+            example: Unauthorized
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        text/plain:
+          schema:
+            type: string
+            example: Rate limit exceeded
+
+  schemas:
+    FlowSummary:
+      type: object
+      required: [id, host, method, path, is_sse, timestamp]
+      properties:
+        id:
+          type: string
+          format: uuid
+        host:
+          type: string
+          example: api.anthropic.com
+        method:
+          type: string
+          example: POST
+        path:
+          type: string
+          example: /v1/messages
+        status_code:
+          type: integer
+          example: 200
+        is_sse:
+          type: boolean
+        timestamp:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+          example: 1234
+        task_id:
+          type: string
+        task_source:
+          type: string
+          enum: [explicit, metadata, inferred]
+        model:
+          type: string
+          example: claude-3-5-sonnet-20241022
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        total_cost:
+          type: number
+          format: float
+          example: 0.0123
+
+    FlowDetail:
+      allOf:
+        - $ref: '#/components/schemas/FlowSummary'
+        - type: object
+          properties:
+            url:
+              type: string
+            status_text:
+              type: string
+              example: 200 OK
+            provider:
+              type: string
+              enum: [anthropic, openai, bedrock, gemini, other]
+            flow_integrity:
+              type: string
+              enum: [complete, partial, corrupted, interrupted]
+            events_dropped_count:
+              type: integer
+            request_body:
+              type: string
+              description: Request body (if raw_body_storage enabled)
+            request_body_truncated:
+              type: boolean
+            response_body:
+              type: string
+              description: Response body (if raw_body_storage enabled)
+            response_body_truncated:
+              type: boolean
+            request_headers:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: string
+            response_headers:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: string
+            cache_creation_tokens:
+              type: integer
+            cache_read_tokens:
+              type: integer
+            cost_source:
+              type: string
+              enum: [exact, estimated]
+
+    Event:
+      type: object
+      required: [id, sequence, timestamp, event_type, priority]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          description: Event sequence number within the flow
+        timestamp:
+          type: string
+          format: date-time
+        event_type:
+          type: string
+          example: content_block_delta
+        event_data:
+          type: object
+          additionalProperties: true
+        priority:
+          type: string
+          enum: [high, medium, low]
+
+    Anomaly:
+      type: object
+      required: [type, flow_id, timestamp, severity, description, value, threshold]
+      properties:
+        type:
+          type: string
+          example: high_token_usage
+        flow_id:
+          type: string
+          format: uuid
+        task_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        description:
+          type: string
+        value:
+          type: number
+        threshold:
+          type: number
+
+    OverallStats:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        timestamp:
+          type: string
+          format: date-time
+        total_flows:
+          type: integer
+        total_cost:
+          type: number
+        total_tokens_in:
+          type: integer
+        total_tokens_out:
+          type: integer
+        total_tasks:
+          type: integer
+        total_tool_calls:
+          type: integer
+        avg_cost_per_flow:
+          type: number
+        avg_tokens_per_flow:
+          type: number
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+
+    TaskSummary:
+      type: object
+      required: [task_id, flow_count]
+      properties:
+        task_id:
+          type: string
+        flow_count:
+          type: integer
+        total_tokens_in:
+          type: integer
+        total_tokens_out:
+          type: integer
+        total_cost:
+          type: number
+        first_seen:
+          type: string
+          format: date-time
+        last_seen:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+        models:
+          type: array
+          items:
+            type: string
+        tools_used:
+          type: array
+          items:
+            type: string
+
+    ToolStats:
+      type: object
+      required: [tool_name, invocation_count]
+      properties:
+        tool_name:
+          type: string
+        invocation_count:
+          type: integer
+        success_count:
+          type: integer
+        failure_count:
+          type: integer
+        success_rate:
+          type: number
+          description: Percentage (0-100)
+        total_cost:
+          type: number
+        avg_duration_ms:
+          type: number
+        total_tokens_in:
+          type: integer
+        total_tokens_out:
+          type: integer
+
+    CostPeriod:
+      type: object
+      required: [period, flow_count, total_cost]
+      properties:
+        period:
+          type: string
+          description: ISO date (for daily) or model name (for by-model)
+        flow_count:
+          type: integer
+        total_cost:
+          type: number
+        total_tokens_in:
+          type: integer
+        total_tokens_out:
+          type: integer
+
+    Health:
+      type: object
+      required: [status, timestamp, uptime]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, error]
+        timestamp:
+          type: string
+          format: date-time
+        uptime:
+          type: string
+          example: 2h30m15s
+        wal_size_bytes:
+          type: integer
+        wal_checkpointed_bytes:
+          type: integer
+        drops_last_24h:
+          type: integer
+        active_flows:
+          type: integer
+          description: Flows in last 5 minutes
+        total_flows:
+          type: integer
+        db_size_bytes:
+          type: integer
+        warning:
+          type: string
+
+    CheckpointResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        wal_size_before_bytes:
+          type: integer
+        wal_size_after_bytes:
+          type: integer
+        pages_in_log:
+          type: integer
+        pages_checkpointed:
+          type: integer
+        was_blocked:
+          type: boolean
+        timestamp:
+          type: string
+          format: date-time
+
+    Settings:
+      type: object
+      properties:
+        idle_gap_minutes:
+          type: integer
+          description: Minutes of inactivity before starting new task
+          example: 5
+
+    SettingsUpdate:
+      type: object
+      properties:
+        idle_gap_minutes:
+          type: integer
+          minimum: 1
+          maximum: 60
+          description: Minutes of inactivity before starting new task
+
+    ExportResponse:
+      type: object
+      properties:
+        flows:
+          type: array
+          items:
+            $ref: '#/components/schemas/FlowSummary'
+        metadata:
+          type: object
+          properties:
+            row_count:
+              type: integer
+            truncated_bodies:
+              type: integer
+            exported_at:
+              type: string
+              format: date-time
