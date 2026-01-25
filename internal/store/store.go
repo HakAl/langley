@@ -104,6 +104,7 @@ type Store interface {
 	UpdateFlow(ctx context.Context, flow *Flow) error
 	GetFlow(ctx context.Context, id string) (*Flow, error)
 	ListFlows(ctx context.Context, filter FlowFilter) ([]*Flow, error)
+	CountFlows(ctx context.Context, filter FlowFilter) (int, error)
 	DeleteFlow(ctx context.Context, id string) error
 
 	// Events

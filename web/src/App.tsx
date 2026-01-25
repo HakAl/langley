@@ -380,10 +380,17 @@ function App() {
   })
 
   // Export handlers (after filteredFlows is defined)
-  const startExport = useCallback((format: string) => {
-    // Show confirmation with row count
-    setExportConfig({ format, rowCount: filteredFlows.length })
-  }, [filteredFlows.length])
+  const startExport = useCallback(async (format: string) => {
+    // Fetch actual count from server (client-side list is capped at 50)
+    const params = new URLSearchParams()
+    if (hostFilter) params.set('host', hostFilter)
+    if (taskFilter) params.set('task_id', taskFilter)
+
+    const countData = await apiFetch(`/api/flows/count?${params.toString()}`)
+    const rowCount = countData?.count ?? filteredFlows.length
+
+    setExportConfig({ format, rowCount })
+  }, [apiFetch, hostFilter, taskFilter, filteredFlows.length])
 
   // Get current navigable list based on view
   const getNavigableItems = useCallback(() => {
@@ -1013,8 +1020,8 @@ function App() {
               <p>
                 Export <strong>{exportConfig.rowCount}</strong> flow{exportConfig.rowCount !== 1 ? 's' : ''} as <strong>{exportConfig.format.toUpperCase()}</strong>
               </p>
-              {exportConfig.format === 'csv' && exportConfig.rowCount > 10000 && (
-                <p className="warning">CSV exports are limited to 10,000 rows.</p>
+              {(exportConfig.format === 'csv' || exportConfig.format === 'json') && exportConfig.rowCount > 10000 && (
+                <p className="warning">{exportConfig.format.toUpperCase()} exports are limited to 10,000 rows.</p>
               )}
             </div>
             <div className="export-confirm-actions">

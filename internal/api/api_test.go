@@ -36,7 +36,13 @@ func (m *mockStore) ListFlows(ctx context.Context, filter store.FlowFilter) ([]*
 	}
 	return m.flows[start:end], nil
 }
-func (m *mockStore) DeleteFlow(ctx context.Context, id string) error                           { return nil }
+func (m *mockStore) DeleteFlow(ctx context.Context, id string) error { return nil }
+func (m *mockStore) CountFlows(ctx context.Context, filter store.FlowFilter) (int, error) {
+	if m.flows == nil {
+		return 0, nil
+	}
+	return len(m.flows), nil
+}
 func (m *mockStore) SaveEvent(ctx context.Context, event *store.Event) error                   { return nil }
 func (m *mockStore) SaveEvents(ctx context.Context, events []*store.Event) error               { return nil }
 func (m *mockStore) GetEventsByFlow(ctx context.Context, flowID string) ([]*store.Event, error) {

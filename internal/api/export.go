@@ -22,6 +22,8 @@ const (
 
 	// MaxCSVRows limits CSV exports to prevent browser/Excel issues
 	MaxCSVRows = 10000
+	// MaxJSONRows limits JSON exports to prevent OOM (JSON buffers all rows in memory)
+	MaxJSONRows = 10000
 )
 
 // ExportFlowFull extends ExportFlowSummary with body fields.
@@ -54,6 +56,9 @@ func ParseExportConfig(r *http.Request) ExportConfig {
 		switch v {
 		case "json":
 			cfg.Format = FormatJSON
+			if cfg.MaxRows == 0 {
+				cfg.MaxRows = MaxJSONRows
+			}
 		case "csv":
 			cfg.Format = FormatCSV
 			if cfg.MaxRows == 0 {

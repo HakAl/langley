@@ -76,6 +76,7 @@ func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger, o
 
 	// Register routes
 	s.mux.HandleFunc("GET /api/flows", s.authMiddleware(s.listFlows))
+	s.mux.HandleFunc("GET /api/flows/count", s.authMiddleware(s.countFlows))
 	s.mux.HandleFunc("GET /api/flows/export", s.authMiddleware(s.exportFlows))
 	s.mux.HandleFunc("GET /api/flows/{id}", s.authMiddleware(s.getFlow))
 	s.mux.HandleFunc("GET /api/flows/{id}/events", s.authMiddleware(s.getFlowEvents))
@@ -216,6 +217,44 @@ func (s *Server) listFlows(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, response)
+}
+
+// countFlows returns the count of flows matching filters.
+func (s *Server) countFlows(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Parse query params (same filters as listFlows, ignoring limit/offset)
+	filter := store.FlowFilter{}
+
+	if v := r.URL.Query().Get("host"); v != "" {
+		filter.Host = &v
+	}
+	if v := r.URL.Query().Get("task_id"); v != "" {
+		filter.TaskID = &v
+	}
+	if v := r.URL.Query().Get("model"); v != "" {
+		filter.Model = &v
+	}
+	if v := r.URL.Query().Get("start_time"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.StartTime = &t
+		}
+	}
+	if v := r.URL.Query().Get("end_time"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.EndTime = &t
+		}
+	}
+
+	count, err := s.store.CountFlows(ctx, filter)
+	if err != nil {
+		s.logger.Error("failed to count flows", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	s.writeJSON(w, map[string]int{"count": count})
 }
 
 // exportFlows streams flows as NDJSON for export.

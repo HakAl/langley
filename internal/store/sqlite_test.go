@@ -808,6 +808,101 @@ func TestNullableFields(t *testing.T) {
 	}
 }
 
+func TestCountFlows(t *testing.T) {
+	t.Parallel()
+	store := setupTestDB(t)
+	ctx := context.Background()
+
+	// Create multiple flows with different hosts
+	hosts := []string{"api.anthropic.com", "api.openai.com", "api.anthropic.com"}
+	for i, host := range hosts {
+		flow := &Flow{
+			ID:            "flow-count-" + string(rune('a'+i)),
+			Host:          host,
+			Method:        "POST",
+			Path:          "/v1/messages",
+			URL:           "https://" + host + "/v1/messages",
+			Timestamp:     time.Now(),
+			TimestampMono: time.Now().UnixNano(),
+			FlowIntegrity: "complete",
+			Provider:      "anthropic",
+		}
+		if err := store.SaveFlow(ctx, flow); err != nil {
+			t.Fatalf("SaveFlow %d failed: %v", i, err)
+		}
+	}
+
+	t.Run("count all", func(t *testing.T) {
+		count, err := store.CountFlows(ctx, FlowFilter{})
+		if err != nil {
+			t.Fatalf("CountFlows failed: %v", err)
+		}
+		if count != 3 {
+			t.Errorf("count = %d, want 3", count)
+		}
+	})
+
+	t.Run("count with filter", func(t *testing.T) {
+		host := "api.anthropic.com"
+		count, err := store.CountFlows(ctx, FlowFilter{Host: &host})
+		if err != nil {
+			t.Fatalf("CountFlows failed: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("count = %d, want 2", count)
+		}
+	})
+
+	t.Run("count ignores limit", func(t *testing.T) {
+		count, err := store.CountFlows(ctx, FlowFilter{Limit: 1})
+		if err != nil {
+			t.Fatalf("CountFlows failed: %v", err)
+		}
+		if count != 3 {
+			t.Errorf("count = %d, want 3 (should ignore limit)", count)
+		}
+	})
+}
+
+func TestProviderConstraint(t *testing.T) {
+	t.Parallel()
+	store := setupTestDB(t)
+	ctx := context.Background()
+
+	// All valid provider values should be insertable
+	providers := []string{"anthropic", "openai", "bedrock", "gemini", "other"}
+
+	for _, provider := range providers {
+		t.Run(provider, func(t *testing.T) {
+			flow := &Flow{
+				ID:            "flow-provider-" + provider,
+				Host:          "api.example.com",
+				Method:        "POST",
+				Path:          "/v1/messages",
+				URL:           "https://api.example.com/v1/messages",
+				Timestamp:     time.Now(),
+				TimestampMono: time.Now().UnixNano(),
+				FlowIntegrity: "complete",
+				Provider:      provider,
+			}
+
+			err := store.SaveFlow(ctx, flow)
+			if err != nil {
+				t.Fatalf("SaveFlow with provider=%q failed: %v", provider, err)
+			}
+
+			// Verify it was saved correctly
+			got, err := store.GetFlow(ctx, flow.ID)
+			if err != nil {
+				t.Fatalf("GetFlow failed: %v", err)
+			}
+			if got.Provider != provider {
+				t.Errorf("Provider = %q, want %q", got.Provider, provider)
+			}
+		})
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	t.Parallel()
 	store := setupTestDB(t)

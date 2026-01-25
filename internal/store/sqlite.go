@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS flows (
 	total_cost REAL,
 	cost_source TEXT CHECK (cost_source IS NULL OR cost_source IN ('exact', 'estimated')),
 	model TEXT,
-	provider TEXT DEFAULT 'anthropic' CHECK (provider IN ('anthropic', 'bedrock', 'other')),
+	provider TEXT DEFAULT 'anthropic' CHECK (provider IN ('anthropic', 'openai', 'bedrock', 'gemini', 'other')),
 	created_at TEXT NOT NULL DEFAULT (datetime('now')),
 	expires_at TEXT
 );
@@ -390,6 +390,43 @@ func (s *SQLiteStore) ListFlows(ctx context.Context, filter FlowFilter) ([]*Flow
 	}
 
 	return flows, rows.Err()
+}
+
+// CountFlows returns the count of flows matching the filter (ignores Limit/Offset).
+func (s *SQLiteStore) CountFlows(ctx context.Context, filter FlowFilter) (int, error) {
+	query := strings.Builder{}
+	query.WriteString("SELECT COUNT(*) FROM flows WHERE 1=1")
+
+	args := []interface{}{}
+
+	if filter.Host != nil {
+		query.WriteString(" AND host = ?")
+		args = append(args, *filter.Host)
+	}
+	if filter.TaskID != nil {
+		query.WriteString(" AND task_id = ?")
+		args = append(args, *filter.TaskID)
+	}
+	if filter.TaskSource != nil {
+		query.WriteString(" AND task_source = ?")
+		args = append(args, *filter.TaskSource)
+	}
+	if filter.Model != nil {
+		query.WriteString(" AND model = ?")
+		args = append(args, *filter.Model)
+	}
+	if filter.StartTime != nil {
+		query.WriteString(" AND timestamp >= ?")
+		args = append(args, filter.StartTime.Format(time.RFC3339Nano))
+	}
+	if filter.EndTime != nil {
+		query.WriteString(" AND timestamp <= ?")
+		args = append(args, filter.EndTime.Format(time.RFC3339Nano))
+	}
+
+	var count int
+	err := s.db.QueryRowContext(ctx, query.String(), args...).Scan(&count)
+	return count, err
 }
 
 // DeleteFlow deletes a flow and its associated data.

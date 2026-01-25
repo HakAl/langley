@@ -193,6 +193,10 @@ func (m *mockStore) DeleteFlow(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *mockStore) CountFlows(ctx context.Context, filter store.FlowFilter) (int, error) {
+	return len(m.flows), nil
+}
+
 func (m *mockStore) SaveEvent(ctx context.Context, event *store.Event) error {
 	// Simulate foreign key constraint - flow must exist (langley-2fa)
 	if _, exists := m.flows[event.FlowID]; !exists {

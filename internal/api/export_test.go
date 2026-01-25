@@ -31,11 +31,11 @@ func TestParseExportConfig(t *testing.T) {
 			wantMaxRows: 0,
 		},
 		{
-			name:        "json format",
+			name:        "json format with default max rows",
 			query:       "format=json",
 			wantFormat:  FormatJSON,
 			wantBodies:  false,
-			wantMaxRows: 0,
+			wantMaxRows: MaxJSONRows,
 		},
 		{
 			name:        "csv format with default max rows",
