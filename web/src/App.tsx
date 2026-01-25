@@ -725,7 +725,10 @@ function App() {
   return (
     <div className="app">
       <header>
-        <h1>Langley</h1>
+        <div className="header-brand">
+          <img src="/eagle.svg" alt="" className="header-logo" />
+          <h1>Langley</h1>
+        </div>
         {renderNav()}
         <div className="header-right">
           <button className="theme-toggle" onClick={toggleTheme} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>

@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -648,111 +647,6 @@ func (p *MITMProxy) extractUsageAndCost(ctx context.Context, flow *store.Flow, p
 		if err == nil && costSource != "" {
 			flow.TotalCost = &cost
 			flow.CostSource = &costSource
-		}
-	}
-}
-
-// extractSSEUsage parses token usage from SSE event stream.
-func (p *MITMProxy) extractSSEUsage(flow *store.Flow, body string) {
-	lines := strings.Split(body, "\n")
-
-	var currentEventType string
-	var dataBuffer strings.Builder
-
-	for _, line := range lines {
-		if line == "" {
-			// End of event, process it
-			if currentEventType != "" && dataBuffer.Len() > 0 {
-				p.processSSEEvent(flow, currentEventType, dataBuffer.String())
-			}
-			currentEventType = ""
-			dataBuffer.Reset()
-			continue
-		}
-
-		if strings.HasPrefix(line, "event:") {
-			currentEventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		} else if strings.HasPrefix(line, "data:") {
-			dataBuffer.WriteString(strings.TrimPrefix(line, "data:"))
-		}
-	}
-
-	// Handle final event if no trailing newline
-	if currentEventType != "" && dataBuffer.Len() > 0 {
-		p.processSSEEvent(flow, currentEventType, dataBuffer.String())
-	}
-}
-
-// processSSEEvent extracts data from a single SSE event.
-func (p *MITMProxy) processSSEEvent(flow *store.Flow, eventType, data string) {
-	var eventData map[string]interface{}
-	if err := json.Unmarshal([]byte(data), &eventData); err != nil {
-		return
-	}
-
-	switch eventType {
-	case "message_start":
-		// Extract model and initial usage
-		if msg, ok := eventData["message"].(map[string]interface{}); ok {
-			if model, ok := msg["model"].(string); ok {
-				flow.Model = &model
-			}
-			if usage, ok := msg["usage"].(map[string]interface{}); ok {
-				if v, ok := usage["input_tokens"].(float64); ok {
-					i := int(v)
-					flow.InputTokens = &i
-				}
-				if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
-					c := int(v)
-					flow.CacheCreationTokens = &c
-				}
-				if v, ok := usage["cache_read_input_tokens"].(float64); ok {
-					c := int(v)
-					flow.CacheReadTokens = &c
-				}
-			}
-		}
-
-	case "message_delta":
-		// Extract final output token count
-		if usage, ok := eventData["usage"].(map[string]interface{}); ok {
-			if v, ok := usage["output_tokens"].(float64); ok {
-				o := int(v)
-				flow.OutputTokens = &o
-			}
-		}
-	}
-}
-
-// extractJSONUsage parses token usage from a non-streaming JSON response.
-func (p *MITMProxy) extractJSONUsage(flow *store.Flow, body string) {
-	var response map[string]interface{}
-	if err := json.Unmarshal([]byte(body), &response); err != nil {
-		return
-	}
-
-	// Extract model
-	if model, ok := response["model"].(string); ok {
-		flow.Model = &model
-	}
-
-	// Extract usage
-	if usage, ok := response["usage"].(map[string]interface{}); ok {
-		if v, ok := usage["input_tokens"].(float64); ok {
-			i := int(v)
-			flow.InputTokens = &i
-		}
-		if v, ok := usage["output_tokens"].(float64); ok {
-			o := int(v)
-			flow.OutputTokens = &o
-		}
-		if v, ok := usage["cache_creation_input_tokens"].(float64); ok {
-			c := int(v)
-			flow.CacheCreationTokens = &c
-		}
-		if v, ok := usage["cache_read_input_tokens"].(float64); ok {
-			c := int(v)
-			flow.CacheReadTokens = &c
 		}
 	}
 }

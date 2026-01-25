@@ -68,11 +68,27 @@ header {
   gap: 1rem;
 }
 
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 header h1 {
   font-size: 1.5rem;
   font-weight: 700;
   margin: 0;
   letter-spacing: 0.02em;
+}
+
+.header-logo {
+  height: 32px;
+  width: 32px;
+  filter: invert(1);
+}
+
+[data-theme="light"] .header-logo {
+  filter: invert(0);
 }
 
 /* Navigation */
