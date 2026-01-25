@@ -224,6 +224,15 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Save flow immediately so SSE events can reference it (langley-2fa)
+	if p.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := p.store.SaveFlow(ctx, flow); err != nil {
+			p.logger.Error("failed to save initial flow", "flow_id", flow.ID, "error", err)
+		}
+		cancel()
+	}
+
 	// Notify flow started
 	if p.onFlow != nil {
 		p.onFlow(flow)
@@ -458,6 +467,15 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 		flow.Provider = prov.Name()
 	}
 
+	// Save flow immediately so SSE events can reference it (langley-2fa)
+	if p.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := p.store.SaveFlow(ctx, flow); err != nil {
+			p.logger.Error("failed to save initial flow", "flow_id", flow.ID, "error", err)
+		}
+		cancel()
+	}
+
 	// Notify flow started
 	if p.onFlow != nil {
 		p.onFlow(flow)
@@ -587,8 +605,9 @@ func (p *MITMProxy) saveFlow(flow *store.Flow) {
 	expiresAt := time.Now().AddDate(0, 0, p.cfg.Retention.FlowsTTLDays)
 	flow.ExpiresAt = &expiresAt
 
-	if err := p.store.SaveFlow(ctx, flow); err != nil {
-		p.logger.Error("failed to save flow", "flow_id", flow.ID, "error", err)
+	// Use UpdateFlow since flow was already saved at request start (langley-2fa)
+	if err := p.store.UpdateFlow(ctx, flow); err != nil {
+		p.logger.Error("failed to update flow", "flow_id", flow.ID, "error", err)
 	}
 }
 

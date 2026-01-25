@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -190,6 +191,10 @@ func (m *mockStore) DeleteFlow(ctx context.Context, id string) error {
 }
 
 func (m *mockStore) SaveEvent(ctx context.Context, event *store.Event) error {
+	// Simulate foreign key constraint - flow must exist (langley-2fa)
+	if _, exists := m.flows[event.FlowID]; !exists {
+		return fmt.Errorf("FOREIGN KEY constraint failed: flow %s does not exist", event.FlowID)
+	}
 	m.events[event.FlowID] = append(m.events[event.FlowID], event)
 	return nil
 }
