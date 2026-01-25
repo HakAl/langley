@@ -277,6 +277,39 @@ function App() {
     if (data) setSelectedFlow(data)
   }, [apiFetch])
 
+  const handleExport = useCallback(async (format: string) => {
+    // Build export URL with current filters
+    const params = new URLSearchParams()
+    params.set('format', format)
+    if (hostFilter) params.set('host', hostFilter)
+    if (taskFilter) params.set('task_id', taskFilter)
+
+    try {
+      const response = await fetch(`/api/flows/export?${params.toString()}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!response.ok) throw new Error('Export failed')
+
+      // Get filename from Content-Disposition header or generate one
+      const disposition = response.headers.get('Content-Disposition')
+      const filenameMatch = disposition?.match(/filename="(.+)"/)
+      const filename = filenameMatch?.[1] || `flows.${format}`
+
+      // Create blob and trigger download
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Export failed:', err)
+    }
+  }, [hostFilter, taskFilter, token])
+
   // Initial load
   useEffect(() => {
     if (token) {
@@ -495,6 +528,22 @@ function App() {
           <option value="success">Success (2xx/3xx)</option>
           <option value="error">Errors (4xx/5xx)</option>
         </select>
+        <div className="export-dropdown">
+          <select
+            onChange={(e) => {
+              if (e.target.value) {
+                handleExport(e.target.value)
+                e.target.value = '' // Reset after selection
+              }
+            }}
+            defaultValue=""
+          >
+            <option value="" disabled>Export...</option>
+            <option value="ndjson">NDJSON</option>
+            <option value="json">JSON</option>
+            <option value="csv">CSV</option>
+          </select>
+        </div>
       </div>
 
       <div className="flow-list" role="listbox" aria-label="Flow list" aria-activedescendant={filteredFlows.length > 0 ? `flow-${selectedIndex}` : undefined}>

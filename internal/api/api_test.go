@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,7 +12,9 @@ import (
 )
 
 // mockStore implements store.Store for testing.
-type mockStore struct{}
+type mockStore struct {
+	flows []*store.Flow
+}
 
 func (m *mockStore) SaveFlow(ctx context.Context, flow *store.Flow) error      { return nil }
 func (m *mockStore) UpdateFlow(ctx context.Context, flow *store.Flow) error    { return nil }
@@ -19,7 +22,19 @@ func (m *mockStore) GetFlow(ctx context.Context, id string) (*store.Flow, error)
 	return &store.Flow{ID: id, Host: "api.anthropic.com", Method: "POST", Path: "/v1/messages"}, nil
 }
 func (m *mockStore) ListFlows(ctx context.Context, filter store.FlowFilter) ([]*store.Flow, error) {
-	return []*store.Flow{}, nil
+	if m.flows == nil {
+		return []*store.Flow{}, nil
+	}
+	// Simple pagination
+	start := filter.Offset
+	if start >= len(m.flows) {
+		return []*store.Flow{}, nil
+	}
+	end := start + filter.Limit
+	if end > len(m.flows) {
+		end = len(m.flows)
+	}
+	return m.flows[start:end], nil
 }
 func (m *mockStore) DeleteFlow(ctx context.Context, id string) error                           { return nil }
 func (m *mockStore) SaveEvent(ctx context.Context, event *store.Event) error                   { return nil }
@@ -242,4 +257,191 @@ func TestIsLocalhost(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExportFlows_NDJSON(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Token = "test-token"
+
+	mockFlows := createTestFlows(3)
+	ms := &mockStore{flows: mockFlows}
+
+	server := NewServer(cfg, ms, nil)
+	handler := server.Handler()
+
+	req := httptest.NewRequest("GET", "/api/flows/export?format=ndjson", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200, body: %s", rr.Code, rr.Body.String())
+	}
+
+	if ct := rr.Header().Get("Content-Type"); ct != "application/x-ndjson" {
+		t.Errorf("Content-Type = %q, want application/x-ndjson", ct)
+	}
+
+	// Should have 3 lines (one per flow)
+	lines := splitNonEmpty(rr.Body.String(), "\n")
+	if len(lines) != 3 {
+		t.Errorf("got %d lines, want 3", len(lines))
+	}
+}
+
+func TestExportFlows_JSON(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Token = "test-token"
+
+	mockFlows := createTestFlows(2)
+	ms := &mockStore{flows: mockFlows}
+
+	server := NewServer(cfg, ms, nil)
+	handler := server.Handler()
+
+	req := httptest.NewRequest("GET", "/api/flows/export?format=json", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rr.Code)
+	}
+
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	// Parse JSON response
+	var result map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+
+	flows, ok := result["flows"].([]interface{})
+	if !ok {
+		t.Fatal("missing 'flows' array")
+	}
+	if len(flows) != 2 {
+		t.Errorf("got %d flows, want 2", len(flows))
+	}
+
+	meta, ok := result["meta"].(map[string]interface{})
+	if !ok {
+		t.Fatal("missing 'meta' object")
+	}
+	if meta["row_count"].(float64) != 2 {
+		t.Errorf("row_count = %v, want 2", meta["row_count"])
+	}
+}
+
+func TestExportFlows_CSV(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Token = "test-token"
+
+	mockFlows := createTestFlows(2)
+	ms := &mockStore{flows: mockFlows}
+
+	server := NewServer(cfg, ms, nil)
+	handler := server.Handler()
+
+	req := httptest.NewRequest("GET", "/api/flows/export?format=csv", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rr.Code)
+	}
+
+	if ct := rr.Header().Get("Content-Type"); ct != "text/csv" {
+		t.Errorf("Content-Type = %q, want text/csv", ct)
+	}
+
+	// Should have header + 2 data rows
+	lines := splitNonEmpty(rr.Body.String(), "\n")
+	if len(lines) != 3 {
+		t.Errorf("got %d lines, want 3 (header + 2 rows)", len(lines))
+	}
+}
+
+func TestExportFlows_MaxRows(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Token = "test-token"
+
+	mockFlows := createTestFlows(10)
+	ms := &mockStore{flows: mockFlows}
+
+	server := NewServer(cfg, ms, nil)
+	handler := server.Handler()
+
+	req := httptest.NewRequest("GET", "/api/flows/export?format=ndjson&max_rows=3", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rr.Code)
+	}
+
+	lines := splitNonEmpty(rr.Body.String(), "\n")
+	if len(lines) != 3 {
+		t.Errorf("got %d lines, want 3 (max_rows limit)", len(lines))
+	}
+}
+
+// Helper to create test flows
+func createTestFlows(n int) []*store.Flow {
+	flows := make([]*store.Flow, n)
+	for i := 0; i < n; i++ {
+		status := 200
+		flows[i] = &store.Flow{
+			ID:            "flow-" + string(rune('a'+i)),
+			Host:          "api.anthropic.com",
+			Method:        "POST",
+			Path:          "/v1/messages",
+			StatusCode:    &status,
+			Provider:      "anthropic",
+			FlowIntegrity: "complete",
+		}
+	}
+	return flows
+}
+
+// Helper to split string and remove empty lines
+func splitNonEmpty(s, sep string) []string {
+	parts := make([]string, 0)
+	for _, p := range split(s, sep) {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return parts
+}
+
+func split(s, sep string) []string {
+	var result []string
+	for len(s) > 0 {
+		i := indexOf(s, sep)
+		if i < 0 {
+			result = append(result, s)
+			break
+		}
+		result = append(result, s[:i])
+		s = s[i+len(sep):]
+	}
+	return result
+}
+
+func indexOf(s, substr string) int {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
 }

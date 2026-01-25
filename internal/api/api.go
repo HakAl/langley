@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -219,6 +220,9 @@ func (s *Server) listFlows(w http.ResponseWriter, r *http.Request) {
 
 // exportFlows streams flows as NDJSON for export.
 func (s *Server) exportFlows(w http.ResponseWriter, r *http.Request) {
+	// Parse export config
+	exportCfg := ParseExportConfig(r)
+
 	// Parse filters (same as listFlows)
 	filter := store.FlowFilter{
 		Limit:  100, // batch size for streaming
@@ -245,19 +249,35 @@ func (s *Server) exportFlows(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Set streaming headers
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Content-Disposition", `attachment; filename="flows.ndjson"`)
+	// Create exporter for requested format
+	exporter := NewExporter(exportCfg.Format)
 
-	encoder := json.NewEncoder(w)
+	// Set response headers
+	timestamp := time.Now().UTC().Format("20060102-150405")
+	filename := fmt.Sprintf("flows-%s.%s", timestamp, exporter.FileExtension())
+	w.Header().Set("Content-Type", exporter.ContentType())
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
 		return
 	}
 
+	// Write header
+	if err := exporter.WriteHeader(w); err != nil {
+		s.logger.Error("export: failed to write header", "error", err)
+		return
+	}
+
 	rowCount := 0
+	truncatedBodies := 0
 	for {
+		// Check row limit
+		if exportCfg.MaxRows > 0 && rowCount >= exportCfg.MaxRows {
+			break
+		}
+
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		flows, err := s.store.ListFlows(ctx, filter)
 		cancel()
@@ -271,18 +291,44 @@ func (s *Server) exportFlows(w http.ResponseWriter, r *http.Request) {
 		}
 
 		for _, f := range flows {
-			if err := encoder.Encode(toExportFlowSummary(f)); err != nil {
-				s.logger.Error("export: failed to encode flow", "error", err, "flow_id", f.ID)
+			if exportCfg.MaxRows > 0 && rowCount >= exportCfg.MaxRows {
+				break
+			}
+
+			if err := exporter.WriteFlow(w, f, exportCfg.IncludeBodies); err != nil {
+				s.logger.Error("export: failed to write flow", "error", err, "flow_id", f.ID)
 				return
 			}
-			flusher.Flush()
+
+			// Track truncated bodies
+			if exportCfg.IncludeBodies && (f.RequestBodyTruncated || f.ResponseBodyTruncated) {
+				truncatedBodies++
+			}
+
+			// Flush for streaming formats
+			if exportCfg.Format == FormatNDJSON {
+				flusher.Flush()
+			}
 			rowCount++
 		}
 
 		filter.Offset += len(flows)
 	}
 
-	s.logger.Info("export complete", "row_count", rowCount)
+	// Write footer
+	if err := exporter.WriteFooter(w, rowCount, truncatedBodies); err != nil {
+		s.logger.Error("export: failed to write footer", "error", err)
+	}
+
+	// Set row count header (for NDJSON/CSV - JSON has it in body)
+	if exportCfg.Format != FormatJSON {
+		w.Header().Set("X-Export-Row-Count", fmt.Sprintf("%d", rowCount))
+		if exportCfg.IncludeBodies && truncatedBodies > 0 {
+			w.Header().Set("X-Export-Truncated-Bodies", fmt.Sprintf("%d", truncatedBodies))
+		}
+	}
+
+	s.logger.Info("export complete", "format", exportCfg.Format, "row_count", rowCount, "include_bodies", exportCfg.IncludeBodies)
 }
 
 // getFlow returns a single flow by ID.
