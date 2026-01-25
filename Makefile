@@ -43,8 +43,8 @@ dev-backend:
 dev-backend-debug:
 	go run ./cmd/langley -debug
 
-dev-frontend:
-	cd web && npm run dev
+dev-frontend: ## Run frontend dev server
+	cd web && npx vite
 
 run: build ## Build and run production binary
 	./langley.exe
