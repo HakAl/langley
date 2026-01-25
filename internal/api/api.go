@@ -75,6 +75,7 @@ func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger, o
 
 	// Register routes
 	s.mux.HandleFunc("GET /api/flows", s.authMiddleware(s.listFlows))
+	s.mux.HandleFunc("GET /api/flows/export", s.authMiddleware(s.exportFlows))
 	s.mux.HandleFunc("GET /api/flows/{id}", s.authMiddleware(s.getFlow))
 	s.mux.HandleFunc("GET /api/flows/{id}/events", s.authMiddleware(s.getFlowEvents))
 	s.mux.HandleFunc("GET /api/flows/{id}/anomalies", s.authMiddleware(s.getFlowAnomalies))
@@ -214,6 +215,74 @@ func (s *Server) listFlows(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, response)
+}
+
+// exportFlows streams flows as NDJSON for export.
+func (s *Server) exportFlows(w http.ResponseWriter, r *http.Request) {
+	// Parse filters (same as listFlows)
+	filter := store.FlowFilter{
+		Limit:  100, // batch size for streaming
+		Offset: 0,
+	}
+
+	if v := r.URL.Query().Get("host"); v != "" {
+		filter.Host = &v
+	}
+	if v := r.URL.Query().Get("task_id"); v != "" {
+		filter.TaskID = &v
+	}
+	if v := r.URL.Query().Get("model"); v != "" {
+		filter.Model = &v
+	}
+	if v := r.URL.Query().Get("start_time"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.StartTime = &t
+		}
+	}
+	if v := r.URL.Query().Get("end_time"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			filter.EndTime = &t
+		}
+	}
+
+	// Set streaming headers
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", `attachment; filename="flows.ndjson"`)
+
+	encoder := json.NewEncoder(w)
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	rowCount := 0
+	for {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		flows, err := s.store.ListFlows(ctx, filter)
+		cancel()
+
+		if err != nil {
+			s.logger.Error("export: failed to list flows", "error", err, "offset", filter.Offset)
+			break
+		}
+		if len(flows) == 0 {
+			break
+		}
+
+		for _, f := range flows {
+			if err := encoder.Encode(toExportFlowSummary(f)); err != nil {
+				s.logger.Error("export: failed to encode flow", "error", err, "flow_id", f.ID)
+				return
+			}
+			flusher.Flush()
+			rowCount++
+		}
+
+		filter.Offset += len(flows)
+	}
+
+	s.logger.Info("export complete", "row_count", rowCount)
 }
 
 // getFlow returns a single flow by ID.
@@ -841,6 +910,26 @@ type FlowDetail struct {
 	CostSource            *string             `json:"cost_source,omitempty"`
 }
 
+// ExportFlowSummary is the export format for flows (NDJSON streaming).
+type ExportFlowSummary struct {
+	ID            string   `json:"id"`
+	Timestamp     string   `json:"timestamp"`
+	Host          string   `json:"host"`
+	Method        string   `json:"method"`
+	Path          string   `json:"path"`
+	StatusCode    *int     `json:"status_code,omitempty"`
+	DurationMs    *int64   `json:"duration_ms,omitempty"`
+	IsSSE         bool     `json:"is_sse"`
+	TaskID        *string  `json:"task_id,omitempty"`
+	TaskSource    *string  `json:"task_source,omitempty"`
+	Model         *string  `json:"model,omitempty"`
+	Provider      string   `json:"provider"`
+	InputTokens   *int     `json:"input_tokens,omitempty"`
+	OutputTokens  *int     `json:"output_tokens,omitempty"`
+	TotalCost     *float64 `json:"total_cost,omitempty"`
+	FlowIntegrity string   `json:"flow_integrity"`
+}
+
 // EventResponse is the API response for an event.
 type EventResponse struct {
 	ID        string                 `json:"id"`
@@ -1006,6 +1095,27 @@ func toFlowDetail(f *store.Flow) FlowDetail {
 		CacheCreationTokens:   f.CacheCreationTokens,
 		CacheReadTokens:       f.CacheReadTokens,
 		CostSource:            f.CostSource,
+	}
+}
+
+func toExportFlowSummary(f *store.Flow) ExportFlowSummary {
+	return ExportFlowSummary{
+		ID:            f.ID,
+		Timestamp:     f.Timestamp.Format(time.RFC3339),
+		Host:          f.Host,
+		Method:        f.Method,
+		Path:          f.Path,
+		StatusCode:    f.StatusCode,
+		DurationMs:    f.DurationMs,
+		IsSSE:         f.IsSSE,
+		TaskID:        f.TaskID,
+		TaskSource:    f.TaskSource,
+		Model:         f.Model,
+		Provider:      f.Provider,
+		InputTokens:   f.InputTokens,
+		OutputTokens:  f.OutputTokens,
+		TotalCost:     f.TotalCost,
+		FlowIntegrity: f.FlowIntegrity,
 	}
 }
 
