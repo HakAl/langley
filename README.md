@@ -1,17 +1,19 @@
 # Langley
 
-An intercepting proxy for Claude API traffic with persistence, real-time monitoring, and analytics.
+An intercepting proxy for LLM API traffic with persistence, real-time monitoring, and analytics. Supports Anthropic, OpenAI, AWS Bedrock, and Google Gemini.
 
 ## Overview
 
-Langley sits between your application and the Claude API, capturing all traffic for debugging, cost tracking, and analysis. It provides:
+Langley sits between your application and LLM APIs, capturing all traffic for debugging, cost tracking, and analysis. It provides:
 
+- **Multi-Provider Support** - Anthropic, OpenAI, AWS Bedrock, Google Gemini
 - **Real-time Dashboard** - WebSocket-powered flow viewer with instant updates
 - **Token & Cost Tracking** - Per-request and per-task cost breakdown
 - **TLS Interception** - Transparent MITM proxy with dynamic certificates
 - **Credential Redaction** - API keys and sensitive data never hit disk
 - **Anomaly Detection** - Alerts for large contexts, slow responses, rapid retries
 - **Task Grouping** - Group related requests by task boundary detection
+- **Export** - Download flows as NDJSON, JSON, or CSV
 
 ## Quick Start
 
@@ -80,6 +82,8 @@ Navigate to `http://localhost:9091` and enter your auth token (shown at startup)
 - Watch requests flow through in real-time via WebSocket
 - Click any flow to see full request/response details
 - Filter by host, task, or status code
+- Keyboard navigation (j/k to move, Enter to select, / to search)
+- Dark/light theme toggle
 
 ### Analytics Dashboard
 - Total cost, tokens, and request counts
@@ -180,6 +184,7 @@ All endpoints require `Authorization: Bearer <token>` header.
 - `GET /api/flows/{id}` - Get flow details
 - `GET /api/flows/{id}/events` - Get SSE events for a flow
 - `GET /api/flows/{id}/anomalies` - Get anomalies for a flow
+- `GET /api/flows/export` - Export flows (`?format=ndjson|json|csv`, `?max_rows=`, `?include_bodies=true`)
 
 ### Analytics
 - `GET /api/stats` - Overall statistics
@@ -213,7 +218,7 @@ All endpoints require `Authorization: Bearer <token>` header.
 ## Architecture
 
 ```
-Client -> [HTTPS] -> Langley Proxy -> [HTTPS] -> Claude API
+Client -> [HTTPS] -> Langley Proxy -> [HTTPS] -> LLM API
                           |
                           v
                      SQLite DB
@@ -229,14 +234,20 @@ Client -> [HTTPS] -> Langley Proxy -> [HTTPS] -> Claude API
 ## Development
 
 ```bash
-# Build
-go build ./cmd/langley
+# Install dependencies
+make install-deps
+
+# Run in development mode (backend + frontend with hot reload)
+make dev
 
 # Run tests
-go test ./...
+make test
 
-# Build frontend
-cd web && npm install && npm run build
+# Build for production
+make build
+
+# Stop dev servers (Windows: use after Ctrl+C)
+make stop
 ```
 
 ## License
