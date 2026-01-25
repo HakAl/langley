@@ -122,6 +122,11 @@ function App() {
   const reconnectAttemptsRef = useRef(0)
   const MAX_RECONNECT_ATTEMPTS = 5
 
+  // Keyboard navigation
+  const [selectedIndex, setSelectedIndex] = useState(0)
+  const [showHelp, setShowHelp] = useState(false)
+  const hostFilterRef = useRef<HTMLInputElement>(null)
+
   // Filters
   const [hostFilter, setHostFilter] = useState('')
   const [taskFilter, setTaskFilter] = useState('')
@@ -333,6 +338,105 @@ function App() {
     return true
   })
 
+  // Get current navigable list based on view
+  const getNavigableItems = useCallback(() => {
+    switch (view) {
+      case 'flows': return filteredFlows
+      case 'tasks': return tasks
+      case 'tools': return tools
+      case 'anomalies': return anomalies
+      default: return []
+    }
+  }, [view, filteredFlows, tasks, tools, anomalies])
+
+  // Reset selection when view or filtered items change
+  useEffect(() => {
+    setSelectedIndex(0)
+  }, [view, filteredFlows.length, tasks.length, tools.length, anomalies.length])
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't capture when typing in inputs
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        // Escape blurs inputs
+        if (e.key === 'Escape') {
+          (e.target as HTMLElement).blur()
+        }
+        return
+      }
+
+      const items = getNavigableItems()
+
+      switch (e.key) {
+        case 'j':
+          if (items.length > 0) {
+            setSelectedIndex(i => Math.min(i + 1, items.length - 1))
+          }
+          break
+        case 'k':
+          if (items.length > 0) {
+            setSelectedIndex(i => Math.max(i - 1, 0))
+          }
+          break
+        case 'Enter':
+          if (items.length > 0 && selectedIndex < items.length) {
+            const item = items[selectedIndex]
+            if (view === 'flows' && 'id' in item) {
+              fetchFlowDetail((item as Flow).id)
+            } else if (view === 'tasks' && 'task_id' in item) {
+              setTaskFilter((item as TaskSummary).task_id)
+              setView('flows')
+            } else if (view === 'anomalies' && 'flow_id' in item) {
+              const anomaly = item as Anomaly
+              if (anomaly.flow_id) {
+                fetchFlowDetail(anomaly.flow_id)
+                setView('flows')
+              }
+            }
+          }
+          break
+        case '/':
+          if (view === 'flows') {
+            e.preventDefault() // Prevent Firefox quick-find
+            hostFilterRef.current?.focus()
+          }
+          break
+        case 'Escape':
+          if (showHelp) {
+            setShowHelp(false)
+          } else if (selectedFlow) {
+            setSelectedFlow(null)
+          }
+          break
+        case '?':
+          setShowHelp(h => !h)
+          break
+        case '1':
+          setView('flows')
+          break
+        case '2':
+          setView('analytics')
+          break
+        case '3':
+          setView('tasks')
+          break
+        case '4':
+          setView('tools')
+          break
+        case '5':
+          setView('anomalies')
+          break
+        case '6':
+          setView('settings')
+          break
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [view, selectedIndex, selectedFlow, showHelp, getNavigableItems, fetchFlowDetail])
+
   const formatTime = (timestamp: string) => new Date(timestamp).toLocaleTimeString()
   const formatDate = (timestamp: string) => new Date(timestamp).toLocaleDateString()
   const formatCost = (cost?: number) => cost != null ? `$${cost.toFixed(4)}` : null
@@ -374,6 +478,7 @@ function App() {
     <div className="flows-view">
       <div className="filters">
         <input
+          ref={hostFilterRef}
           type="text"
           placeholder="Filter by host..."
           value={hostFilter}
@@ -392,18 +497,27 @@ function App() {
         </select>
       </div>
 
-      <div className="flow-list">
+      <div className="flow-list" role="listbox" aria-label="Flow list" aria-activedescendant={filteredFlows.length > 0 ? `flow-${selectedIndex}` : undefined}>
         {filteredFlows.length === 0 ? (
           <div className="empty-state">
             <h2>No flows captured yet</h2>
             <p>Configure your client to use the proxy and traffic will appear here.</p>
           </div>
         ) : (
-          filteredFlows.map(flow => (
+          filteredFlows.map((flow, index) => (
             <div
               key={flow.id}
-              className={`flow-item ${selectedFlow?.id === flow.id ? 'selected' : ''}`}
+              id={`flow-${index}`}
+              role="option"
+              aria-selected={index === selectedIndex}
+              tabIndex={index === selectedIndex ? 0 : -1}
+              className={`flow-item ${selectedFlow?.id === flow.id ? 'selected' : ''} ${index === selectedIndex ? 'keyboard-selected' : ''}`}
               onClick={() => fetchFlowDetail(flow.id)}
+              ref={el => {
+                if (index === selectedIndex && el) {
+                  el.scrollIntoView({ block: 'nearest' })
+                }
+              }}
             >
               <span className={`method ${flow.method}`}>{flow.method}</span>
               <div className="host-path">
@@ -563,7 +677,7 @@ function App() {
   // Render tasks view
   const renderTasks = () => (
     <div className="tasks-view">
-      <table className="data-table">
+      <table className="data-table" role="listbox" aria-label="Task list">
         <thead>
           <tr>
             <th>Task ID</th>
@@ -576,8 +690,19 @@ function App() {
           </tr>
         </thead>
         <tbody>
-          {tasks.map(task => (
-            <tr key={task.task_id} onClick={() => { setTaskFilter(task.task_id); setView('flows') }}>
+          {tasks.map((task, index) => (
+            <tr
+              key={task.task_id}
+              role="option"
+              aria-selected={index === selectedIndex}
+              className={index === selectedIndex ? 'keyboard-selected' : ''}
+              onClick={() => { setTaskFilter(task.task_id); setView('flows') }}
+              ref={el => {
+                if (index === selectedIndex && el) {
+                  el.scrollIntoView({ block: 'nearest' })
+                }
+              }}
+            >
               <td className="task-id">{task.task_id.slice(0, 8)}...</td>
               <td>{task.flow_count}</td>
               <td>{task.total_tokens_in.toLocaleString()}</td>
@@ -595,7 +720,7 @@ function App() {
   // Render tools view
   const renderTools = () => (
     <div className="tools-view">
-      <table className="data-table">
+      <table className="data-table" role="listbox" aria-label="Tool list">
         <thead>
           <tr>
             <th>Tool</th>
@@ -606,8 +731,18 @@ function App() {
           </tr>
         </thead>
         <tbody>
-          {tools.map(tool => (
-            <tr key={tool.tool_name}>
+          {tools.map((tool, index) => (
+            <tr
+              key={tool.tool_name}
+              role="option"
+              aria-selected={index === selectedIndex}
+              className={index === selectedIndex ? 'keyboard-selected' : ''}
+              ref={el => {
+                if (index === selectedIndex && el) {
+                  el.scrollIntoView({ block: 'nearest' })
+                }
+              }}
+            >
               <td className="tool-name">{tool.tool_name}</td>
               <td>{tool.invocation_count}</td>
               <td className={tool.success_rate >= 90 ? 'success' : tool.success_rate >= 70 ? 'warning' : 'error'}>
@@ -631,9 +766,21 @@ function App() {
           <p>Everything looks normal!</p>
         </div>
       ) : (
-        <div className="anomaly-list">
-          {anomalies.map((anomaly, i) => (
-            <div key={i} className={`anomaly-item ${getSeverityClass(anomaly.severity)}`}>
+        <div className="anomaly-list" role="listbox" aria-label="Anomaly list" aria-activedescendant={`anomaly-${selectedIndex}`}>
+          {anomalies.map((anomaly, index) => (
+            <div
+              key={index}
+              id={`anomaly-${index}`}
+              role="option"
+              aria-selected={index === selectedIndex}
+              tabIndex={index === selectedIndex ? 0 : -1}
+              className={`anomaly-item ${getSeverityClass(anomaly.severity)} ${index === selectedIndex ? 'keyboard-selected' : ''}`}
+              ref={el => {
+                if (index === selectedIndex && el) {
+                  el.scrollIntoView({ block: 'nearest' })
+                }
+              }}
+            >
               <div className="anomaly-header">
                 <span className={`severity-badge ${anomaly.severity}`}>{anomaly.severity}</span>
                 <span className="anomaly-type">{anomaly.type.replace(/_/g, ' ')}</span>
@@ -770,6 +917,27 @@ function App() {
           {selectedFlow && view === 'flows' && renderFlowDetail()}
         </div>
       </div>
+
+      {showHelp && (
+        <div className="help-overlay" onClick={() => setShowHelp(false)}>
+          <div className="help-modal" onClick={e => e.stopPropagation()}>
+            <div className="help-header">
+              <h2>Keyboard Shortcuts</h2>
+              <button className="close-btn" onClick={() => setShowHelp(false)}>×</button>
+            </div>
+            <table className="help-table">
+              <tbody>
+                <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>Navigate down / up</td></tr>
+                <tr><td><kbd>Enter</kbd></td><td>Select item</td></tr>
+                <tr><td><kbd>/</kbd></td><td>Focus search (flows view)</td></tr>
+                <tr><td><kbd>Escape</kbd></td><td>Close panel / blur input</td></tr>
+                <tr><td><kbd>1</kbd>-<kbd>6</kbd></td><td>Switch views</td></tr>
+                <tr><td><kbd>?</kbd></td><td>Toggle this help</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

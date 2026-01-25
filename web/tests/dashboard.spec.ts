@@ -542,3 +542,201 @@ test.describe('Error Handling', () => {
     await expect(page.getByText('Invalid token')).toBeVisible();
   });
 });
+
+test.describe('Keyboard Shortcuts', () => {
+  test.beforeEach(async ({ page }) => {
+    await setupMocks(page);
+    await page.goto('/');
+    await authenticate(page);
+  });
+
+  test('? toggles help modal', async ({ page }) => {
+    // Help modal should not be visible initially
+    await expect(page.getByRole('heading', { name: 'Keyboard Shortcuts' })).not.toBeVisible();
+
+    // Press ? to open
+    await page.keyboard.press('?');
+    await expect(page.getByRole('heading', { name: 'Keyboard Shortcuts' })).toBeVisible();
+
+    // Press ? again to close
+    await page.keyboard.press('?');
+    await expect(page.getByRole('heading', { name: 'Keyboard Shortcuts' })).not.toBeVisible();
+  });
+
+  test('help modal shows all shortcuts', async ({ page }) => {
+    // Click body to ensure page has focus (not on an input)
+    await page.locator('.flow-list').click();
+    await page.keyboard.press('?');
+    await expect(page.getByRole('heading', { name: 'Keyboard Shortcuts' })).toBeVisible();
+
+    await expect(page.getByText('Navigate down / up')).toBeVisible();
+    await expect(page.getByText('Select item')).toBeVisible();
+    await expect(page.getByText('Focus search (flows view)')).toBeVisible();
+    await expect(page.getByText('Close panel / blur input')).toBeVisible();
+    await expect(page.getByText('Switch views')).toBeVisible();
+    await expect(page.getByText('Toggle this help')).toBeVisible();
+  });
+
+  test('Escape closes help modal', async ({ page }) => {
+    await page.locator('.flow-list').click();
+    await page.keyboard.press('?');
+    await expect(page.getByRole('heading', { name: 'Keyboard Shortcuts' })).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('heading', { name: 'Keyboard Shortcuts' })).not.toBeVisible();
+  });
+
+  test('Escape closes flow detail panel', async ({ page }) => {
+    // Open flow detail
+    await page.locator('.flow-item').first().click();
+    await expect(page.locator('.flow-detail')).toBeVisible();
+
+    // Press Escape to close
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.flow-detail')).not.toBeVisible();
+  });
+
+  test('number keys switch views', async ({ page }) => {
+    // Start on Flows (1)
+    await expect(page.getByRole('button', { name: 'Flows' })).toHaveClass(/active/);
+
+    // Press 2 for Analytics
+    await page.keyboard.press('2');
+    await expect(page.getByRole('button', { name: 'Analytics' })).toHaveClass(/active/);
+    await expect(page.getByText('Total Flows')).toBeVisible();
+
+    // Press 3 for Tasks
+    await page.keyboard.press('3');
+    await expect(page.getByRole('button', { name: 'Tasks' })).toHaveClass(/active/);
+    await expect(page.getByRole('columnheader', { name: 'Task ID' })).toBeVisible();
+
+    // Press 4 for Tools
+    await page.keyboard.press('4');
+    await expect(page.getByRole('button', { name: 'Tools' })).toHaveClass(/active/);
+    await expect(page.getByRole('columnheader', { name: 'Tool' })).toBeVisible();
+
+    // Press 5 for Anomalies
+    await page.keyboard.press('5');
+    await expect(page.getByRole('button', { name: /Anomalies/ })).toHaveClass(/active/);
+
+    // Press 6 for Settings
+    await page.keyboard.press('6');
+    await expect(page.getByRole('button', { name: 'Settings', exact: true })).toHaveClass(/active/);
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+
+    // Press 1 to go back to Flows
+    await page.keyboard.press('1');
+    await expect(page.getByRole('button', { name: 'Flows' })).toHaveClass(/active/);
+  });
+
+  test('/ focuses search input in flows view', async ({ page }) => {
+    const searchInput = page.getByPlaceholder('Filter by host...');
+    await expect(searchInput).not.toBeFocused();
+
+    await page.keyboard.press('/');
+    await expect(searchInput).toBeFocused();
+  });
+
+  test('/ does not focus search in other views', async ({ page }) => {
+    // Click to ensure focus, then switch to Tasks view
+    await page.locator('.flow-list').click();
+    await page.keyboard.press('3');
+    await expect(page.getByRole('button', { name: 'Tasks' })).toHaveClass(/active/);
+    await expect(page.getByRole('columnheader', { name: 'Task ID' })).toBeVisible();
+
+    // Press / should not focus search (not visible in Tasks view)
+    await page.keyboard.press('/');
+
+    // Search input is not visible in Tasks view, so it shouldn't be focused
+    const searchInput = page.getByPlaceholder('Filter by host...');
+    await expect(searchInput).not.toBeVisible();
+  });
+
+  test('j/k navigate flow list', async ({ page }) => {
+    // First item should be keyboard-selected initially
+    const firstItem = page.locator('.flow-item').first();
+    const secondItem = page.locator('.flow-item').nth(1);
+
+    await expect(firstItem).toHaveClass(/keyboard-selected/);
+    await expect(secondItem).not.toHaveClass(/keyboard-selected/);
+
+    // Press j to move down
+    await page.keyboard.press('j');
+    await expect(firstItem).not.toHaveClass(/keyboard-selected/);
+    await expect(secondItem).toHaveClass(/keyboard-selected/);
+
+    // Press k to move back up
+    await page.keyboard.press('k');
+    await expect(firstItem).toHaveClass(/keyboard-selected/);
+    await expect(secondItem).not.toHaveClass(/keyboard-selected/);
+  });
+
+  test('Enter selects keyboard-selected flow', async ({ page }) => {
+    // Flow detail should not be visible
+    await expect(page.locator('.flow-detail')).not.toBeVisible();
+
+    // Press Enter to select first flow
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.flow-detail')).toBeVisible();
+  });
+
+  test('j/k navigate tasks list', async ({ page }) => {
+    // Switch to Tasks view via click (to ensure focus)
+    await page.getByRole('button', { name: 'Tasks' }).click();
+
+    // Wait for task data to load (task-abc is the truncated task ID)
+    await expect(page.getByText('task-abc')).toBeVisible();
+
+    // First task row should be keyboard-selected by default
+    const firstRow = page.locator('tbody tr[role="option"]').first();
+    await expect(firstRow).toHaveClass(/keyboard-selected/);
+  });
+
+  test('Enter on task navigates to flows with filter', async ({ page }) => {
+    // Switch to Tasks view via click
+    await page.getByRole('button', { name: 'Tasks' }).click();
+    await expect(page.getByRole('columnheader', { name: 'Task ID' })).toBeVisible();
+
+    // Click on table to ensure keyboard focus, then press Enter
+    await page.locator('tbody').click();
+    await page.keyboard.press('Enter');
+
+    // Should switch to Flows view with task filter
+    await expect(page.getByRole('button', { name: 'Flows' })).toHaveClass(/active/);
+    await expect(page.getByPlaceholder('Filter by task ID...')).toHaveValue('task-abc123');
+  });
+
+  test('keyboard shortcuts ignored when typing in input', async ({ page }) => {
+    // Focus the search input
+    await page.getByPlaceholder('Filter by host...').focus();
+
+    // Type 'j' - should go into input, not navigate
+    await page.keyboard.type('j');
+    await expect(page.getByPlaceholder('Filter by host...')).toHaveValue('j');
+
+    // View should not have changed
+    await expect(page.getByRole('button', { name: 'Flows' })).toHaveClass(/active/);
+  });
+
+  test('Escape blurs focused input', async ({ page }) => {
+    const searchInput = page.getByPlaceholder('Filter by host...');
+
+    // Focus and type
+    await searchInput.focus();
+    await expect(searchInput).toBeFocused();
+
+    // Press Escape to blur
+    await page.keyboard.press('Escape');
+    await expect(searchInput).not.toBeFocused();
+  });
+
+  test('flow list has ARIA listbox attributes', async ({ page }) => {
+    const flowList = page.locator('.flow-list');
+    await expect(flowList).toHaveAttribute('role', 'listbox');
+    await expect(flowList).toHaveAttribute('aria-label', 'Flow list');
+
+    const firstItem = page.locator('.flow-item').first();
+    await expect(firstItem).toHaveAttribute('role', 'option');
+    await expect(firstItem).toHaveAttribute('aria-selected', 'true');
+  });
+});
