@@ -168,11 +168,46 @@ Unit tests use Vitest for component logic.
 
 # Agent Instructions
 
+## Project Structure
+
+```
+langley/
+├── cmd/langley/         # Main entry point
+├── internal/
+│   ├── api/             # REST API handlers, export logic
+│   ├── config/          # Configuration loading
+│   ├── parser/          # SSE/JSON response parsing
+│   ├── provider/        # LLM provider detection (anthropic, openai, etc.)
+│   ├── proxy/           # HTTPS CONNECT proxy, request interception
+│   ├── redact/          # Sensitive data masking
+│   ├── store/           # SQLite persistence (flows, events, tools)
+│   ├── task/            # Task ID extraction
+│   ├── tls/             # Certificate generation
+│   └── ws/              # WebSocket for live updates
+├── web/                 # React frontend (Vite)
+│   ├── src/App.tsx      # Main dashboard component
+│   └── tests/           # Playwright E2E tests
+├── test/e2e/            # Go E2E tests
+└── Makefile             # Build/dev commands
+```
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `internal/store/store.go` | Store interface (add methods here first) |
+| `internal/store/sqlite.go` | SQLite implementation + schema |
+| `internal/api/api.go` | API route registration + handlers |
+| `internal/proxy/proxy.go` | HTTPS proxy core logic |
+| `web/src/App.tsx` | React dashboard (single-file app) |
+| `config.yaml` | Runtime configuration |
+
 ## Building & Running
 
 Use `make` (via Git Bash on Windows). Install make if needed: `choco install make` or use MinGW.
 
 ```bash
+# Core commands
 make help          # Show all targets
 make install-deps  # Install Go + npm dependencies
 make dev           # Run dev servers (backend + frontend hot reload)
@@ -180,6 +215,13 @@ make build         # Build production binary
 make test          # Run all tests (with -race flag)
 make check         # Lint + test (quality gate)
 make clean         # Remove build artifacts
+
+# Development helpers
+make dev-debug     # Backend with debug logging (run dev-frontend separately)
+make stop          # Kill orphaned dev processes (Windows Ctrl+C workaround)
+make stop-frontend # Kill vite only
+make stop-backend  # Kill langley only
+make test-cover    # Generate coverage report
 ```
 
 **Development workflow:**
@@ -193,6 +235,48 @@ make dev           # Starts backend + Vite dev server
 **Before committing:**
 ```bash
 make check         # Must pass
+```
+
+## API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/flows` | List flows (paginated, filterable) |
+| `GET /api/flows/count` | Count flows matching filters |
+| `GET /api/flows/export` | Export flows (ndjson/json/csv) |
+| `GET /api/flows/{id}` | Get single flow detail |
+| `GET /api/flows/{id}/events` | Get SSE events for flow |
+| `GET /api/stats` | Dashboard stats |
+| `GET /api/analytics/*` | Task/tool/cost analytics |
+| `GET /api/health` | Health check |
+| `WS /ws` | Live flow updates |
+
+## Configuration
+
+Environment variables override `config.yaml`:
+- `LANGLEY_AUTH_TOKEN` - API auth token
+- `LANGLEY_PROXY_PORT` - Proxy listen port (default: 9090)
+- `LANGLEY_API_PORT` - Dashboard API port (default: 8080)
+- `LANGLEY_DB_PATH` - SQLite database path
+
+## Debugging Tips
+
+```bash
+# Run backend with verbose logging
+make dev-debug
+
+# Check if ports are in use
+netstat -an | grep 9090
+netstat -an | grep 5173
+
+# Kill stuck processes on Windows
+make stop
+
+# Run specific Go test
+go test -v -run TestName ./internal/store/...
+
+# Check test coverage
+make test-cover && open coverage.html
 ```
 
 ## Branch Strategy
