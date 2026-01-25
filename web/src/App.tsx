@@ -93,7 +93,15 @@ interface Settings {
   idle_gap_minutes: number
 }
 
+// Theme utilities
+const getInitialTheme = (): 'dark' | 'light' => {
+  const stored = localStorage.getItem('langley_theme')
+  if (stored === 'dark' || stored === 'light') return stored
+  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+}
+
 function App() {
+  const [theme, setTheme] = useState<'dark' | 'light'>(getInitialTheme)
   const [token, setToken] = useState(() => localStorage.getItem('langley_token') || '')
   const [tokenInput, setTokenInput] = useState(token)
   const [flows, setFlows] = useState<Flow[]>([])
@@ -307,6 +315,14 @@ function App() {
   useEffect(() => {
     if (settings) setIdleGapInput(settings.idle_gap_minutes)
   }, [settings])
+
+  // Apply theme to document
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('langley_theme', theme)
+  }, [theme])
+
+  const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark')
 
   // Filter flows
   const filteredFlows = flows.filter(flow => {
@@ -711,9 +727,14 @@ function App() {
       <header>
         <h1>Langley</h1>
         {renderNav()}
-        <div className="status">
-          <span className={`status-dot ${connected ? 'connected' : ''}`}></span>
-          <span>{connected ? 'Connected' : 'Disconnected'}</span>
+        <div className="header-right">
+          <button className="theme-toggle" onClick={toggleTheme} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
+            {theme === 'dark' ? '☀' : '☽'}
+          </button>
+          <div className="status">
+            <span className={`status-dot ${connected ? 'connected' : ''}`}></span>
+            <span>{connected ? 'Connected' : 'Disconnected'}</span>
+          </div>
         </div>
       </header>
 
