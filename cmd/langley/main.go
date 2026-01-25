@@ -48,6 +48,7 @@ func main() {
 	configPath := flag.String("config", "", "Path to config file")
 	listenAddr := flag.String("listen", "", "Proxy listen address (overrides config)")
 	apiAddr := flag.String("api", "localhost:9091", "API server listen address")
+	debugMode := flag.Bool("debug", false, "Enable debug logging")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	showCA := flag.Bool("show-ca", false, "Show CA certificate path and exit")
 	showHelp := flag.Bool("help", false, "Show help")
@@ -64,8 +65,12 @@ func main() {
 	}
 
 	// Setup logging
+	logLevel := slog.LevelInfo
+	if *debugMode {
+		logLevel = slog.LevelDebug
+	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: logLevel,
 	}))
 	slog.SetDefault(logger)
 

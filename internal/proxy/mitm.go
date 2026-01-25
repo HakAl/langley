@@ -45,6 +45,9 @@ type MITMProxy struct {
 	onFlow   func(*store.Flow)
 	onUpdate func(*store.Flow)
 	onEvent  func(*store.Event)
+
+	// insecureSkipVerifyUpstream is for testing only
+	insecureSkipVerifyUpstream bool
 }
 
 // MITMProxyConfig holds configuration for creating a MITM proxy.
@@ -59,6 +62,10 @@ type MITMProxyConfig struct {
 	OnFlow       func(*store.Flow)
 	OnUpdate     func(*store.Flow)
 	OnEvent      func(*store.Event) // Called for each SSE event parsed
+
+	// InsecureSkipVerifyUpstream skips TLS verification for upstream connections.
+	// This should ONLY be used for testing. Do not enable in production.
+	InsecureSkipVerifyUpstream bool
 }
 
 // NewMITMProxy creates a new MITM proxy.
@@ -83,9 +90,10 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		TLSClientConfig: &tls.Config{
-			// Security: Validate upstream TLS by default (addresses langley-vu5)
-			InsecureSkipVerify: false,
+			InsecureSkipVerify: false,              // Validate upstream (langley-vu5)
+			NextProtos:         []string{"http/1.1"}, // Force HTTP/1.1 (langley-a4m)
 		},
+		ForceAttemptHTTP2:     false, // Disable HTTP/2 (langley-a4m)
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
@@ -101,18 +109,19 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 	}
 
 	p := &MITMProxy{
-		cfg:          cfg.Config,
-		logger:       cfg.Logger,
-		ca:           cfg.CA,
-		certCache:    cfg.CertCache,
-		redactor:     cfg.Redactor,
-		store:        cfg.Store,
-		taskAssigner: cfg.TaskAssigner,
-		providers:    provider.NewRegistry(),
-		client:       client,
-		onFlow:       cfg.OnFlow,
-		onUpdate:     cfg.OnUpdate,
-		onEvent:      cfg.OnEvent,
+		cfg:                        cfg.Config,
+		logger:                     cfg.Logger,
+		ca:                         cfg.CA,
+		certCache:                  cfg.CertCache,
+		redactor:                   cfg.Redactor,
+		store:                      cfg.Store,
+		taskAssigner:               cfg.TaskAssigner,
+		providers:                  provider.NewRegistry(),
+		client:                     client,
+		onFlow:                     cfg.OnFlow,
+		onUpdate:                   cfg.OnUpdate,
+		onEvent:                    cfg.OnEvent,
+		insecureSkipVerifyUpstream: cfg.InsecureSkipVerifyUpstream,
 	}
 
 	// Initialize analytics engine if we have a database connection
@@ -158,6 +167,7 @@ func (p *MITMProxy) Serve(ctx context.Context) error {
 
 // ServeHTTP handles incoming HTTP requests.
 func (p *MITMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	p.logger.Debug("incoming request", "method", r.Method, "host", r.Host, "url", r.URL.String())
 	if r.Method == http.MethodConnect {
 		p.handleConnect(w, r)
 		return
@@ -281,7 +291,9 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Use SSE parser for event-stream responses
 	if flow.IsSSE {
-		if err := p.streamSSEWithParser(flowID, resp.Body, w, limitedWriter); err != nil {
+		// For SSE, wrap ResponseWriter with flusher to ensure immediate delivery
+		flushWriter := newFlushWriter(w)
+		if err := p.streamSSEWithParser(flowID, resp.Body, flushWriter, limitedWriter); err != nil {
 			p.logger.Debug("error streaming SSE response", "error", err)
 		}
 	} else {
@@ -348,15 +360,20 @@ func (p *MITMProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Start TLS handshake with client using generated cert
+	// Explicitly negotiate HTTP/1.1 to prevent HTTP/2 issues (langley-a4m)
 	tlsConfig := &tls.Config{
 		GetCertificate: p.certCache.GetCertificate,
+		NextProtos:     []string{"http/1.1"},
 	}
 	tlsConn := tls.Server(clientConn, tlsConfig)
 	if err := tlsConn.Handshake(); err != nil {
-		p.logger.Debug("TLS handshake failed", "error", err)
+		p.logger.Debug("TLS handshake failed", "host", r.Host, "error", err)
 		clientConn.Close()
 		return
 	}
+
+	// Log negotiated protocol for debugging (langley-a4m)
+	p.logger.Debug("TLS handshake complete", "host", r.Host, "negotiated_protocol", tlsConn.ConnectionState().NegotiatedProtocol)
 
 	// Parse host for upstream connection
 	host := r.Host
@@ -364,9 +381,10 @@ func (p *MITMProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		host = host + ":443"
 	}
 
-	// Connect to upstream
+	// Connect to upstream - force HTTP/1.1 to match client negotiation (langley-a4m)
 	upstreamConn, err := tls.Dial("tcp", host, &tls.Config{
-		InsecureSkipVerify: false, // Validate upstream (addresses langley-vu5)
+		InsecureSkipVerify: p.insecureSkipVerifyUpstream, // Only skip for testing (langley-vu5)
+		NextProtos:         []string{"http/1.1"},
 	})
 	if err != nil {
 		p.logger.Error("failed to connect to upstream", "host", host, "error", err)
@@ -390,10 +408,11 @@ func (p *MITMProxy) handleTLSConnection(clientConn *tls.Conn, upstreamConn *tls.
 		req, err := http.ReadRequest(clientReader)
 		if err != nil {
 			if err != io.EOF {
-				p.logger.Debug("error reading request", "error", err)
+				p.logger.Debug("error reading request from TLS connection", "host", host, "error", err)
 			}
 			return
 		}
+		p.logger.Debug("read request from TLS connection", "host", host, "method", req.Method, "path", req.URL.Path)
 
 		// Fix up the request URL
 		req.URL.Scheme = "https"
@@ -521,33 +540,66 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 	contentType := resp.Header.Get("Content-Type")
 	flow.IsSSE = strings.Contains(contentType, "text/event-stream")
 
-	// Capture response body while streaming to client
+	// Capture response body
 	var respBody bytes.Buffer
 	maxBody := p.cfg.Persistence.BodyMaxBytes
 	limitedWriter := &limitedBuffer{buf: &respBody, max: maxBody}
 
-	// Build response to send to client
-	var responseBuf bytes.Buffer
-	fmt.Fprintf(&responseBuf, "HTTP/%d.%d %s\r\n", resp.ProtoMajor, resp.ProtoMinor, resp.Status)
-	resp.Header.Write(&responseBuf)
-	responseBuf.WriteString("\r\n")
+	// Build response headers - remove hop-by-hop headers since Go de-chunks automatically
+	respHeaders := resp.Header.Clone()
+	removeHopByHopHeaders(respHeaders)
 
-	// Write headers to client
-	if _, err := clientConn.Write(responseBuf.Bytes()); err != nil {
-		p.logger.Debug("error writing response headers", "error", err)
-		resp.Body.Close()
-		return
-	}
-
-	// Stream body - use SSE parser for event-stream responses
+	// Handle SSE (streaming) vs regular responses differently (langley-a4m)
 	if flow.IsSSE {
-		if err := p.streamSSEWithParser(flowID, resp.Body, clientConn, limitedWriter); err != nil {
+		// SSE: Add Transfer-Encoding: chunked since Go de-chunks upstream responses
+		// but client needs framing to know when data arrives
+		respHeaders.Set("Transfer-Encoding", "chunked")
+
+		// SSE: stream headers immediately, then body
+		var responseBuf bytes.Buffer
+		fmt.Fprintf(&responseBuf, "HTTP/1.1 %s\r\n", resp.Status)
+		respHeaders.Write(&responseBuf)
+		responseBuf.WriteString("\r\n")
+
+		p.logger.Debug("sending SSE response headers", "flow_id", flowID, "headers", responseBuf.String())
+
+		if _, err := clientConn.Write(responseBuf.Bytes()); err != nil {
+			p.logger.Debug("error writing SSE response headers", "error", err)
+			resp.Body.Close()
+			return
+		}
+
+		// Wrap client connection in chunked writer for proper HTTP/1.1 framing
+		chunkedWriter := newChunkedWriter(clientConn)
+		if err := p.streamSSEWithParser(flowID, resp.Body, chunkedWriter, limitedWriter); err != nil {
 			p.logger.Debug("error streaming SSE response", "error", err)
 		}
+		// Write final chunk to signal end of response
+		chunkedWriter.Close()
 	} else {
-		multiWriter := io.MultiWriter(clientConn, limitedWriter)
+		// Non-SSE: buffer body first to set Content-Length (required after removing Transfer-Encoding)
+		var bodyBuf bytes.Buffer
+		multiWriter := io.MultiWriter(&bodyBuf, limitedWriter)
 		if _, err := io.Copy(multiWriter, resp.Body); err != nil {
-			p.logger.Debug("error streaming response", "error", err)
+			p.logger.Debug("error reading response body", "error", err)
+		}
+
+		// Set Content-Length based on actual body size
+		respHeaders.Set("Content-Length", fmt.Sprintf("%d", bodyBuf.Len()))
+
+		var responseBuf bytes.Buffer
+		fmt.Fprintf(&responseBuf, "HTTP/1.1 %s\r\n", resp.Status)
+		respHeaders.Write(&responseBuf)
+		responseBuf.WriteString("\r\n")
+
+		if _, err := clientConn.Write(responseBuf.Bytes()); err != nil {
+			p.logger.Debug("error writing response headers", "error", err)
+			resp.Body.Close()
+			return
+		}
+
+		if _, err := clientConn.Write(bodyBuf.Bytes()); err != nil {
+			p.logger.Debug("error writing response body", "error", err)
 		}
 	}
 	resp.Body.Close()
@@ -735,4 +787,65 @@ func (l *limitedBuffer) Write(p []byte) (n int, err error) {
 		return l.buf.Write(p[:remaining])
 	}
 	return l.buf.Write(p)
+}
+
+// chunkedWriter implements HTTP/1.1 chunked transfer encoding.
+// This is needed for SSE responses where Go's http.ReadResponse de-chunks
+// the upstream response but the client needs chunked framing (langley-a4m).
+type chunkedWriter struct {
+	w io.Writer
+}
+
+func newChunkedWriter(w io.Writer) *chunkedWriter {
+	return &chunkedWriter{w: w}
+}
+
+// Write writes a chunk in HTTP/1.1 chunked transfer encoding format.
+func (c *chunkedWriter) Write(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	// Write chunk size in hex
+	if _, err := fmt.Fprintf(c.w, "%x\r\n", len(p)); err != nil {
+		return 0, err
+	}
+	// Write chunk data
+	n, err = c.w.Write(p)
+	if err != nil {
+		return n, err
+	}
+	// Write chunk terminator
+	if _, err := c.w.Write([]byte("\r\n")); err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
+// Close writes the final zero-length chunk to signal end of response.
+func (c *chunkedWriter) Close() error {
+	_, err := c.w.Write([]byte("0\r\n\r\n"))
+	return err
+}
+
+// flushWriter wraps an io.Writer and flushes after each write if possible.
+// This is needed for SSE responses via http.ResponseWriter (langley-a4m).
+type flushWriter struct {
+	w       io.Writer
+	flusher http.Flusher
+}
+
+func newFlushWriter(w io.Writer) *flushWriter {
+	fw := &flushWriter{w: w}
+	if f, ok := w.(http.Flusher); ok {
+		fw.flusher = f
+	}
+	return fw
+}
+
+func (f *flushWriter) Write(p []byte) (n int, err error) {
+	n, err = f.w.Write(p)
+	if err == nil && f.flusher != nil {
+		f.flusher.Flush()
+	}
+	return n, err
 }

@@ -3,9 +3,12 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -771,6 +774,144 @@ func mustParseURL(t *testing.T, rawURL string) *url.URL {
 		t.Fatalf("failed to parse URL %q: %v", rawURL, err)
 	}
 	return u
+}
+
+// TestMITMProxy_CONNECT_SSE tests SSE streaming through HTTPS CONNECT tunnel.
+// This is the critical path used by Claude CLI and other HTTPS clients.
+func TestMITMProxy_CONNECT_SSE(t *testing.T) {
+	t.Parallel()
+
+	// Create mock HTTPS upstream with SSE
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("ResponseWriter doesn't support flushing")
+			return
+		}
+
+		// Send SSE events
+		events := []string{
+			"event: message_start\ndata: {\"type\":\"message_start\"}\n\n",
+			"event: content_block_delta\ndata: {\"delta\":\"Hello from CONNECT tunnel!\"}\n\n",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+		}
+
+		for _, event := range events {
+			w.Write([]byte(event))
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	// Create proxy components
+	cfg := testConfig()
+	logger := testLogger()
+
+	tmpDir := t.TempDir()
+	ca, err := langleytls.LoadOrCreateCA(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create CA: %v", err)
+	}
+
+	certCache := langleytls.NewCertCache(ca, 100)
+	redactor, _ := redact.New(&config.RedactionConfig{})
+	mockStore := newMockStore()
+
+	var capturedFlow *store.Flow
+	var capturedEvents []*store.Event
+
+	proxy, err := NewMITMProxy(MITMProxyConfig{
+		Config:    cfg,
+		Logger:    logger,
+		CA:        ca,
+		CertCache: certCache,
+		Redactor:  redactor,
+		Store:     mockStore,
+		OnFlow: func(flow *store.Flow) {
+			capturedFlow = flow
+		},
+		OnUpdate: func(flow *store.Flow) {
+			capturedFlow = flow
+		},
+		OnEvent: func(event *store.Event) {
+			capturedEvents = append(capturedEvents, event)
+		},
+		InsecureSkipVerifyUpstream: true, // Test only - skip upstream cert validation
+	})
+	if err != nil {
+		t.Fatalf("NewMITMProxy failed: %v", err)
+	}
+
+	// Start actual proxy server (not httptest.NewServer which doesn't support CONNECT properly)
+	proxyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start proxy listener: %v", err)
+	}
+	defer proxyListener.Close()
+
+	proxyAddr := proxyListener.Addr().String()
+	go http.Serve(proxyListener, proxy)
+
+	// Parse upstream URL
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	// Create HTTP client that uses CONNECT proxy and trusts our CA
+	proxyURL, _ := url.Parse("http://" + proxyAddr)
+	certPool := x509.NewCertPool()
+	certPool.AppendCertsFromPEM(ca.CertPEM())
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{
+				RootCAs: certPool,
+			},
+		},
+	}
+
+	// Make HTTPS request through CONNECT tunnel
+	resp, err := client.Get(upstream.URL + "/messages")
+	if err != nil {
+		t.Fatalf("CONNECT request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read entire response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+
+	// Verify SSE content was received
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "message_start") {
+		t.Errorf("response missing message_start event, got: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "Hello from CONNECT tunnel!") {
+		t.Errorf("response missing delta content, got: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "message_stop") {
+		t.Errorf("response missing message_stop event, got: %s", bodyStr)
+	}
+
+	// Verify flow was captured
+	if capturedFlow == nil {
+		t.Fatal("flow was not captured")
+	}
+	if !capturedFlow.IsSSE {
+		t.Error("flow should be marked as SSE")
+	}
+	if capturedFlow.Host != upstreamURL.Host {
+		t.Errorf("captured Host = %q, want %q", capturedFlow.Host, upstreamURL.Host)
+	}
+
+	// Verify events were captured
+	if len(capturedEvents) < 3 {
+		t.Errorf("expected at least 3 SSE events, got %d", len(capturedEvents))
+	}
 }
 
 func TestLimitedBuffer(t *testing.T) {

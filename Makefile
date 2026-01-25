@@ -30,8 +30,18 @@ dev: ## Run in development mode (backend + frontend hot reload)
 	@echo "---"
 	@$(MAKE) -j2 dev-backend dev-frontend
 
+dev-debug: ## Run in dev mode with debug logging (backend only, run dev-frontend separately)
+	@echo "Starting Langley backend in DEBUG mode..."
+	@echo "Run 'make dev-frontend' in another terminal for the dashboard"
+	@echo "Proxy: localhost:9090"
+	@echo "---"
+	go run ./cmd/langley -debug
+
 dev-backend:
 	go run ./cmd/langley
+
+dev-backend-debug:
+	go run ./cmd/langley -debug
 
 dev-frontend:
 	cd web && npm run dev
