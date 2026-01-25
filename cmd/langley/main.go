@@ -123,6 +123,14 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Set CRL URL for Windows compatibility (langley-2qj)
+	crlURL := fmt.Sprintf("http://%s/crl/ca.crl", *apiAddr)
+	if err := ca.SetCRLURL(crlURL); err != nil {
+		slog.Error("failed to set CRL URL", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("CRL configured", "url", crlURL)
+
 	// Create cert cache
 	certCache := langleytls.NewCertCache(ca, 1000)
 
@@ -176,6 +184,11 @@ func main() {
 	apiMux := http.NewServeMux()
 	apiMux.Handle("/api/", apiServer.Handler())
 	apiMux.HandleFunc("/ws", wsHub.Handler(cfg.Auth.Token))
+	// Serve CRL for Windows revocation checking (langley-2qj)
+	apiMux.HandleFunc("/crl/ca.crl", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pkix-crl")
+		w.Write(ca.CRLDER())
+	})
 	apiMux.Handle("/", web.Handler()) // Serve embedded dashboard
 
 	// Create API server instance for graceful shutdown

@@ -29,6 +29,8 @@ type CA struct {
 	key     *rsa.PrivateKey
 	certPEM []byte
 	keyPEM  []byte
+	crlDER  []byte // CRL in DER format for Windows revocation checking
+	crlURL  string // URL where CRL is served
 }
 
 // LoadOrCreateCA loads an existing CA or creates a new one.
@@ -182,6 +184,40 @@ func (ca *CA) CertPEM() []byte {
 // Certificate returns the CA certificate.
 func (ca *CA) Certificate() *x509.Certificate {
 	return ca.cert
+}
+
+// CRLDER returns the CRL in DER format.
+func (ca *CA) CRLDER() []byte {
+	return ca.crlDER
+}
+
+// CRLURL returns the URL where the CRL is served.
+func (ca *CA) CRLURL() string {
+	return ca.crlURL
+}
+
+// SetCRLURL sets the CRL URL and generates the CRL.
+// This must be called before generating certificates for Windows compatibility.
+func (ca *CA) SetCRLURL(url string) error {
+	ca.crlURL = url
+	return ca.generateCRL()
+}
+
+// generateCRL generates an empty CRL signed by the CA.
+func (ca *CA) generateCRL() error {
+	template := &x509.RevocationList{
+		Number:     big.NewInt(1),
+		ThisUpdate: time.Now(),
+		NextUpdate: time.Now().AddDate(0, 0, 30), // Valid for 30 days
+	}
+
+	crlDER, err := x509.CreateRevocationList(rand.Reader, template, ca.cert, ca.key)
+	if err != nil {
+		return fmt.Errorf("creating CRL: %w", err)
+	}
+
+	ca.crlDER = crlDER
+	return nil
 }
 
 // writeSecureFile writes a file with platform-specific secure permissions.

@@ -123,6 +123,11 @@ func (c *CertCache) generateCert(host string) (*tls.Certificate, error) {
 		BasicConstraintsValid: true,
 	}
 
+	// Add CRL Distribution Point for Windows compatibility (langley-2qj)
+	if crlURL := c.ca.CRLURL(); crlURL != "" {
+		template.CRLDistributionPoints = []string{crlURL}
+	}
+
 	// Add host as SAN
 	if ip := net.ParseIP(host); ip != nil {
 		template.IPAddresses = []net.IP{ip}
