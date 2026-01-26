@@ -215,7 +215,7 @@ func TestParseEventCountLimit(t *testing.T) {
 	}
 
 	go func() {
-		p.Parse(strings.NewReader(sb.String()))
+		_ = p.Parse(strings.NewReader(sb.String()))
 	}()
 
 	var count int
@@ -256,7 +256,7 @@ func TestParseEventSizeLimit(t *testing.T) {
 	sb.WriteString("\n")
 
 	go func() {
-		p.Parse(strings.NewReader(sb.String()))
+		_ = p.Parse(strings.NewReader(sb.String()))
 	}()
 
 	var events []*store.Event
@@ -542,7 +542,7 @@ func BenchmarkParse(b *testing.B) {
 		p := NewSSEParser("bench", eventsCh)
 
 		go func() {
-			p.Parse(strings.NewReader(input))
+			_ = p.Parse(strings.NewReader(input))
 		}()
 
 		// Drain channel

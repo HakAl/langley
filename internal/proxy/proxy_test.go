@@ -416,7 +416,7 @@ func TestMITMProxy_SSEResponse(t *testing.T) {
 		}
 
 		for _, event := range events {
-			w.Write([]byte(event))
+			_, _ = w.Write([]byte(event))
 			flusher.Flush()
 		}
 	}))
@@ -493,7 +493,7 @@ func TestMITMProxy_ErrorResponse(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error": "bad request"}`))
+		_, _ = w.Write([]byte(`{"error": "bad request"}`))
 	}))
 	defer upstream.Close()
 
@@ -637,7 +637,7 @@ func TestMITMProxy_BodyTruncation(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		w.Write(largeBody)
+		_, _ = w.Write(largeBody)
 	}))
 	defer upstream.Close()
 
@@ -845,7 +845,7 @@ func TestMITMProxy_CONNECT_SSE(t *testing.T) {
 		}
 
 		for _, event := range events {
-			w.Write([]byte(event))
+			_, _ = w.Write([]byte(event))
 			flusher.Flush()
 		}
 	}))

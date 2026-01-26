@@ -859,7 +859,7 @@ func (s *Server) checkpoint(w http.ResponseWriter, r *http.Request) {
 
 	// Get WAL size before checkpoint
 	var walPagesBefore int64
-	db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)").Scan(new(int), &walPagesBefore, new(int))
+	_ = db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)").Scan(new(int), &walPagesBefore, new(int))
 
 	// Run TRUNCATE checkpoint (most aggressive - blocks briefly but reclaims space)
 	var blocked, walPagesLog, walPagesCheckpointed int
@@ -872,7 +872,7 @@ func (s *Server) checkpoint(w http.ResponseWriter, r *http.Request) {
 
 	// Get WAL size after checkpoint
 	var walPagesAfter int64
-	db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)").Scan(new(int), &walPagesAfter, new(int))
+	_ = db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)").Scan(new(int), &walPagesAfter, new(int))
 
 	response := CheckpointResponse{
 		Success:          blocked == 0,

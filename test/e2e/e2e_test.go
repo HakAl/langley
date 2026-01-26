@@ -81,7 +81,7 @@ func TestE2E_DirectHandler(t *testing.T) {
 
 	// 3. Create CA and cert cache
 	certDir := filepath.Join(tempDir, "certs")
-	os.MkdirAll(certDir, 0755)
+	_ = os.MkdirAll(certDir, 0755)
 
 	ca, err := langleytls.LoadOrCreateCA(certDir)
 	if err != nil {
@@ -150,7 +150,7 @@ func TestE2E_DirectHandler(t *testing.T) {
 	}
 
 	var respData map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&respData)
+	_ = json.NewDecoder(resp.Body).Decode(&respData)
 	if respData["id"] != "msg_e2e123" {
 		t.Errorf("unexpected response id: %v", respData["id"])
 	}
@@ -228,7 +228,7 @@ func TestE2E_SSEStreaming(t *testing.T) {
 
 		// Check for streaming request
 		var reqBody map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&reqBody)
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
 
 		if reqBody["stream"] != true {
 			w.Header().Set("Content-Type", "application/json")
@@ -283,7 +283,7 @@ func TestE2E_SSEStreaming(t *testing.T) {
 
 	// Create CA and proxy
 	certDir := filepath.Join(tempDir, "certs")
-	os.MkdirAll(certDir, 0755)
+	_ = os.MkdirAll(certDir, 0755)
 	ca, _ := langleytls.LoadOrCreateCA(certDir)
 	certCache := langleytls.NewCertCache(ca, 100)
 
@@ -385,7 +385,7 @@ func TestE2E_TaskAssignment(t *testing.T) {
 	defer s.Close()
 
 	certDir := filepath.Join(tempDir, "certs")
-	os.MkdirAll(certDir, 0755)
+	_ = os.MkdirAll(certDir, 0755)
 	ca, _ := langleytls.LoadOrCreateCA(certDir)
 	certCache := langleytls.NewCertCache(ca, 100)
 
@@ -488,7 +488,7 @@ func TestE2E_ErrorHandling(t *testing.T) {
 	defer s.Close()
 
 	certDir := filepath.Join(tempDir, "certs")
-	os.MkdirAll(certDir, 0755)
+	_ = os.MkdirAll(certDir, 0755)
 	ca, _ := langleytls.LoadOrCreateCA(certDir)
 	certCache := langleytls.NewCertCache(ca, 100)
 
@@ -563,7 +563,7 @@ func TestE2E_Redaction(t *testing.T) {
 	defer s.Close()
 
 	certDir := filepath.Join(tempDir, "certs")
-	os.MkdirAll(certDir, 0755)
+	_ = os.MkdirAll(certDir, 0755)
 	ca, _ := langleytls.LoadOrCreateCA(certDir)
 	certCache := langleytls.NewCertCache(ca, 100)
 
