@@ -707,7 +707,7 @@ func TestMITMProxy_RawBodyStorageOff(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(responseBody))
+		_, _ = w.Write([]byte(responseBody))
 	}))
 	defer upstream.Close()
 

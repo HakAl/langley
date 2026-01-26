@@ -235,7 +235,7 @@ func main() {
 	// Serve CRL for Windows revocation checking (langley-2qj)
 	apiMux.HandleFunc("/crl/ca.crl", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/pkix-crl")
-		w.Write(ca.CRLDER())
+		_, _ = w.Write(ca.CRLDER())
 	})
 	apiMux.Handle("/", web.Handler()) // Serve embedded dashboard
 
