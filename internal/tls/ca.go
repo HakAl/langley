@@ -11,7 +11,6 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 )
 
@@ -233,11 +232,9 @@ func writeSecureFile(path string, data []byte) error {
 	// For better security on Windows, we'd use icacls, but for MVP
 	// the file permission approach is acceptable.
 	// Production improvement: Use Windows ACLs via syscall.
-	if runtime.GOOS == "windows" {
-		// For now, 0600 translates to read-only on Windows which is acceptable.
-		// The file is only readable by the owner by default on NTFS when created
-		// in a user's directory.
-	}
+	// On Windows, 0600 translates to read-only which is acceptable.
+	// The file is only readable by the owner by default on NTFS when created
+	// in a user's directory.
 
 	return nil
 }

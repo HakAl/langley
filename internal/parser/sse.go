@@ -125,10 +125,8 @@ func (p *SSEParser) Parse(r io.Reader) error {
 			if accumulatedSize > maxEventDataSize && p.logger != nil {
 				p.logger.Warn("SSE event exceeds size limit, truncating", "flow_id", p.flowID, "size", accumulatedSize, "limit", maxEventDataSize)
 			}
-		} else if strings.HasPrefix(line, ":") {
-			// Comment, ignore
-			continue
 		}
+		// Lines starting with ":" are comments, ignored by default
 	}
 
 	// Handle final event if no trailing newline

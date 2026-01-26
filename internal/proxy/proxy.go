@@ -200,12 +200,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer p.shutdown.Done()
 		defer destConn.Close()
-		io.Copy(destConn, clientConn)
+		_, _ = io.Copy(destConn, clientConn)
 	}()
 	go func() {
 		defer p.shutdown.Done()
 		defer clientConn.Close()
-		io.Copy(clientConn, destConn)
+		_, _ = io.Copy(clientConn, destConn)
 	}()
 }
 

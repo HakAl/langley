@@ -131,11 +131,11 @@ func TestNDJSONExporter_WithBodies(t *testing.T) {
 	var buf bytes.Buffer
 	exporter := NewNDJSONExporter()
 
-	exporter.WriteHeader(&buf)
+	_ = exporter.WriteHeader(&buf)
 	if err := exporter.WriteFlow(&buf, flow, true); err != nil {
 		t.Fatalf("WriteFlow error: %v", err)
 	}
-	exporter.WriteFooter(&buf, 1, 0)
+	_ = exporter.WriteFooter(&buf, 1, 0)
 
 	var result ExportFlowFull
 	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
@@ -159,7 +159,7 @@ func TestJSONExporter(t *testing.T) {
 	var buf bytes.Buffer
 	exporter := NewJSONExporter()
 
-	exporter.WriteHeader(&buf)
+	_ = exporter.WriteHeader(&buf)
 	for _, f := range flows {
 		if err := exporter.WriteFlow(&buf, f, false); err != nil {
 			t.Fatalf("WriteFlow error: %v", err)
@@ -240,10 +240,10 @@ func TestCSVExporter_IgnoresBodies(t *testing.T) {
 	var buf bytes.Buffer
 	exporter := NewCSVExporter()
 
-	exporter.WriteHeader(&buf)
+	_ = exporter.WriteHeader(&buf)
 	// Even with includeBodies=true, CSV should not include them
-	exporter.WriteFlow(&buf, flow, true)
-	exporter.WriteFooter(&buf, 1, 0)
+	_ = exporter.WriteFlow(&buf, flow, true)
+	_ = exporter.WriteFooter(&buf, 1, 0)
 
 	output := buf.String()
 	if strings.Contains(output, "request body content") {

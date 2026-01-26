@@ -749,7 +749,7 @@ func TestMigrationIdempotent(t *testing.T) {
 
 	// Get schema version
 	var version1 int
-	store1.db.QueryRow("SELECT version FROM schema_version WHERE id = 1").Scan(&version1)
+	_ = store1.db.QueryRow("SELECT version FROM schema_version WHERE id = 1").Scan(&version1)
 	store1.Close()
 
 	// Create store second time (should be idempotent)
@@ -759,7 +759,7 @@ func TestMigrationIdempotent(t *testing.T) {
 	}
 
 	var version2 int
-	store2.db.QueryRow("SELECT version FROM schema_version WHERE id = 1").Scan(&version2)
+	_ = store2.db.QueryRow("SELECT version FROM schema_version WHERE id = 1").Scan(&version2)
 	store2.Close()
 
 	if version1 != version2 {

@@ -302,7 +302,7 @@ func TestMITMProxy_HTTPForwarding(t *testing.T) {
 		w.Header().Set("X-Echo-Path", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		io.Copy(w, r.Body)
+		_, _ = io.Copy(w, r.Body)
 	}))
 	defer upstream.Close()
 
@@ -891,7 +891,7 @@ func TestMITMProxy_CONNECT_SSE(t *testing.T) {
 	defer proxyListener.Close()
 
 	proxyAddr := proxyListener.Addr().String()
-	go http.Serve(proxyListener, proxy)
+	go func() { _ = http.Serve(proxyListener, proxy) }()
 
 	// Parse upstream URL
 	upstreamURL, _ := url.Parse(upstream.URL)
@@ -980,7 +980,7 @@ func TestLimitedBuffer(t *testing.T) {
 		lb := &limitedBuffer{buf: &buf, max: 5}
 
 		// First write within limit
-		lb.Write([]byte("hel"))
+		_, _ = lb.Write([]byte("hel"))
 
 		// Second write exceeds limit
 		n, err := lb.Write([]byte("lo world"))
@@ -1005,7 +1005,7 @@ func TestLimitedBuffer(t *testing.T) {
 		var buf bytes.Buffer
 		lb := &limitedBuffer{buf: &buf, max: 5}
 
-		lb.Write([]byte("12345"))
+		_, _ = lb.Write([]byte("12345"))
 
 		// Now at limit, further writes should be ignored
 		n, err := lb.Write([]byte("more"))

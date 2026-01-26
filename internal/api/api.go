@@ -810,25 +810,25 @@ func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
 		// Drop count
 		var dropCount int64
 		row = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM drop_log WHERE timestamp > datetime('now', '-24 hours')")
-		row.Scan(&dropCount)
+		_ = row.Scan(&dropCount)
 		health.DropsLast24h = dropCount
 
 		// Active flows (recent 5 minutes)
 		var activeFlows int
 		row = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM flows WHERE timestamp > datetime('now', '-5 minutes')")
-		row.Scan(&activeFlows)
+		_ = row.Scan(&activeFlows)
 		health.ActiveFlows = activeFlows
 
 		// Total flows
 		var totalFlows int64
 		row = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM flows")
-		row.Scan(&totalFlows)
+		_ = row.Scan(&totalFlows)
 		health.TotalFlows = totalFlows
 
 		// Database file size
 		var pageCount, pageSize int64
-		db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount)
-		db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize)
+		_ = db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount)
+		_ = db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize)
 		health.DBSizeBytes = pageCount * pageSize
 	}
 
@@ -1278,11 +1278,4 @@ func toEventResponse(e *store.Event) EventResponse {
 		EventData: e.EventData,
 		Priority:  e.Priority,
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

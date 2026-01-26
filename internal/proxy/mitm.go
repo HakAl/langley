@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/HakAl/langley/internal/analytics"
@@ -38,9 +37,8 @@ type MITMProxy struct {
 	analytics    *analytics.Engine
 	taskAssigner *task.Assigner
 	providers    *provider.Registry
-	server       *http.Server
-	client       *http.Client
-	shutdown     sync.WaitGroup
+	server *http.Server
+	client *http.Client
 
 	// Callbacks for real-time updates
 	onFlow   func(*store.Flow)
@@ -165,7 +163,7 @@ func (p *MITMProxy) ServeListener(ctx context.Context, ln net.Listener) error {
 		p.logger.Info("shutting down MITM proxy")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		p.server.Shutdown(shutdownCtx)
+		_ = p.server.Shutdown(shutdownCtx)
 	}()
 
 	p.logger.Info("MITM proxy listening", "addr", ln.Addr().String())
@@ -569,7 +567,7 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 		// SSE: stream headers immediately, then body
 		var responseBuf bytes.Buffer
 		fmt.Fprintf(&responseBuf, "HTTP/1.1 %s\r\n", resp.Status)
-		respHeaders.Write(&responseBuf)
+		_ = respHeaders.Write(&responseBuf)
 		responseBuf.WriteString("\r\n")
 
 		p.logger.Debug("sending SSE response headers", "flow_id", flowID, "headers", responseBuf.String())
@@ -600,7 +598,7 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 
 		var responseBuf bytes.Buffer
 		fmt.Fprintf(&responseBuf, "HTTP/1.1 %s\r\n", resp.Status)
-		respHeaders.Write(&responseBuf)
+		_ = respHeaders.Write(&responseBuf)
 		responseBuf.WriteString("\r\n")
 
 		if _, err := clientConn.Write(responseBuf.Bytes()); err != nil {
@@ -645,7 +643,7 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 func (p *MITMProxy) sendError(conn net.Conn, status int, message string) {
 	response := fmt.Sprintf("HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
 		status, http.StatusText(status), len(message), message)
-	conn.Write([]byte(response))
+	_, _ = conn.Write([]byte(response))
 }
 
 // saveFlow persists a flow to the store.

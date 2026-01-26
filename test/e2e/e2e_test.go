@@ -48,7 +48,7 @@ func TestE2E_DirectHandler(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("x-request-id", "req_e2e123")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":    "msg_e2e123",
 			"type":  "message",
 			"role":  "assistant",
@@ -232,7 +232,7 @@ func TestE2E_SSEStreaming(t *testing.T) {
 
 		if reqBody["stream"] != true {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"id": "msg_nonstream", "type": "message",
 			})
 			return
@@ -372,7 +372,7 @@ func TestE2E_TaskAssignment(t *testing.T) {
 
 	mockClaude := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"id": "msg_task123", "type": "message", "model": "claude-3-haiku-20240307",
 			"content": []map[string]interface{}{{"type": "text", "text": "Task test"}},
 			"usage":   map[string]interface{}{"input_tokens": 5, "output_tokens": 3},
@@ -473,7 +473,7 @@ func TestE2E_ErrorHandling(t *testing.T) {
 	mockClaude := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"type": "error",
 			"error": map[string]interface{}{
 				"type":    "invalid_request_error",
@@ -550,7 +550,7 @@ func TestE2E_Redaction(t *testing.T) {
 		// Echo back the authorization header to verify it reaches upstream unredacted
 		auth := r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":    "msg_redact",
 			"model": "claude-3-sonnet-20240229",
 			"auth":  auth, // For test verification

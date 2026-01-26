@@ -423,7 +423,7 @@ func (e *Engine) GetOverallStats(ctx context.Context, start, end time.Time) (*Ov
 		SELECT COUNT(*) FROM tool_invocations
 		WHERE timestamp >= ? AND timestamp <= ?
 	`, start.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano))
-	row.Scan(&stats.TotalToolCalls)
+	_ = row.Scan(&stats.TotalToolCalls)
 
 	// Calculate averages
 	if stats.TotalFlows > 0 {

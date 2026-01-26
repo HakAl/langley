@@ -168,7 +168,7 @@ func (s *Source) RefreshIfStale(ctx context.Context) {
 		} else {
 			s.logger.Info("pricing refreshed", "models", len(s.prices))
 			if s.cacheDir != "" {
-				s.saveToCache()
+				_ = s.saveToCache()
 			}
 		}
 	}

@@ -140,7 +140,7 @@ func (e *Engine) DetectFlowAnomalies(ctx context.Context, flowID string, thresho
 	row = e.db.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM tool_invocations WHERE flow_id = ?
 	`, flowID)
-	row.Scan(&toolCount)
+	_ = row.Scan(&toolCount)
 
 	if toolCount > thresholds.ManyToolCallsCount {
 		anomalies = append(anomalies, &Anomaly{
@@ -168,7 +168,7 @@ func (e *Engine) DetectFlowAnomalies(ctx context.Context, flowID string, thresho
 	for rows.Next() {
 		var toolName string
 		var errorMsg *string
-		rows.Scan(&toolName, &errorMsg)
+		_ = rows.Scan(&toolName, &errorMsg)
 
 		desc := "Tool invocation failed: " + toolName
 		if errorMsg != nil {
@@ -268,7 +268,7 @@ func (e *Engine) ListRecentAnomalies(ctx context.Context, since time.Time, thres
 	var flowIDs []string
 	for rows.Next() {
 		var id string
-		rows.Scan(&id)
+		_ = rows.Scan(&id)
 		flowIDs = append(flowIDs, id)
 	}
 

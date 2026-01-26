@@ -86,8 +86,8 @@ func setSecureFilePermissions(path string) error {
 	// Also try to set permissions on WAL and SHM files if they exist
 	walPath := path + "-wal"
 	shmPath := path + "-shm"
-	os.Chmod(walPath, 0600) // Ignore errors - files may not exist yet
-	os.Chmod(shmPath, 0600)
+	_ = os.Chmod(walPath, 0600) // Ignore errors - files may not exist yet
+	_ = os.Chmod(shmPath, 0600)
 
 	return nil
 }
@@ -460,7 +460,7 @@ func (s *SQLiteStore) SaveEvents(ctx context.Context, events []*Event) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO events (id, flow_id, sequence, timestamp, timestamp_mono, event_type, event_data, priority, expires_at)
@@ -519,7 +519,7 @@ func (s *SQLiteStore) GetEventsByFlow(ctx context.Context, flowID string) ([]*Ev
 			event.ExpiresAt = &t
 		}
 		if eventData.Valid {
-			json.Unmarshal([]byte(eventData.String), &event.EventData)
+			_ = json.Unmarshal([]byte(eventData.String), &event.EventData)
 		}
 
 		events = append(events, &event)
@@ -699,10 +699,10 @@ func (s *SQLiteStore) scanFlow(row *sql.Row) (*Flow, error) {
 		flow.ResponseBody = &respBody.String
 	}
 	if reqHeaders.Valid {
-		json.Unmarshal([]byte(reqHeaders.String), &flow.RequestHeaders)
+		_ = json.Unmarshal([]byte(reqHeaders.String), &flow.RequestHeaders)
 	}
 	if respHeaders.Valid {
-		json.Unmarshal([]byte(respHeaders.String), &flow.ResponseHeaders)
+		_ = json.Unmarshal([]byte(respHeaders.String), &flow.ResponseHeaders)
 	}
 	if reqSig.Valid {
 		flow.RequestSignature = &reqSig.String
@@ -792,10 +792,10 @@ func (s *SQLiteStore) scanFlowRows(rows *sql.Rows) (*Flow, error) {
 		flow.ResponseBody = &respBody.String
 	}
 	if reqHeaders.Valid {
-		json.Unmarshal([]byte(reqHeaders.String), &flow.RequestHeaders)
+		_ = json.Unmarshal([]byte(reqHeaders.String), &flow.RequestHeaders)
 	}
 	if respHeaders.Valid {
-		json.Unmarshal([]byte(respHeaders.String), &flow.ResponseHeaders)
+		_ = json.Unmarshal([]byte(respHeaders.String), &flow.ResponseHeaders)
 	}
 	if reqSig.Valid {
 		flow.RequestSignature = &reqSig.String

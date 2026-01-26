@@ -79,7 +79,7 @@ func portInUseFix(baseAddr string, attempts int) string {
 // portNum converts port string to int, returns 0 on error.
 func portNum(port string) int {
 	var n int
-	fmt.Sscanf(port, "%d", &n)
+	_, _ = fmt.Sscanf(port, "%d", &n)
 	return n
 }
 

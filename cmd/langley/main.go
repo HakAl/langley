@@ -490,7 +490,7 @@ func handleTokenCommand(args []string) {
 	}
 
 	subcommand := args[0]
-	tokenFlags.Parse(args[1:])
+	_ = tokenFlags.Parse(args[1:])
 
 	switch subcommand {
 	case "show":
@@ -559,8 +559,6 @@ func tokenRotate(configPath string, apiAddr string) {
 
 // loadConfigForToken loads config without generating a new token if missing
 func loadConfigForToken(configPath string) (*config.Config, string, error) {
-	cfg := config.DefaultConfig()
-
 	// Determine config path
 	var cfgPath string
 	var err error
@@ -574,7 +572,7 @@ func loadConfigForToken(configPath string) (*config.Config, string, error) {
 	}
 
 	// Load from file
-	cfg, err = config.Load(configPath)
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, "", err
 	}
@@ -637,7 +635,7 @@ func handleSetupCommand(args []string) {
 	setupFlags := flag.NewFlagSet("setup", flag.ExitOnError)
 	skipMkcert := setupFlags.Bool("no-mkcert", false, "Skip mkcert detection and show manual instructions")
 	showHelp := setupFlags.Bool("help", false, "Show help")
-	setupFlags.Parse(args)
+	_ = setupFlags.Parse(args)
 
 	if *showHelp {
 		printSetupHelp()

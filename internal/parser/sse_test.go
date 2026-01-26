@@ -103,7 +103,7 @@ data: {}
 
 `
 	go func() {
-		p.Parse(strings.NewReader(input))
+		_ = p.Parse(strings.NewReader(input))
 	}()
 
 	var events []*store.Event
@@ -144,7 +144,7 @@ data: {"hello": "world"}
 
 `
 	go func() {
-		p.Parse(strings.NewReader(input))
+		_ = p.Parse(strings.NewReader(input))
 	}()
 
 	var events []*store.Event
@@ -175,7 +175,7 @@ data: line3
 
 `
 	go func() {
-		p.Parse(strings.NewReader(input))
+		_ = p.Parse(strings.NewReader(input))
 	}()
 
 	var events []*store.Event
@@ -463,7 +463,7 @@ data: this is not valid json
 
 `
 	go func() {
-		p.Parse(strings.NewReader(input))
+		_ = p.Parse(strings.NewReader(input))
 	}()
 
 	var events []*store.Event
@@ -499,7 +499,7 @@ func TestParseNoTrailingNewline(t *testing.T) {
 data: {"last": true}`
 
 	go func() {
-		p.Parse(strings.NewReader(input))
+		_ = p.Parse(strings.NewReader(input))
 	}()
 
 	var events []*store.Event

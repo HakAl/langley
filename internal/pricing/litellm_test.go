@@ -62,7 +62,7 @@ func TestSource_ParseAndLoad(t *testing.T) {
 
 func TestSource_GetPrice_ExactMatch(t *testing.T) {
 	s := NewSource(Config{})
-	s.parseAndLoad([]byte(testPricingJSON))
+	_ = s.parseAndLoad([]byte(testPricingJSON))
 
 	price := s.GetPrice("anthropic", "claude-3-5-sonnet-20241022")
 	if price == nil {
@@ -97,7 +97,7 @@ func TestSource_GetPrice_ExactMatch(t *testing.T) {
 
 func TestSource_GetPrice_VersionStripping(t *testing.T) {
 	s := NewSource(Config{})
-	s.parseAndLoad([]byte(testPricingJSON))
+	_ = s.parseAndLoad([]byte(testPricingJSON))
 
 	// Should find with base model name (without date version)
 	price := s.GetPrice("anthropic", "claude-3-5-sonnet")
@@ -108,7 +108,7 @@ func TestSource_GetPrice_VersionStripping(t *testing.T) {
 
 func TestSource_GetPrice_NotFound(t *testing.T) {
 	s := NewSource(Config{})
-	s.parseAndLoad([]byte(testPricingJSON))
+	_ = s.parseAndLoad([]byte(testPricingJSON))
 
 	price := s.GetPrice("anthropic", "nonexistent-model")
 	if price != nil {
@@ -118,7 +118,7 @@ func TestSource_GetPrice_NotFound(t *testing.T) {
 
 func TestSource_GetPrice_OpenAI(t *testing.T) {
 	s := NewSource(Config{})
-	s.parseAndLoad([]byte(testPricingJSON))
+	_ = s.parseAndLoad([]byte(testPricingJSON))
 
 	price := s.GetPrice("openai", "gpt-4o")
 	if price == nil {
@@ -139,7 +139,7 @@ func TestSource_FetchFromLiteLLM(t *testing.T) {
 	// Create a test server that serves our test data
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(testPricingJSON))
+		_, _ = w.Write([]byte(testPricingJSON))
 	}))
 	defer server.Close()
 
@@ -198,7 +198,7 @@ func TestSource_CacheExpired(t *testing.T) {
 
 	// Set file time to past
 	oldTime := time.Now().Add(-48 * time.Hour)
-	os.Chtimes(cachePath, oldTime, oldTime)
+	_ = os.Chtimes(cachePath, oldTime, oldTime)
 
 	s := NewSource(Config{
 		CacheDir: tmpDir,
