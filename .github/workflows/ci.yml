@@ -8,13 +8,8 @@ on:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        go-version: ['1.25']
+    name: Test
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +17,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: '1.23'
           cache: true
 
       - name: Set up Node.js
@@ -43,12 +38,14 @@ jobs:
         working-directory: web
         run: npm run build
 
+      - name: Run Go vet
+        run: go vet ./...
+
       - name: Run Go tests
         run: go test -v ./...
 
-      - name: Run tests with race detector (Linux only)
-        if: matrix.os == 'ubuntu-latest'
-        run: go test -race -v ./...
+      - name: Run tests with race detector
+        run: go test -race ./...
 
       - name: Build binary
         run: go build -v ./cmd/langley
@@ -63,7 +60,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.23'
           cache: true
 
       - name: Set up Node.js
@@ -87,7 +84,7 @@ jobs:
           version: latest
 
   frontend:
-    name: Frontend Build
+    name: Frontend
     runs-on: ubuntu-latest
 
     steps:
