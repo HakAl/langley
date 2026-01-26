@@ -96,18 +96,18 @@ func (p *SSEParser) Parse(r io.Reader) error {
 				data := strings.Join(dataLines, "\n")
 				p.emitEvent(eventType, data, accumulatedSize > maxEventDataSize)
 				eventCount++
-
-				// Check event count limit
-				if eventCount >= maxEventsPerFlow {
-					if p.logger != nil {
-						p.logger.Warn("SSE event count limit reached", "flow_id", p.flowID, "limit", maxEventsPerFlow)
-					}
-					break
-				}
 			}
 			eventType = ""
 			dataLines = nil
 			accumulatedSize = 0
+
+			// Check event count limit after reset to avoid extra emit
+			if eventCount >= maxEventsPerFlow {
+				if p.logger != nil {
+					p.logger.Warn("SSE event count limit reached", "flow_id", p.flowID, "limit", maxEventsPerFlow)
+				}
+				break
+			}
 			continue
 		}
 
