@@ -7,16 +7,20 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/anthropics/langley/internal/api"
 	"github.com/anthropics/langley/internal/config"
+	"github.com/anthropics/langley/internal/pricing"
 	"github.com/anthropics/langley/internal/proxy"
 	"github.com/anthropics/langley/internal/redact"
 	"github.com/anthropics/langley/internal/store"
@@ -80,16 +84,14 @@ func main() {
 		var pathErr error
 		actualConfigPath, pathErr = config.DefaultConfigPath()
 		if pathErr != nil {
-			slog.Error("failed to get default config path", "error", pathErr)
-			os.Exit(1)
+			printError("Failed to determine config path", pathErr, configLoadFix(""))
 		}
 	}
 
 	// Load config
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		slog.Error("failed to load config", "error", err)
-		os.Exit(1)
+		printError("Failed to load configuration", err, configLoadFix(*configPath))
 	}
 
 	// CLI overrides
@@ -100,22 +102,25 @@ func main() {
 	// Get config directory for certs
 	configDir, err := config.ConfigDir()
 	if err != nil {
-		slog.Error("failed to get config directory", "error", err)
-		os.Exit(1)
+		printError("Failed to determine config directory", err, configLoadFix(""))
 	}
 
 	// Ensure directory exists
 	if err := os.MkdirAll(configDir, 0700); err != nil {
-		slog.Error("failed to create config directory", "error", err)
-		os.Exit(1)
+		printError("Failed to create config directory", err, caPermissionFix(configDir))
 	}
 
 	// Load or create CA
 	certsDir := filepath.Join(configDir, "certs")
 	ca, err := langleytls.LoadOrCreateCA(certsDir)
 	if err != nil {
-		slog.Error("failed to load/create CA", "error", err)
-		os.Exit(1)
+		if isPermissionError(err) {
+			printError("Failed to load/create CA certificate", err, caPermissionFix(certsDir))
+		} else if isCorruptCert(err) {
+			printError("CA certificate is corrupted", err, caCorruptFix(certsDir))
+		} else {
+			printError("Failed to load/create CA certificate", err, caCorruptFix(certsDir))
+		}
 	}
 	slog.Info("CA loaded", "path", filepath.Join(certsDir, "ca.crt"))
 
@@ -128,10 +133,31 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Maximum port fallback attempts (langley-rla)
+	const maxPortAttempts = 10
+
+	// Create API server listener with fallback (langley-rla)
+	apiListener, actualAPIAddr, err := listenWithFallback(*apiAddr, maxPortAttempts)
+	if err != nil {
+		printError("Failed to bind API server", err, portInUseFix(*apiAddr, maxPortAttempts))
+	}
+	slog.Info("API server bound", "addr", actualAPIAddr)
+
+	// Create proxy listener with fallback (langley-rla)
+	proxyListener, actualProxyAddr, err := listenWithFallback(cfg.Proxy.ListenAddr(), maxPortAttempts)
+	if err != nil {
+		apiListener.Close()
+		printError("Failed to bind proxy server", err, portInUseFix(cfg.Proxy.ListenAddr(), maxPortAttempts))
+	}
+	slog.Info("proxy server bound", "addr", actualProxyAddr)
+
 	// Set CRL URL for Windows compatibility (langley-2qj)
-	crlURL := fmt.Sprintf("http://%s/crl/ca.crl", *apiAddr)
+	// Use actual API address after fallback
+	crlURL := fmt.Sprintf("http://%s/crl/ca.crl", actualAPIAddr)
 	if err := ca.SetCRLURL(crlURL); err != nil {
 		slog.Error("failed to set CRL URL", "error", err)
+		apiListener.Close()
+		proxyListener.Close()
 		os.Exit(1)
 	}
 	slog.Info("CRL configured", "url", crlURL)
@@ -149,8 +175,13 @@ func main() {
 	// Create store
 	dataStore, err := store.NewSQLiteStore(cfg.Persistence.DBPath, &cfg.Retention)
 	if err != nil {
-		slog.Error("failed to create store", "error", err)
-		os.Exit(1)
+		if isDBLocked(err) {
+			printError("Database is locked", err, dbLockedFix(cfg.Persistence.DBPath))
+		} else if isPermissionError(err) {
+			printError("Cannot access database", err, dbPathFix(cfg.Persistence.DBPath))
+		} else {
+			printError("Failed to open database", err, dbPathFix(cfg.Persistence.DBPath))
+		}
 	}
 	defer dataStore.Close()
 	slog.Info("database opened", "path", cfg.Persistence.DBPath)
@@ -159,6 +190,17 @@ func main() {
 	taskAssigner := task.NewAssigner(task.AssignerConfig{
 		IdleGapMinutes: cfg.Task.IdleGapMinutes,
 	})
+
+	// Load LiteLLM pricing data (langley-mxx)
+	pricingSource := pricing.NewSource(pricing.Config{
+		CacheDir: configDir,
+		Logger:   logger,
+	})
+	if err := pricingSource.Load(context.Background()); err != nil {
+		slog.Warn("failed to load LiteLLM pricing, using database fallback", "error", err)
+	} else {
+		slog.Info("pricing loaded", "models", pricingSource.Count())
+	}
 
 	// Create context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -185,6 +227,7 @@ func main() {
 			// Note: WebSocket hub reads token from cfg.Auth.Token directly,
 			// which is updated by the reload handler
 		}),
+		api.WithPricingSource(pricingSource),
 	)
 	apiMux := http.NewServeMux()
 	apiMux.Handle("/api/", apiServer.Handler())
@@ -198,14 +241,14 @@ func main() {
 
 	// Create API server instance for graceful shutdown
 	apiSrv := &http.Server{
-		Addr:    *apiAddr,
+		Addr:    actualAPIAddr,
 		Handler: apiMux,
 	}
 
-	// Start API server
+	// Start API server using the pre-created listener (langley-rla)
 	go func() {
-		slog.Info("API server starting", "addr", *apiAddr)
-		if err := apiSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		slog.Info("API server starting", "addr", actualAPIAddr)
+		if err := apiSrv.Serve(apiListener); err != nil && err != http.ErrServerClosed {
 			slog.Error("API server error", "error", err)
 		}
 	}()
@@ -230,13 +273,14 @@ func main() {
 
 	// Create and start MITM proxy
 	mitmProxy, err := proxy.NewMITMProxy(proxy.MITMProxyConfig{
-		Config:       cfg,
-		Logger:       logger,
-		CA:           ca,
-		CertCache:    certCache,
-		Redactor:     redactor,
-		Store:        dataStore,
-		TaskAssigner: taskAssigner,
+		Config:        cfg,
+		Logger:        logger,
+		CA:            ca,
+		CertCache:     certCache,
+		Redactor:      redactor,
+		Store:         dataStore,
+		TaskAssigner:  taskAssigner,
+		PricingSource: pricingSource,
 		OnFlow: func(flow *store.Flow) {
 			slog.Debug("flow started", "id", flow.ID, "host", flow.Host, "method", flow.Method)
 			wsHub.BroadcastFlowStart(flow)
@@ -259,20 +303,41 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Use actual addresses after fallback (langley-rla)
 	slog.Info("starting langley",
-		"proxy", cfg.Proxy.ListenAddr(),
-		"api", *apiAddr,
+		"proxy", actualProxyAddr,
+		"api", actualAPIAddr,
 	)
+	caPath := filepath.Join(certsDir, "ca.crt")
+
 	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  Proxy:     http://%s\n", cfg.Proxy.ListenAddr())
-	fmt.Fprintf(os.Stderr, "  API:       http://%s\n", *apiAddr)
-	fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", *apiAddr)
-	fmt.Fprintf(os.Stderr, "  CA:        %s\n", filepath.Join(certsDir, "ca.crt"))
+	fmt.Fprintf(os.Stderr, "  Proxy:     http://%s\n", actualProxyAddr)
+	fmt.Fprintf(os.Stderr, "  API:       http://%s\n", actualAPIAddr)
+	fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", actualAPIAddr)
+	fmt.Fprintf(os.Stderr, "  CA:        %s\n", caPath)
 	fmt.Fprintf(os.Stderr, "  DB:        %s\n", cfg.Persistence.DBPath)
 	fmt.Fprintf(os.Stderr, "  Token:     %s\n", cfg.Auth.Token)
 	fmt.Fprintf(os.Stderr, "\n")
 
-	if err := mitmProxy.Serve(ctx); err != nil && err != context.Canceled {
+	// Print copy-paste environment variables
+	fmt.Fprintf(os.Stderr, "  Environment variables (copy-paste):\n")
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  # Node.js (Claude CLI, Codex)\n")
+	fmt.Fprintf(os.Stderr, "  export HTTPS_PROXY=http://%s\n", actualProxyAddr)
+	fmt.Fprintf(os.Stderr, "  export HTTP_PROXY=http://%s\n", actualProxyAddr)
+	fmt.Fprintf(os.Stderr, "  export NODE_EXTRA_CA_CERTS=%s\n", caPath)
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  # Python (httpx, OpenAI SDK)\n")
+	fmt.Fprintf(os.Stderr, "  export HTTPS_PROXY=http://%s\n", actualProxyAddr)
+	fmt.Fprintf(os.Stderr, "  export HTTP_PROXY=http://%s\n", actualProxyAddr)
+	fmt.Fprintf(os.Stderr, "  export SSL_CERT_FILE=%s\n", caPath)
+	fmt.Fprintf(os.Stderr, "\n")
+	fmt.Fprintf(os.Stderr, "  # Python (requests)\n")
+	fmt.Fprintf(os.Stderr, "  export REQUESTS_CA_BUNDLE=%s\n", caPath)
+	fmt.Fprintf(os.Stderr, "\n")
+
+	// Start proxy using the pre-created listener (langley-rla)
+	if err := mitmProxy.ServeListener(ctx, proxyListener); err != nil && err != context.Canceled {
 		slog.Error("proxy error", "error", err)
 		os.Exit(1)
 	}
@@ -301,6 +366,64 @@ func runRetention(dataStore store.Store, logger *slog.Logger) {
 	if deleted > 0 {
 		logger.Info("retention cleanup completed", "deleted", deleted)
 	}
+}
+
+// listenWithFallback attempts to listen on the given address, falling back to
+// subsequent ports if the port is already in use. It tries up to maxAttempts ports.
+// Returns the listener, the actual address used, and any error. (langley-rla)
+func listenWithFallback(baseAddr string, maxAttempts int) (net.Listener, string, error) {
+	// Parse host and port from the address
+	host, portStr, err := net.SplitHostPort(baseAddr)
+	if err != nil {
+		// If no port specified, try to listen on the address as-is
+		ln, err := net.Listen("tcp", baseAddr)
+		if err != nil {
+			return nil, "", err
+		}
+		return ln, baseAddr, nil
+	}
+
+	basePort, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid port %q: %w", portStr, err)
+	}
+
+	var lastErr error
+	for i := 0; i < maxAttempts; i++ {
+		port := basePort + i
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
+
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			if i > 0 {
+				slog.Info("port fallback", "requested", baseAddr, "actual", addr)
+			}
+			return ln, addr, nil
+		}
+
+		// Check if the error is "address already in use"
+		if isAddrInUse(err) {
+			lastErr = err
+			continue
+		}
+
+		// For other errors, return immediately
+		return nil, "", err
+	}
+
+	return nil, "", fmt.Errorf("all %d ports starting from %s are in use: %w", maxAttempts, baseAddr, lastErr)
+}
+
+// isAddrInUse checks if the error indicates the address is already in use.
+func isAddrInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// Check for common "address already in use" error messages across platforms
+	return strings.Contains(errStr, "address already in use") ||
+		strings.Contains(errStr, "Only one usage of each socket address") ||
+		strings.Contains(errStr, "EADDRINUSE")
 }
 
 // printHelp prints usage information

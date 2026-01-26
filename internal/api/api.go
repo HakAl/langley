@@ -15,20 +15,22 @@ import (
 
 	"github.com/anthropics/langley/internal/analytics"
 	"github.com/anthropics/langley/internal/config"
+	"github.com/anthropics/langley/internal/pricing"
 	"github.com/anthropics/langley/internal/store"
 )
 
 // Server is the REST API server.
 type Server struct {
-	cfg         *config.Config
-	cfgPath     string // Path to config file for reload
-	store       store.Store
-	analytics   *analytics.Engine
-	logger      *slog.Logger
-	mux         *http.ServeMux
-	startTime   time.Time
-	onReload    func(newToken string) // Callback when token changes
-	rateLimiter *RateLimiter          // Rate limiter for API requests
+	cfg           *config.Config
+	cfgPath       string // Path to config file for reload
+	store         store.Store
+	analytics     *analytics.Engine
+	pricingSource *pricing.Source
+	logger        *slog.Logger
+	mux           *http.ServeMux
+	startTime     time.Time
+	onReload      func(newToken string) // Callback when token changes
+	rateLimiter   *RateLimiter          // Rate limiter for API requests
 }
 
 // ServerOption configures the API server.
@@ -46,6 +48,13 @@ func WithConfigPath(path string) ServerOption {
 func WithOnReload(fn func(newToken string)) ServerOption {
 	return func(s *Server) {
 		s.onReload = fn
+	}
+}
+
+// WithPricingSource sets the LiteLLM pricing source for cost calculations.
+func WithPricingSource(source *pricing.Source) ServerOption {
+	return func(s *Server) {
+		s.pricingSource = source
 	}
 }
 
@@ -72,6 +81,9 @@ func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger, o
 	// Initialize analytics engine if we have a database connection
 	if db, ok := dataStore.DB().(*sql.DB); ok {
 		s.analytics = analytics.NewEngine(db)
+		if s.pricingSource != nil {
+			s.analytics.SetPricingSource(s.pricingSource)
+		}
 	}
 
 	// Register routes

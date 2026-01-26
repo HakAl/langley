@@ -6,16 +6,24 @@ import (
 	"database/sql"
 	"strings"
 	"time"
+
+	"github.com/anthropics/langley/internal/pricing"
 )
 
 // Engine provides analytics queries and calculations.
 type Engine struct {
-	db *sql.DB
+	db            *sql.DB
+	pricingSource *pricing.Source
 }
 
 // NewEngine creates a new analytics engine.
 func NewEngine(db *sql.DB) *Engine {
 	return &Engine{db: db}
+}
+
+// SetPricingSource sets the LiteLLM pricing source for cost calculations.
+func (e *Engine) SetPricingSource(source *pricing.Source) {
+	e.pricingSource = source
 }
 
 // ModelPricing contains pricing data for a model.
@@ -30,7 +38,24 @@ type ModelPricing struct {
 }
 
 // GetPricing retrieves pricing for a model.
+// It first checks the LiteLLM pricing source, then falls back to the database.
 func (e *Engine) GetPricing(ctx context.Context, provider, model string) (*ModelPricing, error) {
+	// Try LiteLLM pricing source first
+	if e.pricingSource != nil {
+		if price := e.pricingSource.GetPrice(provider, model); price != nil {
+			return &ModelPricing{
+				Provider:           price.Provider,
+				ModelPattern:       price.Model,
+				InputCostPer1k:     price.InputCostPer1k,
+				OutputCostPer1k:    price.OutputCostPer1k,
+				CacheCreationPer1k: price.CacheCreationPer1k,
+				CacheReadPer1k:     price.CacheReadPer1k,
+				EffectiveDate:      time.Now(), // LiteLLM pricing is always current
+			}, nil
+		}
+	}
+
+	// Fall back to database pricing
 	row := e.db.QueryRowContext(ctx, `
 		SELECT provider, model_pattern, input_cost_per_1k, output_cost_per_1k,
 		       cache_creation_per_1k, cache_read_per_1k, effective_date
@@ -40,13 +65,13 @@ func (e *Engine) GetPricing(ctx context.Context, provider, model string) (*Model
 		LIMIT 1
 	`, provider, model)
 
-	var pricing ModelPricing
+	var pricingResult ModelPricing
 	var effectiveDate string
 	var cacheCreation, cacheRead sql.NullFloat64
 
 	err := row.Scan(
-		&pricing.Provider, &pricing.ModelPattern,
-		&pricing.InputCostPer1k, &pricing.OutputCostPer1k,
+		&pricingResult.Provider, &pricingResult.ModelPattern,
+		&pricingResult.InputCostPer1k, &pricingResult.OutputCostPer1k,
 		&cacheCreation, &cacheRead, &effectiveDate,
 	)
 	if err == sql.ErrNoRows {
@@ -56,15 +81,15 @@ func (e *Engine) GetPricing(ctx context.Context, provider, model string) (*Model
 		return nil, err
 	}
 
-	pricing.EffectiveDate, _ = time.Parse("2006-01-02", effectiveDate)
+	pricingResult.EffectiveDate, _ = time.Parse("2006-01-02", effectiveDate)
 	if cacheCreation.Valid {
-		pricing.CacheCreationPer1k = &cacheCreation.Float64
+		pricingResult.CacheCreationPer1k = &cacheCreation.Float64
 	}
 	if cacheRead.Valid {
-		pricing.CacheReadPer1k = &cacheRead.Float64
+		pricingResult.CacheReadPer1k = &cacheRead.Float64
 	}
 
-	return &pricing, nil
+	return &pricingResult, nil
 }
 
 // CalculateCost computes the cost for token usage.

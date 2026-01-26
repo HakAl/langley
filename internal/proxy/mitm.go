@@ -18,6 +18,7 @@ import (
 	"github.com/anthropics/langley/internal/analytics"
 	"github.com/anthropics/langley/internal/config"
 	"github.com/anthropics/langley/internal/parser"
+	"github.com/anthropics/langley/internal/pricing"
 	"github.com/anthropics/langley/internal/provider"
 	"github.com/anthropics/langley/internal/redact"
 	"github.com/anthropics/langley/internal/store"
@@ -52,16 +53,17 @@ type MITMProxy struct {
 
 // MITMProxyConfig holds configuration for creating a MITM proxy.
 type MITMProxyConfig struct {
-	Config       *config.Config
-	Logger       *slog.Logger
-	CA           *langleytls.CA
-	CertCache    *langleytls.CertCache
-	Redactor     *redact.Redactor
-	Store        store.Store
-	TaskAssigner *task.Assigner
-	OnFlow       func(*store.Flow)
-	OnUpdate     func(*store.Flow)
-	OnEvent      func(*store.Event) // Called for each SSE event parsed
+	Config        *config.Config
+	Logger        *slog.Logger
+	CA            *langleytls.CA
+	CertCache     *langleytls.CertCache
+	Redactor      *redact.Redactor
+	Store         store.Store
+	TaskAssigner  *task.Assigner
+	PricingSource *pricing.Source // LiteLLM pricing for cost calculations
+	OnFlow        func(*store.Flow)
+	OnUpdate      func(*store.Flow)
+	OnEvent       func(*store.Event) // Called for each SSE event parsed
 
 	// InsecureSkipVerifyUpstream skips TLS verification for upstream connections.
 	// This should ONLY be used for testing. Do not enable in production.
@@ -128,6 +130,9 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 	if cfg.Store != nil {
 		if db, ok := cfg.Store.DB().(*sql.DB); ok {
 			p.analytics = analytics.NewEngine(db)
+			if cfg.PricingSource != nil {
+				p.analytics.SetPricingSource(cfg.PricingSource)
+			}
 		}
 	}
 
@@ -142,13 +147,19 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 	return p, nil
 }
 
-// Serve starts the proxy server.
+// Serve starts the proxy server by creating its own listener.
 func (p *MITMProxy) Serve(ctx context.Context) error {
 	ln, err := net.Listen("tcp", p.server.Addr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
 
+	return p.ServeListener(ctx, ln)
+}
+
+// ServeListener starts the proxy server using the provided listener.
+// This allows the caller to manage port allocation (e.g., for fallback logic).
+func (p *MITMProxy) ServeListener(ctx context.Context, ln net.Listener) error {
 	go func() {
 		<-ctx.Done()
 		p.logger.Info("shutting down MITM proxy")
@@ -157,7 +168,7 @@ func (p *MITMProxy) Serve(ctx context.Context) error {
 		p.server.Shutdown(shutdownCtx)
 	}()
 
-	p.logger.Info("MITM proxy listening", "addr", p.server.Addr)
+	p.logger.Info("MITM proxy listening", "addr", ln.Addr().String())
 	if err := p.server.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("serve: %w", err)
 	}
@@ -293,7 +304,7 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if flow.IsSSE {
 		// For SSE, wrap ResponseWriter with flusher to ensure immediate delivery
 		flushWriter := newFlushWriter(w)
-		if err := p.streamSSEWithParser(flowID, resp.Body, flushWriter, limitedWriter); err != nil {
+		if err := p.streamSSEWithParser(flowID, flow.TaskID, resp.Body, flushWriter, limitedWriter); err != nil {
 			p.logger.Debug("error streaming SSE response", "error", err)
 		}
 	} else {
@@ -571,7 +582,7 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 
 		// Wrap client connection in chunked writer for proper HTTP/1.1 framing
 		chunkedWriter := newChunkedWriter(clientConn)
-		if err := p.streamSSEWithParser(flowID, resp.Body, chunkedWriter, limitedWriter); err != nil {
+		if err := p.streamSSEWithParser(flowID, flow.TaskID, resp.Body, chunkedWriter, limitedWriter); err != nil {
 			p.logger.Debug("error streaming SSE response", "error", err)
 		}
 		// Write final chunk to signal end of response
@@ -724,7 +735,8 @@ func (p *MITMProxy) extractUsageAndCost(ctx context.Context, flow *store.Flow, p
 
 // streamSSEWithParser streams SSE response body while parsing events.
 // It writes to the client, captures to buffer, and emits parsed events.
-func (p *MITMProxy) streamSSEWithParser(flowID string, reader io.Reader, client io.Writer, capture *limitedBuffer) error {
+// After streaming completes, it extracts tool invocations and saves them.
+func (p *MITMProxy) streamSSEWithParser(flowID string, taskID *string, reader io.Reader, client io.Writer, capture *limitedBuffer) error {
 	// Create a pipe to tee the data
 	pr, pw := io.Pipe()
 
@@ -746,8 +758,14 @@ func (p *MITMProxy) streamSSEWithParser(flowID string, reader io.Reader, client 
 	_, err := io.Copy(mw, reader)
 	pw.Close() // Signal parser that we're done
 
+	// Collect events for tool extraction
+	var collectedEvents []*store.Event
+
 	// Process events as they come in
 	for event := range eventsCh {
+		// Collect for later tool extraction
+		collectedEvents = append(collectedEvents, event)
+
 		// Persist event
 		if p.store != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -760,6 +778,28 @@ func (p *MITMProxy) streamSSEWithParser(flowID string, reader io.Reader, client 
 		// Broadcast event via callback
 		if p.onEvent != nil {
 			p.onEvent(event)
+		}
+	}
+
+	// Extract and save tool invocations (io4-1)
+	if p.store != nil && len(collectedEvents) > 0 {
+		tools := parser.ExtractToolUses(collectedEvents)
+		for _, tool := range tools {
+			inv := &store.ToolInvocation{
+				ID:        uuid.New().String(),
+				FlowID:    flowID,
+				TaskID:    taskID,
+				ToolName:  tool.Name,
+				Timestamp: time.Now(),
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if saveErr := p.store.SaveToolInvocation(ctx, inv); saveErr != nil {
+				p.logger.Error("failed to save tool invocation", "flow_id", flowID, "tool", tool.Name, "error", saveErr)
+			} else {
+				p.logger.Debug("saved tool invocation", "flow_id", flowID, "tool", tool.Name)
+			}
+			cancel()
 		}
 	}
 
