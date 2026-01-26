@@ -19,7 +19,7 @@ info:
   version: 1.0.0
   contact:
     name: Langley
-    url: https://github.com/anthropics/langley
+    url: https://github.com/HakAl/langley
 
 servers:
   - url: http://localhost:9091

@@ -18,16 +18,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/anthropics/langley/internal/api"
-	"github.com/anthropics/langley/internal/config"
-	"github.com/anthropics/langley/internal/pricing"
-	"github.com/anthropics/langley/internal/proxy"
-	"github.com/anthropics/langley/internal/redact"
-	"github.com/anthropics/langley/internal/store"
-	"github.com/anthropics/langley/internal/task"
-	langleytls "github.com/anthropics/langley/internal/tls"
-	"github.com/anthropics/langley/internal/ws"
-	"github.com/anthropics/langley/web"
+	"github.com/HakAl/langley/internal/api"
+	"github.com/HakAl/langley/internal/config"
+	"github.com/HakAl/langley/internal/pricing"
+	"github.com/HakAl/langley/internal/proxy"
+	"github.com/HakAl/langley/internal/redact"
+	"github.com/HakAl/langley/internal/store"
+	"github.com/HakAl/langley/internal/task"
+	langleytls "github.com/HakAl/langley/internal/tls"
+	"github.com/HakAl/langley/internal/ws"
+	"github.com/HakAl/langley/web"
 )
 
 var (
@@ -474,7 +474,7 @@ DASHBOARD:
     Access the web dashboard at http://localhost:9091 (or your -api address)
     You'll need the auth token shown at startup to connect.
 
-For more information, see: https://github.com/anthropics/langley
+For more information, see: https://github.com/HakAl/langley
 `)
 }
 

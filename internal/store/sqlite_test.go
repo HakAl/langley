@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anthropics/langley/internal/config"
+	"github.com/HakAl/langley/internal/config"
 )
 
 // testRetention returns a retention config for tests

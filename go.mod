@@ -1,4 +1,4 @@
-module github.com/anthropics/langley
+module github.com/HakAl/langley
 
 go 1.25.5
 

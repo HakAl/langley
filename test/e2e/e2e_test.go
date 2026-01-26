@@ -15,13 +15,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anthropics/langley/internal/api"
-	"github.com/anthropics/langley/internal/config"
-	"github.com/anthropics/langley/internal/proxy"
-	"github.com/anthropics/langley/internal/redact"
-	"github.com/anthropics/langley/internal/store"
-	"github.com/anthropics/langley/internal/task"
-	langleytls "github.com/anthropics/langley/internal/tls"
+	"github.com/HakAl/langley/internal/api"
+	"github.com/HakAl/langley/internal/config"
+	"github.com/HakAl/langley/internal/proxy"
+	"github.com/HakAl/langley/internal/redact"
+	"github.com/HakAl/langley/internal/store"
+	"github.com/HakAl/langley/internal/task"
+	langleytls "github.com/HakAl/langley/internal/tls"
 )
 
 // TestE2E_DirectHandler tests the full flow using direct handler calls.

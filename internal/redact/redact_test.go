@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anthropics/langley/internal/config"
+	"github.com/HakAl/langley/internal/config"
 )
 
 // testConfig returns a RedactionConfig with all redaction enabled.

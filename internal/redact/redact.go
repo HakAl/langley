@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/anthropics/langley/internal/config"
+	"github.com/HakAl/langley/internal/config"
 )
 
 const (

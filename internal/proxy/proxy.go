@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropics/langley/internal/config"
+	"github.com/HakAl/langley/internal/config"
 )
 
 // Proxy is the main HTTP/HTTPS intercepting proxy.

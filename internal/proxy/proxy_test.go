@@ -13,14 +13,65 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
-	"github.com/anthropics/langley/internal/config"
-	"github.com/anthropics/langley/internal/redact"
-	"github.com/anthropics/langley/internal/store"
-	"github.com/anthropics/langley/internal/task"
-	langleytls "github.com/anthropics/langley/internal/tls"
+	"github.com/HakAl/langley/internal/config"
+	"github.com/HakAl/langley/internal/redact"
+	"github.com/HakAl/langley/internal/store"
+	"github.com/HakAl/langley/internal/task"
+	langleytls "github.com/HakAl/langley/internal/tls"
 )
+
+// flowCapture provides thread-safe capture of flow data for tests.
+type flowCapture struct {
+	mu     sync.Mutex
+	flow   *store.Flow
+	events []*store.Event
+}
+
+func (c *flowCapture) OnFlow(flow *store.Flow) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.flow = flow
+}
+
+func (c *flowCapture) OnUpdate(flow *store.Flow) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.flow = flow
+}
+
+func (c *flowCapture) OnEvent(event *store.Event) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, event)
+}
+
+func (c *flowCapture) Flow() *store.Flow {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.flow
+}
+
+func (c *flowCapture) Events() []*store.Event {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.events
+}
+
+// WaitForFlow waits for a flow to be captured with timeout.
+func (c *flowCapture) WaitForFlow(timeout time.Duration) *store.Flow {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if f := c.Flow(); f != nil {
+			return f
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return nil
+}
 
 // testConfig returns a minimal config for testing
 func testConfig() *config.Config {
@@ -276,7 +327,7 @@ func TestMITMProxy_HTTPForwarding(t *testing.T) {
 	mockStore := newMockStore()
 	taskAssigner := task.NewAssigner(task.AssignerConfig{})
 
-	var capturedFlow *store.Flow
+	capture := &flowCapture{}
 	proxy, err := NewMITMProxy(MITMProxyConfig{
 		Config:       cfg,
 		Logger:       logger,
@@ -285,12 +336,8 @@ func TestMITMProxy_HTTPForwarding(t *testing.T) {
 		Redactor:     redactor,
 		Store:        mockStore,
 		TaskAssigner: taskAssigner,
-		OnFlow: func(flow *store.Flow) {
-			capturedFlow = flow
-		},
-		OnUpdate: func(flow *store.Flow) {
-			capturedFlow = flow
-		},
+		OnFlow:       capture.OnFlow,
+		OnUpdate:     capture.OnUpdate,
 	})
 	if err != nil {
 		t.Fatalf("NewMITMProxy failed: %v", err)
@@ -334,6 +381,7 @@ func TestMITMProxy_HTTPForwarding(t *testing.T) {
 	}
 
 	// Verify flow was captured
+	capturedFlow := capture.WaitForFlow(2 * time.Second)
 	if capturedFlow == nil {
 		t.Fatal("flow was not captured")
 	}
@@ -384,8 +432,7 @@ func TestMITMProxy_SSEResponse(t *testing.T) {
 	redactor, _ := redact.New(&config.RedactionConfig{})
 	mockStore := newMockStore()
 
-	var capturedEvents []*store.Event
-	var capturedFlow *store.Flow
+	capture := &flowCapture{}
 
 	proxy, _ := NewMITMProxy(MITMProxyConfig{
 		Config:    cfg,
@@ -394,15 +441,9 @@ func TestMITMProxy_SSEResponse(t *testing.T) {
 		CertCache: certCache,
 		Redactor:  redactor,
 		Store:     mockStore,
-		OnFlow: func(flow *store.Flow) {
-			capturedFlow = flow
-		},
-		OnUpdate: func(flow *store.Flow) {
-			capturedFlow = flow
-		},
-		OnEvent: func(event *store.Event) {
-			capturedEvents = append(capturedEvents, event)
-		},
+		OnFlow:    capture.OnFlow,
+		OnUpdate:  capture.OnUpdate,
+		OnEvent:   capture.OnEvent,
 	})
 
 	proxyServer := httptest.NewServer(proxy)
@@ -430,6 +471,7 @@ func TestMITMProxy_SSEResponse(t *testing.T) {
 	}
 
 	// Verify flow marked as SSE
+	capturedFlow := capture.WaitForFlow(2 * time.Second)
 	if capturedFlow == nil {
 		t.Fatal("flow not captured")
 	}
@@ -438,6 +480,7 @@ func TestMITMProxy_SSEResponse(t *testing.T) {
 	}
 
 	// Verify events captured
+	capturedEvents := capture.Events()
 	if len(capturedEvents) < 3 {
 		t.Errorf("expected at least 3 events, got %d", len(capturedEvents))
 	}
@@ -463,7 +506,7 @@ func TestMITMProxy_ErrorResponse(t *testing.T) {
 	redactor, _ := redact.New(&config.RedactionConfig{})
 	mockStore := newMockStore()
 
-	var capturedFlow *store.Flow
+	capture := &flowCapture{}
 	proxy, _ := NewMITMProxy(MITMProxyConfig{
 		Config:    cfg,
 		Logger:    logger,
@@ -471,9 +514,7 @@ func TestMITMProxy_ErrorResponse(t *testing.T) {
 		CertCache: certCache,
 		Redactor:  redactor,
 		Store:     mockStore,
-		OnUpdate: func(flow *store.Flow) {
-			capturedFlow = flow
-		},
+		OnUpdate:  capture.OnUpdate,
 	})
 
 	proxyServer := httptest.NewServer(proxy)
@@ -497,6 +538,7 @@ func TestMITMProxy_ErrorResponse(t *testing.T) {
 	}
 
 	// Verify flow captures error status
+	capturedFlow := capture.WaitForFlow(2 * time.Second)
 	if capturedFlow != nil && capturedFlow.StatusCode != nil {
 		if *capturedFlow.StatusCode != 400 {
 			t.Errorf("captured StatusCode = %d, want 400", *capturedFlow.StatusCode)
@@ -522,7 +564,7 @@ func TestMITMProxy_TaskAssignment(t *testing.T) {
 	mockStore := newMockStore()
 	taskAssigner := task.NewAssigner(task.AssignerConfig{IdleGapMinutes: 5})
 
-	var capturedFlow *store.Flow
+	capture := &flowCapture{}
 	proxy, _ := NewMITMProxy(MITMProxyConfig{
 		Config:       cfg,
 		Logger:       logger,
@@ -531,9 +573,7 @@ func TestMITMProxy_TaskAssignment(t *testing.T) {
 		Redactor:     redactor,
 		Store:        mockStore,
 		TaskAssigner: taskAssigner,
-		OnFlow: func(flow *store.Flow) {
-			capturedFlow = flow
-		},
+		OnFlow:       capture.OnFlow,
 	})
 
 	proxyServer := httptest.NewServer(proxy)
@@ -555,6 +595,7 @@ func TestMITMProxy_TaskAssignment(t *testing.T) {
 		}
 		resp.Body.Close()
 
+		capturedFlow := capture.WaitForFlow(2 * time.Second)
 		if capturedFlow == nil || capturedFlow.TaskID == nil {
 			t.Fatal("task not assigned")
 		}
@@ -577,6 +618,7 @@ func TestMITMProxy_TaskAssignment(t *testing.T) {
 		}
 		resp.Body.Close()
 
+		capturedFlow := capture.WaitForFlow(2 * time.Second)
 		if capturedFlow == nil || capturedFlow.TaskID == nil {
 			t.Fatal("task not assigned")
 		}
@@ -609,7 +651,7 @@ func TestMITMProxy_BodyTruncation(t *testing.T) {
 	redactor, _ := redact.New(&config.RedactionConfig{})
 	mockStore := newMockStore()
 
-	var capturedFlow *store.Flow
+	capture := &flowCapture{}
 	proxy, _ := NewMITMProxy(MITMProxyConfig{
 		Config:    cfg,
 		Logger:    logger,
@@ -617,9 +659,7 @@ func TestMITMProxy_BodyTruncation(t *testing.T) {
 		CertCache: certCache,
 		Redactor:  redactor,
 		Store:     mockStore,
-		OnUpdate: func(flow *store.Flow) {
-			capturedFlow = flow
-		},
+		OnUpdate:  capture.OnUpdate,
 	})
 
 	proxyServer := httptest.NewServer(proxy)
@@ -645,6 +685,7 @@ func TestMITMProxy_BodyTruncation(t *testing.T) {
 	}
 
 	// But captured body should be truncated
+	capturedFlow := capture.WaitForFlow(2 * time.Second)
 	if capturedFlow != nil && capturedFlow.ResponseBody != nil {
 		if len(*capturedFlow.ResponseBody) > cfg.Persistence.BodyMaxBytes {
 			t.Errorf("captured body should be truncated to %d, got %d",
@@ -683,7 +724,7 @@ func TestMITMProxy_RawBodyStorageOff(t *testing.T) {
 	})
 	mockStore := newMockStore()
 
-	var capturedFlow *store.Flow
+	capture := &flowCapture{}
 	proxy, _ := NewMITMProxy(MITMProxyConfig{
 		Config:    cfg,
 		Logger:    logger,
@@ -691,9 +732,7 @@ func TestMITMProxy_RawBodyStorageOff(t *testing.T) {
 		CertCache: certCache,
 		Redactor:  redactor,
 		Store:     mockStore,
-		OnUpdate: func(flow *store.Flow) {
-			capturedFlow = flow
-		},
+		OnUpdate:  capture.OnUpdate,
 	})
 
 	proxyServer := httptest.NewServer(proxy)
@@ -713,6 +752,7 @@ func TestMITMProxy_RawBodyStorageOff(t *testing.T) {
 	resp.Body.Close()
 
 	// With RawBodyStorage=false, bodies should NOT be stored
+	capturedFlow := capture.WaitForFlow(2 * time.Second)
 	if capturedFlow == nil {
 		t.Fatal("expected captured flow")
 	}
@@ -825,25 +865,18 @@ func TestMITMProxy_CONNECT_SSE(t *testing.T) {
 	redactor, _ := redact.New(&config.RedactionConfig{})
 	mockStore := newMockStore()
 
-	var capturedFlow *store.Flow
-	var capturedEvents []*store.Event
+	capture := &flowCapture{}
 
 	proxy, err := NewMITMProxy(MITMProxyConfig{
-		Config:    cfg,
-		Logger:    logger,
-		CA:        ca,
-		CertCache: certCache,
-		Redactor:  redactor,
-		Store:     mockStore,
-		OnFlow: func(flow *store.Flow) {
-			capturedFlow = flow
-		},
-		OnUpdate: func(flow *store.Flow) {
-			capturedFlow = flow
-		},
-		OnEvent: func(event *store.Event) {
-			capturedEvents = append(capturedEvents, event)
-		},
+		Config:                     cfg,
+		Logger:                     logger,
+		CA:                         ca,
+		CertCache:                  certCache,
+		Redactor:                   redactor,
+		Store:                      mockStore,
+		OnFlow:                     capture.OnFlow,
+		OnUpdate:                   capture.OnUpdate,
+		OnEvent:                    capture.OnEvent,
 		InsecureSkipVerifyUpstream: true, // Test only - skip upstream cert validation
 	})
 	if err != nil {
@@ -901,7 +934,8 @@ func TestMITMProxy_CONNECT_SSE(t *testing.T) {
 		t.Errorf("response missing message_stop event, got: %s", bodyStr)
 	}
 
-	// Verify flow was captured
+	// Verify flow was captured (wait for async callback)
+	capturedFlow := capture.WaitForFlow(2 * time.Second)
 	if capturedFlow == nil {
 		t.Fatal("flow was not captured")
 	}
@@ -913,6 +947,7 @@ func TestMITMProxy_CONNECT_SSE(t *testing.T) {
 	}
 
 	// Verify events were captured
+	capturedEvents := capture.Events()
 	if len(capturedEvents) < 3 {
 		t.Errorf("expected at least 3 SSE events, got %d", len(capturedEvents))
 	}

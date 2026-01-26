@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/anthropics/langley/internal/config"
-	"github.com/anthropics/langley/internal/store"
+	"github.com/HakAl/langley/internal/config"
+	"github.com/HakAl/langley/internal/store"
 )
 
 // mockStore implements store.Store for testing.

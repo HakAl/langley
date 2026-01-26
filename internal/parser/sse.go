@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anthropics/langley/internal/queue"
-	"github.com/anthropics/langley/internal/store"
+	"github.com/HakAl/langley/internal/queue"
+	"github.com/HakAl/langley/internal/store"
 	"github.com/google/uuid"
 )
 

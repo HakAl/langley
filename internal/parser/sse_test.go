@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anthropics/langley/internal/queue"
-	"github.com/anthropics/langley/internal/store"
+	"github.com/HakAl/langley/internal/queue"
+	"github.com/HakAl/langley/internal/store"
 )
 
 // mockLogger captures log messages for testing.

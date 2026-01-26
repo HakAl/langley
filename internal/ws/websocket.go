@@ -13,8 +13,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/anthropics/langley/internal/config"
-	"github.com/anthropics/langley/internal/store"
+	"github.com/HakAl/langley/internal/config"
+	"github.com/HakAl/langley/internal/store"
 )
 
 // sessionCookieName must match the cookie name used in api package.
