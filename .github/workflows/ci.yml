@@ -2,13 +2,59 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
 
 jobs:
   test:
-    name: Test with Race Detection
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go-version: ['1.25']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Go dependencies
+        run: go mod download
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Run Go tests
+        run: go test -v ./...
+
+      - name: Run tests with race detector (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race -v ./...
+
+      - name: Build binary
+        run: go build -v ./cmd/langley
+
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
 
     steps:
@@ -20,29 +66,48 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Install dependencies
-        run: go mod download
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
 
-      - name: Run tests with race detector
-        run: go test -race -v ./...
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
 
-      - name: Run linter
+      - name: Build frontend (required for go:embed)
+        working-directory: web
+        run: npm run build
+
+      - name: Run Go linter
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
 
-  build:
-    name: Build
+  frontend:
+    name: Frontend Build
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          go-version: '1.25'
-          cache: true
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Type check
+        working-directory: web
+        run: npx tsc --noEmit
 
       - name: Build
-        run: go build -v ./...
+        working-directory: web
+        run: npm run build
