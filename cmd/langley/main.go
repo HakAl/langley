@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -319,22 +320,8 @@ func main() {
 	fmt.Fprintf(os.Stderr, "  Token:     %s\n", cfg.Auth.Token)
 	fmt.Fprintf(os.Stderr, "\n")
 
-	// Print copy-paste environment variables
-	fmt.Fprintf(os.Stderr, "  Environment variables (copy-paste):\n")
-	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  # Node.js (Claude CLI, Codex)\n")
-	fmt.Fprintf(os.Stderr, "  export HTTPS_PROXY=http://%s\n", actualProxyAddr)
-	fmt.Fprintf(os.Stderr, "  export HTTP_PROXY=http://%s\n", actualProxyAddr)
-	fmt.Fprintf(os.Stderr, "  export NODE_EXTRA_CA_CERTS=%s\n", caPath)
-	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  # Python (httpx, OpenAI SDK)\n")
-	fmt.Fprintf(os.Stderr, "  export HTTPS_PROXY=http://%s\n", actualProxyAddr)
-	fmt.Fprintf(os.Stderr, "  export HTTP_PROXY=http://%s\n", actualProxyAddr)
-	fmt.Fprintf(os.Stderr, "  export SSL_CERT_FILE=%s\n", caPath)
-	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  # Python (requests)\n")
-	fmt.Fprintf(os.Stderr, "  export REQUESTS_CA_BUNDLE=%s\n", caPath)
-	fmt.Fprintf(os.Stderr, "\n")
+	// Print copy-paste environment variables (OS-aware syntax)
+	fmt.Fprint(os.Stderr, formatEnvVars(actualProxyAddr, caPath, runtime.GOOS))
 
 	// Start proxy using the pre-created listener (langley-rla)
 	if err := mitmProxy.ServeListener(ctx, proxyListener); err != nil && err != context.Canceled {
