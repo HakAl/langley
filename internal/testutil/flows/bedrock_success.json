@@ -1,0 +1,16 @@
+{
+  "id": "flow-bedrock-001",
+  "host": "bedrock-runtime.us-east-1.amazonaws.com",
+  "method": "POST",
+  "path": "/model/anthropic.claude-3-sonnet-20240229-v1:0/converse",
+  "url": "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-sonnet-20240229-v1:0/converse",
+  "provider": "bedrock",
+  "status_code": 200,
+  "status_text": "OK",
+  "is_sse": false,
+  "flow_integrity": "complete",
+  "input_tokens": 100,
+  "output_tokens": 50,
+  "model": "anthropic.claude-3-sonnet-20240229-v1:0",
+  "duration_ms": 180
+}

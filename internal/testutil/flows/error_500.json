@@ -1,0 +1,13 @@
+{
+  "id": "flow-error-500",
+  "host": "api.anthropic.com",
+  "method": "POST",
+  "path": "/v1/messages",
+  "url": "https://api.anthropic.com/v1/messages",
+  "provider": "anthropic",
+  "status_code": 500,
+  "status_text": "Internal Server Error",
+  "is_sse": false,
+  "flow_integrity": "complete",
+  "duration_ms": 50
+}

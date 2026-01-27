@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/HakAl/langley/internal/config"
 	"github.com/HakAl/langley/internal/store"
+	"github.com/HakAl/langley/internal/testutil"
 )
 
 // mockStore implements store.Store for testing.
@@ -400,20 +402,13 @@ func TestExportFlows_MaxRows(t *testing.T) {
 	}
 }
 
-// Helper to create test flows
+// Helper to create test flows using testutil fixtures
 func createTestFlows(n int) []*store.Flow {
 	flows := make([]*store.Flow, n)
 	for i := 0; i < n; i++ {
-		status := 200
-		flows[i] = &store.Flow{
-			ID:            "flow-" + string(rune('a'+i)),
-			Host:          "api.anthropic.com",
-			Method:        "POST",
-			Path:          "/v1/messages",
-			StatusCode:    &status,
-			Provider:      "anthropic",
-			FlowIntegrity: "complete",
-		}
+		flows[i] = testutil.NewFlow().
+			WithID(fmt.Sprintf("flow-%c", 'a'+i)).
+			Build()
 	}
 	return flows
 }
