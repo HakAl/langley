@@ -218,7 +218,14 @@ function App() {
   }, [apiFetch])
 
   const fetchStats = useCallback(async () => {
-    const data = await apiFetch('/api/stats')
+    // Fetch stats for last 30 days to match daily cost chart
+    const end = new Date()
+    const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000)
+    const params = new URLSearchParams({
+      start: start.toISOString(),
+      end: end.toISOString()
+    })
+    const data = await apiFetch(`/api/stats?${params}`)
     if (data) setStats(data)
   }, [apiFetch])
 
@@ -238,7 +245,14 @@ function App() {
   }, [apiFetch])
 
   const fetchDailyCosts = useCallback(async () => {
-    const data = await apiFetch('/api/analytics/cost/daily')
+    // Fetch last 30 days of cost data
+    const end = new Date()
+    const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000)
+    const params = new URLSearchParams({
+      start: start.toISOString(),
+      end: end.toISOString()
+    })
+    const data = await apiFetch(`/api/analytics/cost/daily?${params}`)
     if (data) setDailyCosts(data)
   }, [apiFetch])
 
@@ -714,20 +728,26 @@ function App() {
 
       <div className="chart-section">
         <h3>Daily Cost</h3>
-        <div className="chart-bars">
-          {dailyCosts.map((day, i) => {
-            const maxCost = Math.max(...dailyCosts.map(d => d.total_cost), 0.01)
-            const height = (day.total_cost / maxCost) * 100
-            return (
-              <div key={i} className="bar-container">
-                <div className="bar" style={{ height: `${height}%` }}>
+        {dailyCosts.length === 0 || dailyCosts.every(d => d.total_cost === 0) ? (
+          <div className="chart-empty">
+            <p>No cost data for this period</p>
+            <p className="chart-empty-hint">Cost tracking requires LLM API traffic with token usage</p>
+          </div>
+        ) : (
+          <div className="chart-bars">
+            {dailyCosts.map((day, i) => {
+              const maxCost = Math.max(...dailyCosts.map(d => d.total_cost), 0.01)
+              const height = (day.total_cost / maxCost) * 100
+              return (
+                <div key={i} className="bar-container">
                   <span className="bar-value">${day.total_cost.toFixed(2)}</span>
+                  <div className="bar" style={{ height: `${height}%` }}></div>
+                  <span className="bar-label">{day.period.slice(5)}</span>
                 </div>
-                <span className="bar-label">{day.period.slice(5)}</span>
-              </div>
-            )
-          })}
-        </div>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )

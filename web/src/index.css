@@ -590,32 +590,50 @@ header h1 {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: flex-end;
   height: 100%;
+  min-width: 50px;
 }
 
 .bar {
   width: 100%;
-  max-width: 60px;
+  max-width: 40px;
   background: var(--accent);
-  border-radius: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  border-radius: 2px 2px 0 0;
   min-height: 4px;
   transition: height 0.3s;
 }
 
 .bar-value {
-  font-size: 0.8125rem;
-  color: white;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-primary);
   padding: 0.25rem;
   white-space: nowrap;
 }
 
 .bar-label {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   margin-top: 0.5rem;
+}
+
+.chart-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: var(--text-muted);
+}
+
+.chart-empty p {
+  margin: 0.25rem 0;
+}
+
+.chart-empty-hint {
+  font-size: 0.875rem;
+  opacity: 0.7;
 }
 
 /* Data tables */
