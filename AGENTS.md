@@ -2,6 +2,9 @@
 
 **Boy scout rule: always leave code better than you found it.**
 
+> For general coding principles (SOLID, DI philosophy, testing mindset), see `~/.claude/CLAUDE.md`.
+> This document covers **project-specific** conventions for langley.
+
 ### Project Stack
 - **Backend:** Go
 - **Frontend:** React (Vite dev server)
@@ -11,49 +14,173 @@
 ### You Are an Architect, Not a Code Monkey
 
 Before writing ANY code, you must:
-1. **Design the abstraction** - What protocol/interface is needed?
-2. **Consider SOLID principles** - Is this following Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, Dependency Inversion?
+1. **Design the interface** - What contract is needed?
+2. **Consider SOLID principles** - Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, Dependency Inversion
 3. **Plan dependency injection** - How will this be tested? What needs to be injected?
 4. **Think about edge cases** - What can go wrong? What are the boundaries?
 5. **Design before coding** - No coding until the design is clear
 
-### MANDATORY: Protocol-First Design
+### MANDATORY: Interface-First Design
 
-**NEVER write a concrete class without defining its protocol first.**
+**NEVER write a concrete type without defining its interface first.**
 
-**Why?** Protocols enable:
+**Why?** Interfaces enable:
 - Testing with test doubles
 - Swapping implementations
 - Dependency inversion
 - Clear contracts
 
-### Protocol Rule (Go Backend)
+### Interface Design (Go)
 
-In Go, define a minimal `type X interface { ... }` in the package before any concrete implementation.
+Define minimal interfaces in the package that *uses* them (not the package that implements them).
 Interfaces must be small and specific (ISP); prefer multiple tiny interfaces over one big one.
+
+```go
+// GOOD: Small, focused interface defined by consumer
+type FlowReader interface {
+    GetFlow(ctx context.Context, id string) (*Flow, error)
+}
+
+// GOOD: Compose interfaces when needed
+type FlowStore interface {
+    FlowReader
+    FlowWriter
+}
+
+// BAD: Kitchen-sink interface
+type Store interface {
+    GetFlow(...)
+    SaveFlow(...)
+    DeleteFlow(...)
+    GetEvents(...)
+    SaveEvent(...)
+    GetStats(...)
+    // 20 more methods...
+}
+```
 
 ---
 
-## SOLID PRINCIPLES (NON-NEGOTIABLE)
+## GO IDIOMS (PROJECT-SPECIFIC)
 
-### Single Responsibility Principle
-**Each class should have ONE reason to change.**
+### Context Propagation
 
-### Open/Closed Principle
-**Open for extension, closed for modification.**
+**Every function that does I/O or may block MUST accept `context.Context` as its first parameter.**
 
-Use strategy pattern, not if/else chains.
+```go
+// GOOD: Context first, enables cancellation and timeouts
+func (s *SQLiteStore) GetFlow(ctx context.Context, id string) (*Flow, error) {
+    row := s.db.QueryRowContext(ctx, "SELECT ...", id)
+    // ...
+}
 
-### Liskov Substitution Principle
-**Subtypes must be substitutable for their base types.**
+// BAD: No context - can't cancel, can't timeout
+func (s *SQLiteStore) GetFlow(id string) (*Flow, error) {
+    row := s.db.QueryRow("SELECT ...", id)  // Blocks forever if DB hangs
+}
+```
 
-If you inherit from a class or implement a protocol, you must honor the contract completely.
+### Defer for Cleanup
 
-### Interface Segregation Principle
-**Don't force clients to depend on interfaces they don't use.**
+Use `defer` immediately after acquiring a resource:
 
-### Dependency Inversion Principle
-**Depend on abstractions, not concretions.**
+```go
+// GOOD: Defer right after acquire
+func processFile(path string) error {
+    f, err := os.Open(path)
+    if err != nil {
+        return err
+    }
+    defer f.Close()  // Immediately after successful open
+
+    // ... use f ...
+}
+
+// GOOD: Mutex pattern
+func (s *Server) updateState() {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+
+    // ... modify state ...
+}
+```
+
+### Code Formatting
+
+**All Go code MUST be formatted.** `make check` enforces this.
+
+```bash
+gofmt -s -w .      # Format with simplification
+goimports -w .     # Format + fix imports
+```
+
+---
+
+## CONCURRENCY (Go)
+
+### Goroutine Ownership
+
+**Whoever starts a goroutine is responsible for ensuring it stops.**
+
+```go
+// GOOD: Clear ownership with done channel
+type Server struct {
+    done chan struct{}
+    wg   sync.WaitGroup
+}
+
+func (s *Server) Start() {
+    s.wg.Add(1)
+    go func() {
+        defer s.wg.Done()
+        for {
+            select {
+            case <-s.done:
+                return
+            case work := <-s.workChan:
+                s.process(work)
+            }
+        }
+    }()
+}
+
+func (s *Server) Stop() {
+    close(s.done)
+    s.wg.Wait()  // Wait for goroutine to finish
+}
+
+// BAD: Orphaned goroutine - no way to stop it
+func (s *Server) Start() {
+    go func() {
+        for work := range s.workChan {  // Blocks forever if channel never closes
+            s.process(work)
+        }
+    }()
+}
+```
+
+### Channel vs Mutex
+
+- **Channel**: For transferring ownership of data between goroutines
+- **Mutex**: For protecting shared state accessed by multiple goroutines
+
+```go
+// Channel: Passing work to a worker
+workChan <- job  // Ownership transfers to receiver
+
+// Mutex: Multiple goroutines reading/writing same map
+s.mu.Lock()
+s.cache[key] = value
+s.mu.Unlock()
+```
+
+### Race Detector
+
+**ALWAYS run tests with race detector for concurrent code:**
+
+```bash
+go test -race ./...
+```
 
 ---
 
@@ -61,7 +188,7 @@ If you inherit from a class or implement a protocol, you must honor the contract
 
 ### The Rule: ALL Dependencies MUST Be Injected
 
-**NO direct instantiation of dependencies in class bodies.**
+**NO direct instantiation of dependencies in type constructors.**
 
 ### Constructor Rules
 
@@ -71,17 +198,12 @@ If you inherit from a class or implement a protocol, you must honor the contract
 4. **NO auto-registration** - Explicit is better than implicit
 5. **Provide defaults with factory functions** - `NewFoo()` creates with defaults, `NewFooWith(deps)` for injection
 
-### Dependency Injection: Required Abstractions (Go)
+### Required Abstractions
 
 These core components MUST be injected via interfaces, not concrete types:
-- `Proxy` - request forwarding
 - `Store` - data persistence
 - `Redactor` - sensitive data masking
-- `AnalyticsEngine` - metrics/telemetry
-- `TaskAssigner` - work distribution
-- `Provider` - external service adapters
 - `CertSource` - TLS certificate management
-- `EventQueue` - async event handling
 
 ---
 
@@ -108,6 +230,42 @@ result, _ := doThing()  // Never do this
 ### Panic Policy
 - **NEVER** panic in library code
 - Panics are only acceptable for truly unrecoverable states (programmer errors, not runtime errors)
+
+---
+
+## SECURITY
+
+### Input Validation
+
+**Validate at system boundaries, trust internal code.**
+
+```go
+// GOOD: Validate at the API boundary
+func (h *Handler) GetFlow(w http.ResponseWriter, r *http.Request) {
+    id := chi.URLParam(r, "id")
+    if !isValidFlowID(id) {  // Validate here
+        http.Error(w, "invalid flow ID", http.StatusBadRequest)
+        return
+    }
+
+    flow, err := h.store.GetFlow(r.Context(), id)  // Store trusts valid input
+    // ...
+}
+
+// BAD: Validating deep in the stack (defensive programming spiral)
+func (s *SQLiteStore) GetFlow(ctx context.Context, id string) (*Flow, error) {
+    if id == "" {  // Why would this happen if API validated?
+        return nil, errors.New("empty id")
+    }
+    // ...
+}
+```
+
+### Sensitive Data
+
+- **NEVER** log API keys, tokens, or credentials
+- Use the `Redactor` interface to mask sensitive data before storage/display
+- Environment variables for secrets, not config files
 
 ---
 
@@ -144,27 +302,24 @@ Before writing ANY test, answer these questions:
 - Error conditions?
 - Invalid data?
 
-**Am I mocking appropriately?**
-- Only external dependencies (APIs, file system, network)?
-- Using real objects for business logic?
-- Using interface-based test doubles?
-
 ### TEST ISOLATION (CRITICAL)
 
 **NEVER MAKE REAL API CALLS IN TESTS. EVER.**
-**TEST BEHAVIOR THROUGH MOCKS NOT REAL APIS**
+**TEST BEHAVIOR THROUGH INTERFACE-BASED TEST DOUBLES, NOT REAL APIS**
 
 ### Backend Tests (Go)
 
-For any change that touches concurrency or shared state, run:
 ```bash
-go test -race ./...
+go test -race ./...              # Always use race detector
+go test -v -run TestName ./...   # Run specific test
 ```
 
 ### Frontend Tests (React)
 
 Use Playwright MCP server for E2E verification of the dashboard UI.
 Unit tests use Vitest for component logic.
+
+---
 
 # Agent Instructions
 
@@ -213,7 +368,7 @@ make install-deps  # Install Go + npm dependencies
 make dev           # Run dev servers (backend + frontend hot reload)
 make build         # Build production binary
 make test          # Run all tests (with -race flag)
-make check         # Lint + test (quality gate)
+make check         # Lint + format + test (quality gate)
 make clean         # Remove build artifacts
 
 # Development helpers
@@ -234,7 +389,7 @@ make dev           # Starts backend + Vite dev server
 
 **Before committing:**
 ```bash
-make check         # Must pass
+make check         # Must pass (includes format check)
 ```
 
 ## API Endpoints
