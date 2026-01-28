@@ -328,11 +328,11 @@ function App() {
     }
   }, [exportConfig, hostFilter, taskFilter])
 
-  // Initial load - auto-connect on mount (cookie auth happens automatically)
+  // Initial load - auto-connect on mount
+  // Must await an API call first to set the auth cookie before WebSocket connects
   useEffect(() => {
-    fetchFlows()
+    fetchFlows().then(() => connect())
     fetchStats()
-    connect()
     return () => {
       // Clear pending reconnect timeout
       if (reconnectTimeoutRef.current) {
