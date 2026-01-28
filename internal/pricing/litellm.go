@@ -41,6 +41,34 @@ type ModelPrice struct {
 	SupportsFunctionCall  bool
 }
 
+// flexInt handles JSON values that can be either int or string.
+type flexInt int
+
+func (f *flexInt) UnmarshalJSON(data []byte) error {
+	// Try int first
+	var i int
+	if err := json.Unmarshal(data, &i); err == nil {
+		*f = flexInt(i)
+		return nil
+	}
+	// Try string
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		// Parse the string as int
+		var parsed int
+		if _, err := fmt.Sscanf(s, "%d", &parsed); err == nil {
+			*f = flexInt(parsed)
+			return nil
+		}
+		// Empty string or non-numeric: default to 0
+		*f = 0
+		return nil
+	}
+	// Null or other: default to 0
+	*f = 0
+	return nil
+}
+
 // litellmEntry represents a single model entry in LiteLLM's JSON.
 type litellmEntry struct {
 	LiteLLMProvider             string   `json:"litellm_provider"`
@@ -48,8 +76,8 @@ type litellmEntry struct {
 	OutputCostPerToken          *float64 `json:"output_cost_per_token"`
 	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost"`
 	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost"`
-	MaxInputTokens              int      `json:"max_input_tokens"`
-	MaxOutputTokens             int      `json:"max_output_tokens"`
+	MaxInputTokens              flexInt  `json:"max_input_tokens"`
+	MaxOutputTokens             flexInt  `json:"max_output_tokens"`
 	Mode                        string   `json:"mode"`
 	SupportsPromptCaching       bool     `json:"supports_prompt_caching"`
 	SupportsVision              bool     `json:"supports_vision"`
@@ -211,15 +239,23 @@ func (s *Source) fetchFromLiteLLM(ctx context.Context) error {
 }
 
 // parseAndLoad parses LiteLLM JSON and loads into memory.
+// It parses each entry individually to skip malformed entries rather than failing entirely.
 func (s *Source) parseAndLoad(data []byte) error {
-	var entries map[string]litellmEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
+	var rawEntries map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rawEntries); err != nil {
 		return fmt.Errorf("parsing JSON: %w", err)
 	}
 
-	prices := make(map[string]*ModelPrice, len(entries))
+	prices := make(map[string]*ModelPrice, len(rawEntries))
+	var skipped int
 
-	for modelName, entry := range entries {
+	for modelName, raw := range rawEntries {
+		var entry litellmEntry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			skipped++
+			continue
+		}
+
 		// Skip non-chat models (embeddings, image gen, etc.)
 		if entry.Mode != "" && entry.Mode != "chat" {
 			continue
@@ -238,8 +274,8 @@ func (s *Source) parseAndLoad(data []byte) error {
 			Model:                 modelName,
 			InputCostPer1k:        *entry.InputCostPerToken * 1000,
 			OutputCostPer1k:       *entry.OutputCostPerToken * 1000,
-			MaxInputTokens:        entry.MaxInputTokens,
-			MaxOutputTokens:       entry.MaxOutputTokens,
+			MaxInputTokens:        int(entry.MaxInputTokens),
+			MaxOutputTokens:       int(entry.MaxOutputTokens),
 			SupportsPromptCaching: entry.SupportsPromptCaching,
 			SupportsVision:        entry.SupportsVision,
 			SupportsFunctionCall:  entry.SupportsFunctionCalling,
@@ -255,6 +291,10 @@ func (s *Source) parseAndLoad(data []byte) error {
 		}
 
 		prices[key] = price
+	}
+
+	if skipped > 0 {
+		s.logger.Debug("skipped malformed pricing entries", "count", skipped)
 	}
 
 	s.mu.Lock()
