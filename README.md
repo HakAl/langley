@@ -25,22 +25,13 @@ go build -o langley ./cmd/langley
 
 ### 2. Trust the CA Certificate
 
-On first run, Langley generates a CA certificate. You must trust it to intercept HTTPS:
+On first run, Langley generates a CA certificate. Install it to your system trust store:
 
 ```bash
-# Show the CA path and trust instructions
-./langley -show-ca
-
-# macOS
-sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/.config/langley/certs/ca.crt
-
-# Linux
-sudo cp ~/.config/langley/certs/ca.crt /usr/local/share/ca-certificates/langley.crt
-sudo update-ca-certificates
-
-# Windows (run as Administrator)
-certutil -addstore -f "ROOT" %APPDATA%\langley\certs\ca.crt
+langley setup
 ```
+
+This auto-detects your OS and installs the CA. For manual instructions, run `langley setup --no-mkcert`.
 
 ### 3. Start Langley
 
@@ -58,18 +49,28 @@ You'll see output like:
   Token:     langley_abc123...
 ```
 
-### 4. Configure Your Client
+### 4. Run Your Agent
 
-Set environment variables to route traffic through Langley:
+Use `langley run` to launch any command with proxy environment pre-configured:
 
 ```bash
-export HTTP_PROXY=http://localhost:9090
-export HTTPS_PROXY=http://localhost:9090
+langley run claude
+langley run python script.py
+langley run curl https://api.anthropic.com/v1/messages
 ```
 
-Or configure Claude Code directly:
+This reads the running server's address and sets `HTTPS_PROXY`, `HTTP_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, and `REQUESTS_CA_BUNDLE` automatically.
+
+Or set environment variables manually:
+
 ```bash
-claude-code --proxy http://localhost:9090
+# Unix
+export HTTP_PROXY=http://localhost:9090
+export HTTPS_PROXY=http://localhost:9090
+
+# PowerShell
+$env:HTTP_PROXY = "http://localhost:9090"
+$env:HTTPS_PROXY = "http://localhost:9090"
 ```
 
 ### 5. Open the Dashboard
@@ -165,6 +166,13 @@ retention:
 
 ```
 langley [OPTIONS]
+langley <command> [args]
+
+COMMANDS:
+    run <cmd> [args]  Run a command with proxy environment configured
+    setup             Install CA certificate to system trust store
+    token show        Show the current auth token
+    token rotate      Generate a new auth token
 
 OPTIONS:
     -config <path>    Path to configuration file

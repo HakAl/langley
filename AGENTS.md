@@ -389,7 +389,7 @@ make dev           # Starts backend + Vite dev server
 
 **Before committing:**
 ```bash
-make check         # Must pass (includes format check)
+make check         # Must pass (includes lint + format + test)
 ```
 
 ## API Endpoints
