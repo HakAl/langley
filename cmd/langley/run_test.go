@@ -402,7 +402,9 @@ func TestFileStateStore_WriteCreatesDirectory(t *testing.T) {
 func TestFileStateStore_Delete(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
-	os.WriteFile(path, []byte("{}"), 0600)
+	if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	store := &FileStateStore{path: path}
 	if err := store.Delete(); err != nil {
