@@ -40,6 +40,9 @@ func main() {
 	// Check for subcommands first
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "run":
+			handleRunCommand(os.Args[2:])
+			return
 		case "token":
 			handleTokenCommand(os.Args[2:])
 			return
@@ -323,6 +326,25 @@ func main() {
 	// Print copy-paste environment variables (OS-aware syntax)
 	fmt.Fprint(os.Stderr, formatEnvVars(actualProxyAddr, caPath, runtime.GOOS))
 
+	// Write state file for 'langley run' command (langley-5i2).
+	// Written AFTER apiSrv.Serve() goroutine is launched so the health
+	// endpoint is accepting connections when langley run reads this.
+	var stateStore *FileStateStore
+	stateStore, err = NewFileStateStore()
+	if err != nil {
+		slog.Warn("failed to create state store", "error", err)
+	} else {
+		if err := stateStore.Write(ServerState{
+			ProxyAddr: actualProxyAddr,
+			APIAddr:   actualAPIAddr,
+			CAPath:    caPath,
+			PID:       os.Getpid(),
+			StartedAt: time.Now(),
+		}); err != nil {
+			slog.Warn("failed to write state file", "error", err)
+		}
+	}
+
 	// Start proxy using the pre-created listener (langley-rla)
 	if err := mitmProxy.ServeListener(ctx, proxyListener); err != nil && err != context.Canceled {
 		slog.Error("proxy error", "error", err)
@@ -335,6 +357,13 @@ func main() {
 	defer shutdownCancel()
 	if err := apiSrv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("API server shutdown error", "error", err)
+	}
+
+	// Clean up state file (langley-5i2).
+	// Best effort — if this fails, langley run will detect
+	// the stale state via health check and show a clear error.
+	if stateStore != nil {
+		_ = stateStore.Delete()
 	}
 
 	slog.Info("langley shutdown complete")
@@ -425,6 +454,7 @@ USAGE:
     langley <command> [options]
 
 COMMANDS:
+    run <cmd> [args]  Run a command with proxy environment configured
     setup             Install CA certificate to system trust store
     token show        Show the current auth token
     token rotate      Generate a new auth token
@@ -439,6 +469,7 @@ OPTIONS:
 
 EXAMPLES:
     langley                     Start with default config
+    langley run claude          Run claude with proxy env configured
     langley setup               Install CA certificate (first-time setup)
     langley -listen :8080       Start proxy on port 8080
     langley -config ./my.yaml   Use custom config file
