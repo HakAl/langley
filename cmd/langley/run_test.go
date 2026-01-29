@@ -288,7 +288,9 @@ func TestFileStateStore_ReadMissingFile(t *testing.T) {
 func TestFileStateStore_ReadMalformedJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
-	os.WriteFile(path, []byte("not json"), 0600)
+	if err := os.WriteFile(path, []byte("not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	store := &FileStateStore{path: path}
 	_, err := store.Read()
@@ -305,7 +307,9 @@ func TestFileStateStore_ReadMissingFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
 	data, _ := json.Marshal(ServerState{ProxyAddr: "localhost:9090"}) // missing api_addr
-	os.WriteFile(path, data, 0600)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	store := &FileStateStore{path: path}
 	_, err := store.Read()
@@ -330,7 +334,9 @@ func TestFileStateStore_ReadValid(t *testing.T) {
 		StartedAt: now,
 	}
 	data, _ := json.Marshal(state)
-	os.WriteFile(path, data, 0600)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	store := &FileStateStore{path: path}
 	got, err := store.Read()

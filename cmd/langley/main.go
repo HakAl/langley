@@ -363,7 +363,7 @@ func main() {
 	// Best effort — if this fails, langley run will detect
 	// the stale state via health check and show a clear error.
 	if stateStore != nil {
-		stateStore.Delete()
+		_ = stateStore.Delete()
 	}
 
 	slog.Info("langley shutdown complete")
