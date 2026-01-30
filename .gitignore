@@ -1,5 +1,5 @@
 # Claude
-.claude
+.claude/settings.local.json
 
 # Go binaries (root only)
 /langley
