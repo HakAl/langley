@@ -867,6 +867,11 @@ header h1 {
   font-size: 0.75rem;
   color: var(--text-muted);
 }
+.setting-error {
+  font-size: 0.75rem;
+  color: var(--error);
+  display: block;
+}
 
 .setting-help {
   font-size: 0.75rem;

@@ -105,6 +105,7 @@ function App() {
   const [flows, setFlows] = useState<Flow[]>([])
   const [selectedFlow, setSelectedFlow] = useState<Flow | null>(null)
   const [connected, setConnected] = useState(false)
+  const [initialLoading, setInitialLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<View>('flows')
   const [stats, setStats] = useState<Stats | null>(null)
@@ -331,7 +332,7 @@ function App() {
   // Initial load - auto-connect on mount
   // Must await an API call first to set the auth cookie before WebSocket connects
   useEffect(() => {
-    fetchFlows().then(() => connect())
+    fetchFlows().then(() => { setInitialLoading(false); connect() })
     fetchStats()
     return () => {
       // Clear pending reconnect timeout
@@ -371,6 +372,9 @@ function App() {
   }, [theme])
 
   const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark')
+
+  // Settings validation
+  const isIdleGapValid = idleGapInput >= 1 && idleGapInput <= 60
 
   // Filter flows
   const filteredFlows = flows.filter(flow => {
@@ -572,8 +576,14 @@ function App() {
       <div className="flow-list" role="listbox" aria-label="Flow list" aria-activedescendant={filteredFlows.length > 0 ? `flow-${selectedIndex}` : undefined}>
         {filteredFlows.length === 0 ? (
           <div className="empty-state">
-            <h2>No flows captured yet</h2>
-            <p>Configure your client to use the proxy and traffic will appear here.</p>
+            {initialLoading ? (
+              <p>Loading flows...</p>
+            ) : (
+              <>
+                <h2>No flows captured yet</h2>
+                <p>Configure your client to use the proxy and traffic will appear here.</p>
+              </>
+            )}
           </div>
         ) : (
           filteredFlows.map((flow, index) => (
@@ -912,6 +922,7 @@ function App() {
               onChange={(e) => setIdleGapInput(parseInt(e.target.value) || 1)}
             />
             <span className="setting-hint">1-60 minutes</span>
+            {!isIdleGapValid && <span className="setting-error" role="alert">Value must be between 1 and 60</span>}
           </div>
           <p className="setting-help">
             Minutes of inactivity before starting a new task. Lower values create more granular tasks.
@@ -923,7 +934,7 @@ function App() {
         <button
           className="primary-btn"
           onClick={handleSaveSettings}
-          disabled={settingsSaving || idleGapInput === settings?.idle_gap_minutes}
+          disabled={settingsSaving || !isIdleGapValid || idleGapInput === settings?.idle_gap_minutes}
         >
           {settingsSaving ? 'Saving...' : 'Save Settings'}
         </button>

@@ -392,6 +392,12 @@ make dev           # Starts backend + Vite dev server
 make check         # Must pass (includes lint + format + test)
 ```
 
+**After tests pass, verify against the ticket:**
+```bash
+/e2e-verify <bead-id>   # Reads AC from the bead, runs executable assertions
+```
+Run this when finishing work on a feature, bug fix, or any bead with acceptance criteria. The skill extracts AC from the issue, classifies each into an executable check (API, UI, CLI, unit-test), runs them against a live instance, and reports pass/fail with observed values. Do not close a bead until `e2e-verify` passes or remaining failures are acknowledged by the user.
+
 ## API Endpoints
 
 | Endpoint | Description |
