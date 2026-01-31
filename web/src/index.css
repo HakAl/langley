@@ -33,6 +33,7 @@
   --border: #d0d0d4;
   --info: #0891b2;
   --sse: #8b5cf6;
+  --error-bg: color-mix(in srgb, var(--error) 10%, transparent);
 }
 
 * {
