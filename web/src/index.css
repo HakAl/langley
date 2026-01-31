@@ -14,7 +14,7 @@
   --border: #ffffff;
   --info: #06b6d4;
   --sse: #8b5cf6;
-  --error-bg: #ef44441a;
+  --error-bg: color-mix(in srgb, var(--error) 10%, transparent);
 }
 
 /* Light theme */
@@ -33,7 +33,6 @@
   --border: #d0d0d4;
   --info: #0891b2;
   --sse: #8b5cf6;
-  --error-bg: #dc26261a;
 }
 
 * {
