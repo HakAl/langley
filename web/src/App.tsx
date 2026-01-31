@@ -39,6 +39,7 @@ interface WSMessage {
 interface Stats {
   status: string
   total_flows: number
+  all_time_flows: number
   total_cost: number
   total_tokens_in: number
   total_tokens_out: number

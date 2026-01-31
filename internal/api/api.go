@@ -502,10 +502,18 @@ func (s *Server) getStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	allTimeCount, err := s.store.CountFlows(ctx, store.FlowFilter{})
+	if err != nil {
+		s.logger.Error("failed to count all-time flows", "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
 	s.writeJSON(w, OverallStatsResponse{
 		Status:           "ok",
 		Timestamp:        time.Now(),
 		TotalFlows:       stats.TotalFlows,
+		AllTimeFlows:     allTimeCount,
 		TotalCost:        stats.TotalCost,
 		TotalTokensIn:    stats.TotalTokensIn,
 		TotalTokensOut:   stats.TotalTokensOut,
@@ -1101,6 +1109,7 @@ type OverallStatsResponse struct {
 	Status           string    `json:"status"`
 	Timestamp        time.Time `json:"timestamp"`
 	TotalFlows       int       `json:"total_flows"`
+	AllTimeFlows     int       `json:"all_time_flows"`
 	TotalCost        float64   `json:"total_cost"`
 	TotalTokensIn    int       `json:"total_tokens_in"`
 	TotalTokensOut   int       `json:"total_tokens_out"`
