@@ -146,11 +146,13 @@ header h1 {
   transform-origin: left;
 }
 
-.nav button.active {
+.nav button.active,
+.nav button[aria-current="page"] {
   color: var(--accent);
 }
 
-.nav button.active::after {
+.nav button.active::after,
+.nav button[aria-current="page"]::after {
   transform: scaleX(1);
 }
 
@@ -255,6 +257,47 @@ header h1 {
 .filters select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Filter clear button */
+.filter-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.filter-input-wrapper input {
+  padding-right: 2rem;
+}
+
+.filter-clear-btn {
+  position: absolute;
+  right: 4px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0;
+  min-height: 32px;
+  min-width: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.filter-clear-btn:hover {
+  color: var(--text-primary);
+}
+
+.filter-clear-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.filter-clear-btn:active {
+  opacity: 0.8;
 }
 
 .flow-count {
@@ -1175,6 +1218,7 @@ kbd {
   .theme-toggle,
   .close-btn,
   .link-btn,
+  .filter-clear-btn,
   .primary-btn,
   .secondary-btn,
   .token-input button {

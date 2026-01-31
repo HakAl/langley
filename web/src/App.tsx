@@ -572,14 +572,14 @@ function App() {
   // Render navigation
   const renderNav = () => (
     <nav className="nav">
-      <button className={view === 'flows' ? 'active' : ''} onClick={() => navigateTo('flows')}>Flows</button>
-      <button className={view === 'analytics' ? 'active' : ''} onClick={() => navigateTo('analytics')}>Analytics</button>
-      <button className={view === 'tasks' ? 'active' : ''} onClick={() => navigateTo('tasks')}>Tasks</button>
-      <button className={view === 'tools' ? 'active' : ''} onClick={() => navigateTo('tools')}>Tools</button>
-      <button className={view === 'anomalies' ? 'active' : ''} onClick={() => navigateTo('anomalies')}>
+      <button className={view === 'flows' ? 'active' : ''} aria-current={view === 'flows' ? 'page' : undefined} onClick={() => navigateTo('flows')}>Flows</button>
+      <button className={view === 'analytics' ? 'active' : ''} aria-current={view === 'analytics' ? 'page' : undefined} onClick={() => navigateTo('analytics')}>Analytics</button>
+      <button className={view === 'tasks' ? 'active' : ''} aria-current={view === 'tasks' ? 'page' : undefined} onClick={() => navigateTo('tasks')}>Tasks</button>
+      <button className={view === 'tools' ? 'active' : ''} aria-current={view === 'tools' ? 'page' : undefined} onClick={() => navigateTo('tools')}>Tools</button>
+      <button className={view === 'anomalies' ? 'active' : ''} aria-current={view === 'anomalies' ? 'page' : undefined} onClick={() => navigateTo('anomalies')}>
         Anomalies {anomalies.length > 0 && <span className="badge error">{anomalies.length}</span>}
       </button>
-      <button className={view === 'settings' ? 'active' : ''} onClick={() => navigateTo('settings')}>
+      <button className={view === 'settings' ? 'active' : ''} aria-current={view === 'settings' ? 'page' : undefined} onClick={() => navigateTo('settings')}>
         Settings
       </button>
     </nav>
@@ -589,19 +589,29 @@ function App() {
   const renderFlows = () => (
     <div className="flows-view">
       <div className="filters">
-        <input
-          ref={hostFilterRef}
-          type="text"
-          placeholder="Filter by host..."
-          value={hostFilter}
-          onChange={(e) => setHostFilter(e.target.value)}
-        />
-        <input
-          type="text"
-          placeholder="Filter by task ID..."
-          value={taskFilter}
-          onChange={(e) => setTaskFilter(e.target.value)}
-        />
+        <div className="filter-input-wrapper">
+          <input
+            ref={hostFilterRef}
+            type="text"
+            placeholder="Filter by host..."
+            value={hostFilter}
+            onChange={(e) => setHostFilter(e.target.value)}
+          />
+          {hostFilter && (
+            <button className="filter-clear-btn" onClick={() => setHostFilter('')} aria-label="Clear host filter">&times;</button>
+          )}
+        </div>
+        <div className="filter-input-wrapper">
+          <input
+            type="text"
+            placeholder="Filter by task ID..."
+            value={taskFilter}
+            onChange={(e) => setTaskFilter(e.target.value)}
+          />
+          {taskFilter && (
+            <button className="filter-clear-btn" onClick={() => setTaskFilter('')} aria-label="Clear task ID filter">&times;</button>
+          )}
+        </div>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | 'success' | 'error')}>
           <option value="all">All Status</option>
           <option value="success">Success (2xx/3xx)</option>
