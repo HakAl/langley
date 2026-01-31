@@ -594,6 +594,7 @@ function App() {
             ref={hostFilterRef}
             type="text"
             placeholder="Filter by host..."
+            aria-label="Filter by host"
             value={hostFilter}
             onChange={(e) => setHostFilter(e.target.value)}
           />
@@ -605,6 +606,7 @@ function App() {
           <input
             type="text"
             placeholder="Filter by task ID..."
+            aria-label="Filter by task ID"
             value={taskFilter}
             onChange={(e) => setTaskFilter(e.target.value)}
           />
@@ -612,13 +614,14 @@ function App() {
             <button className="filter-clear-btn" onClick={() => setTaskFilter('')} aria-label="Clear task ID filter">&times;</button>
           )}
         </div>
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | 'success' | 'error')}>
+        <select aria-label="Filter by status" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | 'success' | 'error')}>
           <option value="all">All Status</option>
           <option value="success">Success (2xx/3xx)</option>
           <option value="error">Errors (4xx/5xx)</option>
         </select>
         <div className="export-dropdown">
           <select
+            aria-label="Export flows"
             onChange={(e) => {
               if (e.target.value) {
                 startExport(e.target.value)

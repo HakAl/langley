@@ -808,6 +808,17 @@ func TestNewMITMProxy_Validation(t *testing.T) {
 			t.Error("expected error for nil CertCache")
 		}
 	})
+
+	t.Run("nil Redactor", func(t *testing.T) {
+		_, err := NewMITMProxy(MITMProxyConfig{
+			Config:    testConfig(),
+			CA:        ca,
+			CertCache: certCache,
+		})
+		if err == nil {
+			t.Error("expected error for nil Redactor")
+		}
+	})
 }
 
 // Helper to parse URL for tests
