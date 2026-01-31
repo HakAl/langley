@@ -1037,7 +1037,7 @@ type FlowSummary struct {
 	Host         string     `json:"host"`
 	Method       string     `json:"method"`
 	Path         string     `json:"path"`
-	StatusCode   *int       `json:"status_code,omitempty"`
+	StatusCode   *int       `json:"status_code"`
 	IsSSE        bool       `json:"is_sse"`
 	Timestamp    time.Time  `json:"timestamp"`
 	DurationMs   *int64     `json:"duration_ms,omitempty"`
@@ -1075,7 +1075,7 @@ type ExportFlowSummary struct {
 	Host          string   `json:"host"`
 	Method        string   `json:"method"`
 	Path          string   `json:"path"`
-	StatusCode    *int     `json:"status_code,omitempty"`
+	StatusCode    *int     `json:"status_code"`
 	DurationMs    *int64   `json:"duration_ms,omitempty"`
 	IsSSE         bool     `json:"is_sse"`
 	TaskID        *string  `json:"task_id,omitempty"`
