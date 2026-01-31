@@ -72,7 +72,7 @@ Use these tokens as the source of truth. Do not hardcode colors.
 ### Tables
 - Header row: --bg-tertiary, uppercase, small type
 - Row hover: --bg-tertiary
-- Keyboard-selected row: 2px accent outline (click-selected: accent border)
+- Keyboard-selected row: 2px accent outline
 
 ### Cards and Panels
 - Background: --bg-secondary
