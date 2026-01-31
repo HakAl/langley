@@ -68,6 +68,11 @@ Before running any assertions, discover the dashboard's actual DOM structure. Th
    - **Task rows**: the repeating element for each task in the Tasks view. Record as `SEL_TASK_ROW`.
    - **Stat cards**: the elements showing analytics numbers. Record as `SEL_STAT_CARD`.
    - **Nav buttons**: the navigation elements for Flows, Tasks, Analytics, Settings. Record as `SEL_NAV_{VIEW}`.
+   - **Theme toggle**: the button that switches dark/light theme. Record as `SEL_THEME_TOGGLE`.
+   - **Primary button**: `.primary-btn` (e.g. Save in Settings). Record as `SEL_PRIMARY_BTN`.
+   - **Secondary button**: `.secondary-btn` (e.g. Reset in Settings). Record as `SEL_SECONDARY_BTN`.
+   - **Badge**: `.badge` element (visible when SSE or status badges are present). Record as `SEL_BADGE`.
+   - **Error banner**: `.error-banner` (may not be visible if no errors). Record as `SEL_ERROR_BANNER`.
 
 5. If the Flows view has no data yet (empty state), the selectors for flow rows may not be discoverable. In that case, proceed to Scenario 1 and discover flow-related selectors after the first traffic is generated (re-snapshot after polling confirms the flow appeared).
 
@@ -88,7 +93,7 @@ Store these values for all scenarios:
 
 ## Phase 1 - Scenarios
 
-Execute scenarios **in order**. Scenarios 1-3 generate traffic. Scenarios 4 and 7 reuse that traffic. Track per-assertion results as PASS/FAIL with reason.
+Execute scenarios **in order**. Scenarios 1-3 generate traffic. Scenarios 4 and 7 reuse that traffic. Scenario 9 inspects computed styles against `docs/style-guide.md`. Track per-assertion results as PASS/FAIL with reason.
 
 **Grading rules**:
 - **Grade strictly.** The purpose of this skill is to find flaws, not to produce a passing report. A green report with rationalized results is worthless.
@@ -489,6 +494,268 @@ Check the row count header or metadata:
 
 ---
 
+### Scenario 9: Style Guide Conformance
+
+**Tests**: Computed styles match claims in `docs/style-guide.md`. No new traffic needed — uses the dashboard as rendered from prior scenarios.
+
+**Source of truth**: `docs/style-guide.md`. Read it before running assertions to confirm expected values.
+
+**Setup**:
+- Ensure browser is on the Flows view (click "Flows" nav if needed).
+- `browser_wait_for` any flow content (timeout 10s).
+
+**Contrast helper** (reuse in all contrast assertions):
+```javascript
+function contrastRatio(rgb1, rgb2) {
+  function luminance(r, g, b) {
+    const [rs, gs, bs] = [r, g, b].map(c => {
+      c = c / 255;
+      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+  }
+  function parseRgb(s) {
+    const m = s.match(/(\d+)/g);
+    return m ? m.map(Number) : null;
+  }
+  const c1 = parseRgb(rgb1), c2 = parseRgb(rgb2);
+  if (!c1 || !c2) return null;
+  const l1 = luminance(...c1), l2 = luminance(...c2);
+  const lighter = Math.max(l1, l2), darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+```
+
+#### 9a: Token presence
+
+1. Dark theme tokens defined:
+   ```
+   browser_evaluate: () => {
+     const root = getComputedStyle(document.documentElement);
+     return JSON.stringify({
+       sse: root.getPropertyValue('--sse').trim(),
+       errorBg: root.getPropertyValue('--error-bg').trim(),
+       accent: root.getPropertyValue('--accent').trim(),
+       textMuted: root.getPropertyValue('--text-muted').trim()
+     });
+   }
+   ```
+   PASS if `--sse`, `--error-bg`, `--accent`, `--text-muted` are all non-empty strings. Record all values.
+
+2. Switch to light theme (click `SEL_THEME_TOGGLE`), then check:
+   ```
+   browser_evaluate: () => {
+     const root = getComputedStyle(document.documentElement);
+     return JSON.stringify({
+       sse: root.getPropertyValue('--sse').trim(),
+       errorBg: root.getPropertyValue('--error-bg').trim(),
+       accent: root.getPropertyValue('--accent').trim(),
+       textMuted: root.getPropertyValue('--text-muted').trim()
+     });
+   }
+   ```
+   PASS if all tokens are non-empty. FAIL if any are empty (reason: "token not defined in light theme"). Record all values. Switch back to dark theme before continuing.
+
+#### 9b: Contrast ratios
+
+3. Dark theme `--text-muted` contrast against `--bg-primary`:
+   ```
+   browser_evaluate: () => {
+     // (inline the contrastRatio helper above)
+     const root = getComputedStyle(document.documentElement);
+     const muted = root.getPropertyValue('color');  // won't work — need an element
+     const el = document.querySelector('.path') || document.querySelector('.timestamp');
+     if (!el) return null;
+     const style = getComputedStyle(el);
+     const color = style.color;
+     const bgEl = document.querySelector('.app') || document.body;
+     const bg = getComputedStyle(bgEl).backgroundColor;
+     // ... compute ratio using contrastRatio(color, bg)
+     return JSON.stringify({ color, bg, ratio: ratio.toFixed(2) });
+   }
+   ```
+   PASS if `ratio` >= 4.5. FAIL if < 4.5 (report observed ratio, color, and bg values). Use an element styled with `color: var(--text-muted)` — `.path`, `.timestamp`, or `.bar-label` are good candidates. For the background, use the nearest ancestor's `backgroundColor` (walk up if transparent).
+
+   Full self-contained evaluation:
+   ```
+   browser_evaluate: () => {
+     function lum(r,g,b){return[r,g,b].map(c=>{c/=255;return c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4)}).reduce((a,v,i)=>a+[0.2126,0.7152,0.0722][i]*v,0)}
+     function parseRgb(s){const m=s.match(/[\d.]+/g);return m?m.slice(0,3).map(Number):null}
+     function ratio(c1,c2){const a=parseRgb(c1),b=parseRgb(c2);if(!a||!b)return null;const l1=lum(...a),l2=lum(...b);return(Math.max(l1,l2)+0.05)/(Math.min(l1,l2)+0.05)}
+     function resolvedBg(el){while(el){const bg=getComputedStyle(el).backgroundColor;const p=parseRgb(bg);if(p&&(p.length<4||p[3]>0)&&!(p[0]===0&&p[1]===0&&p[2]===0&&p.length>=4&&p[3]===0))return bg;el=el.parentElement}return'rgb(0,0,0)'}
+     const el=document.querySelector('.path')||document.querySelector('.timestamp')||document.querySelector('.bar-label');
+     if(!el)return JSON.stringify({error:'no --text-muted element found'});
+     const color=getComputedStyle(el).color;
+     const bg=resolvedBg(el);
+     const r=ratio(color,bg);
+     return JSON.stringify({color,bg,ratio:r?r.toFixed(2):null,theme:'dark'});
+   }
+   ```
+   PASS if `ratio` >= 4.5. Record all values.
+
+4. Switch to light theme, repeat the same contrast check:
+   Same `browser_evaluate` as assertion 3.
+   PASS if `ratio` >= 4.5. Record all values including `theme: 'light'`. Switch back to dark theme.
+
+#### 9c: Focus-visible outlines
+
+5. Tab through interactive elements and verify outlines appear:
+   ```
+   // First, click the body to reset focus
+   browser_click on document body
+   // Then press Tab multiple times, checking each focused element
+   ```
+   For each Tab press (do 6 presses to cover nav buttons, theme toggle, and filter input):
+   ```
+   browser_press_key: Tab
+   browser_evaluate: () => {
+     const el = document.activeElement;
+     if (!el || el === document.body) return null;
+     const s = getComputedStyle(el);
+     return JSON.stringify({
+       tag: el.tagName,
+       class: el.className,
+       outlineStyle: s.outlineStyle,
+       outlineWidth: s.outlineWidth,
+       outlineColor: s.outlineColor
+     });
+   }
+   ```
+   Collect results for all 6 Tab stops. PASS if **at least 4 of 6** focused elements have `outlineStyle` != `'none'` and `outlineWidth` != `'0px'`. Record each element's tag, class, and outline values. FAIL if fewer than 4 show outlines (reason: "only N/6 elements showed :focus-visible outline").
+
+   **Note**: Some elements may not show outline on `:focus` (only on `:focus-visible`). The keyboard Tab interaction triggers `:focus-visible` in all browsers, so this is the correct test.
+
+#### 9d: Interactive element sizing
+
+6. Buttons and inputs meet minimum 32px size:
+   ```
+   browser_evaluate: () => {
+     const selectors = ['button', 'input', 'select'];
+     const results = [];
+     for (const sel of selectors) {
+       document.querySelectorAll(sel).forEach(el => {
+         if (el.offsetWidth === 0 && el.offsetHeight === 0) return; // hidden
+         const rect = el.getBoundingClientRect();
+         const minDim = Math.min(rect.width, rect.height);
+         if (minDim < 32) {
+           results.push({
+             tag: el.tagName,
+             class: el.className.substring(0, 50),
+             width: Math.round(rect.width),
+             height: Math.round(rect.height),
+             text: el.textContent?.substring(0, 20) || el.type
+           });
+         }
+       });
+     }
+     return JSON.stringify({ undersized: results, count: results.length });
+   }
+   ```
+   PASS if `count` == 0. FAIL if any elements are under 32px — report each undersized element. Record the full list.
+
+#### 9e: Border radius is 0 (except known exceptions)
+
+7. Standard elements have no border-radius:
+   ```
+   browser_evaluate: () => {
+     const exceptions = ['.status-dot', '.bar'];
+     const checkSelectors = ['.flow-item', '.badge', '.stat-card', '.chart-section',
+       '.settings-section', '.data-table', '.method', '.anomaly-item', 'kbd',
+       '.help-modal', '.body-content', '.detail-section'];
+     const violations = [];
+     for (const sel of checkSelectors) {
+       const el = document.querySelector(sel);
+       if (!el) continue;
+       const br = getComputedStyle(el).borderRadius;
+       if (br !== '0px' && br !== '0') {
+         violations.push({ selector: sel, borderRadius: br });
+       }
+     }
+     return JSON.stringify({ violations, count: violations.length });
+   }
+   ```
+   PASS if `count` == 0. FAIL if any element has non-zero border-radius — report each violation. Record the full list.
+
+8. Known exceptions DO have border-radius:
+   ```
+   browser_evaluate: () => {
+     const dot = document.querySelector('.status-dot');
+     const bar = document.querySelector('.bar');
+     return JSON.stringify({
+       statusDot: dot ? getComputedStyle(dot).borderRadius : 'not found',
+       bar: bar ? getComputedStyle(bar).borderRadius : 'not found'
+     });
+   }
+   ```
+   PASS if `.status-dot` has `borderRadius` == `'50%'` (or equivalent px value) and `.bar` has non-zero top-corner radius. If element is not found, SKIP with reason. Record observed values.
+
+#### 9f: Disabled button states
+
+9. Navigate to Settings view (click Settings nav). Check disabled button states:
+   ```
+   browser_evaluate: () => {
+     // Primary btn with :disabled
+     const primary = document.querySelector('.primary-btn:disabled');
+     const secondary = document.querySelector('.secondary-btn:disabled');
+     const results = {};
+     if (primary) {
+       const s = getComputedStyle(primary);
+       results.primary = { opacity: s.opacity, cursor: s.cursor };
+     } else {
+       results.primary = 'no disabled .primary-btn found';
+     }
+     if (secondary) {
+       const s = getComputedStyle(secondary);
+       results.secondary = { opacity: s.opacity, cursor: s.cursor };
+     } else {
+       results.secondary = 'no disabled .secondary-btn found';
+     }
+     return JSON.stringify(results);
+   }
+   ```
+   For each found disabled button: PASS if `opacity` < 1 and `cursor` == `'not-allowed'`. If no disabled button is in the DOM, SKIP with reason "no disabled button rendered in current state." Record all values.
+
+#### 9g: Reduced-motion media query
+
+10. The `prefers-reduced-motion` rule exists in stylesheets:
+    ```
+    browser_evaluate: () => {
+      for (const sheet of document.styleSheets) {
+        try {
+          for (const rule of sheet.cssRules) {
+            if (rule instanceof CSSMediaRule && rule.conditionText &&
+                rule.conditionText.includes('prefers-reduced-motion')) {
+              return JSON.stringify({
+                found: true,
+                conditionText: rule.conditionText,
+                ruleCount: rule.cssRules.length
+              });
+            }
+          }
+        } catch (e) { /* cross-origin sheet, skip */ }
+      }
+      return JSON.stringify({ found: false });
+    }
+    ```
+    PASS if `found` == `true`. FAIL if no `prefers-reduced-motion` media rule exists. Record the condition text and inner rule count.
+
+#### 9h: Badge uses token (not hardcoded color)
+
+11. If a `.badge.sse` element exists, verify its background matches `--sse`:
+    ```
+    browser_evaluate: () => {
+      const badge = document.querySelector('.badge.sse');
+      if (!badge) return JSON.stringify({ skip: 'no .badge.sse in DOM' });
+      const bg = getComputedStyle(badge).backgroundColor;
+      const root = getComputedStyle(document.documentElement);
+      const expected = root.getPropertyValue('--sse').trim();
+      return JSON.stringify({ observedBg: bg, expectedToken: expected });
+    }
+    ```
+    PASS if the computed `backgroundColor` corresponds to the `--sse` token value (both will be in rgb format for comparison). SKIP if no `.badge.sse` exists. Record both values.
+
+---
+
 ## Phase 2 - Report
 
 Print per-scenario results with individual assertion outcomes. **Every assertion MUST include the observed value**, even on PASS. Use this format:
@@ -552,8 +819,21 @@ Baseline: {BASELINE_FLOW_COUNT} flows, {BASELINE_TASK_COUNT} tasks
 - [x] API: Malformed settings rejected (observed: 400)
 - [x] API: Out-of-range settings rejected (observed: 422)
 
+### Scenario 9: Style Guide Conformance
+- [x] 9a: Dark theme tokens defined (observed: --sse=#8b5cf6, --error-bg=#ef44441a)
+- [x] 9a: Light theme tokens defined (observed: --sse=#8b5cf6, --error-bg=#dc26261a)
+- [x] 9b: Dark --text-muted contrast >= 4.5:1 (observed: 5.48:1, color: rgb(138,138,142), bg: rgb(22,22,24))
+- [x] 9b: Light --text-muted contrast >= 4.5:1 (observed: 5.31:1, color: rgb(89,89,96), bg: rgb(239,239,243))
+- [x] 9c: Focus-visible outlines on Tab (observed: 5/6 elements showed outline)
+- [x] 9d: Interactive elements >= 32px (observed: 0 undersized)
+- [x] 9e: Border radius 0 on standard elements (observed: 0 violations)
+- [x] 9e: Known exceptions have border-radius (observed: .status-dot=50%, .bar=2px 2px 0 0)
+- [~] 9f: Disabled button states (SKIP: no disabled button rendered)
+- [x] 9g: prefers-reduced-motion rule exists (observed: 1 rule, condition: (prefers-reduced-motion: reduce))
+- [~] 9h: .badge.sse uses --sse token (SKIP: no .badge.sse in DOM)
+
 ### Summary
-Passed: {pass_count}/{total_count} assertions across 8 scenarios
+Passed: {pass_count}/{total_count} assertions across 9 scenarios
 Failed: {fail_count} | Skipped: {skip_count}
 ```
 
@@ -609,3 +889,5 @@ If the skill did NOT start the server, skip this phase entirely.
 - **`bd` tool**: Local issue tracker used in Phase 2.5. If unavailable, report failures as text and skip auto-filing.
 - **RUN_ID tagging**: All test traffic includes `_e2e={RUN_ID}` query param. The API does **not** support filtering by this param — it exists only in the stored `path` field for post-hoc human inspection. Assertions rely on delta-based counting and host filtering, not RUN_ID filtering. Do not assume RUN_ID can scope API queries.
 - **DOM selectors**: All `browser_evaluate` calls use `SEL_*` variables discovered in Phase 0.5. If a selector returns null during an assertion, that is a FAIL — do not fall back to regex on `document.body.innerText`. A null return means the DOM structure has changed since discovery, which is a real finding worth reporting.
+- **Style guide**: `docs/style-guide.md` is the source of truth for Scenario 9. Read it before running style assertions to confirm expected token names, contrast thresholds, and component rules. The WCAG contrast formula in Scenario 9 is self-contained — no external libraries needed.
+- **Theme switching**: Scenario 9 toggles the theme to test both dark and light modes. Always switch back to dark theme before moving to the next sub-group to avoid contaminating subsequent assertions.

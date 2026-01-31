@@ -319,6 +319,16 @@ go test -v -run TestName ./...   # Run specific test
 Use Playwright MCP server for E2E verification of the dashboard UI.
 Unit tests use Vitest for component logic.
 
+### Frontend CSS Rules
+
+**All UI changes MUST follow `docs/style-guide.md`.**
+
+- Use design tokens (`--bg-primary`, `--accent`, etc.) — never hardcode colors
+- Every interactive element needs `:hover`, `:active`, `:focus-visible`, and `:disabled` states
+- `prefers-reduced-motion` is enforced globally — no opt-out
+- Contrast: normal text >= 4.5:1, non-text UI >= 3:1
+- Border radius is 0 except documented exceptions (`.status-dot`, `.bar`)
+
 ---
 
 # Agent Instructions
@@ -355,6 +365,8 @@ langley/
 | `internal/api/api.go` | API route registration + handlers |
 | `internal/proxy/proxy.go` | HTTPS proxy core logic |
 | `web/src/App.tsx` | React dashboard (single-file app) |
+| `web/src/index.css` | All CSS — uses design tokens, no hardcoded colors |
+| `docs/style-guide.md` | **UI style guide** — source of truth for tokens, a11y, components |
 | `config.yaml` | Runtime configuration |
 
 ## Building & Running
