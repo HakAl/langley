@@ -151,6 +151,7 @@ function App() {
   const [showHelp, setShowHelp] = useState(false)
   const [exportConfig, setExportConfig] = useState<{format: string, rowCount: number} | null>(null)
   const hostFilterRef = useRef<HTMLInputElement>(null)
+  const helpCloseRef = useRef<HTMLButtonElement>(null)
 
   // Filters
   const [hostFilter, setHostFilter] = useState('')
@@ -521,6 +522,30 @@ function App() {
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [view, selectedIndex, selectedFlow, showHelp, getNavigableItems, fetchFlowDetail])
+
+  // Focus trap for help overlay
+  useEffect(() => {
+    if (!showHelp) return
+    helpCloseRef.current?.focus()
+    const modal = helpCloseRef.current?.closest('.help-modal') as HTMLElement | null
+    if (!modal) return
+    const trap = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return
+      const focusable = modal.querySelectorAll<HTMLElement>('button, [href], [tabindex]:not([tabindex="-1"])')
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', trap)
+    return () => document.removeEventListener('keydown', trap)
+  }, [showHelp])
 
   const formatTime = (timestamp: string) => new Date(timestamp).toLocaleTimeString()
   const formatDate = (timestamp: string) => new Date(timestamp).toLocaleDateString()
@@ -1021,10 +1046,10 @@ function App() {
 
       {showHelp && (
         <div className="help-overlay" onClick={() => setShowHelp(false)}>
-          <div className="help-modal" onClick={e => e.stopPropagation()}>
+          <div className="help-modal" role="dialog" aria-modal="true" aria-labelledby="help-title" onClick={e => e.stopPropagation()}>
             <div className="help-header">
-              <h2>Keyboard Shortcuts</h2>
-              <button className="close-btn" onClick={() => setShowHelp(false)}>×</button>
+              <h2 id="help-title">Keyboard Shortcuts</h2>
+              <button ref={helpCloseRef} className="close-btn" onClick={() => setShowHelp(false)} aria-label="Close">×</button>
             </div>
             <table className="help-table">
               <tbody>
