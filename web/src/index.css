@@ -487,6 +487,11 @@ header h1 {
   cursor: pointer;
   padding: 0;
   line-height: 1;
+  min-height: 32px;
+  min-width: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .close-btn:focus-visible {
@@ -496,6 +501,10 @@ header h1 {
 
 .close-btn:hover {
   color: var(--text-primary);
+}
+
+.close-btn:active {
+  opacity: 0.8;
 }
 
 .detail-grid {
@@ -802,7 +811,10 @@ header h1 {
   color: var(--accent);
   cursor: pointer;
   font-size: 0.75rem;
-  padding: 0;
+  padding: 0.25rem 0.375rem;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
 }
 
 .link-btn:focus-visible {
@@ -812,6 +824,10 @@ header h1 {
 
 .link-btn:hover {
   text-decoration: underline;
+}
+
+.link-btn:active {
+  opacity: 0.8;
 }
 
 /* Responsive */
@@ -1120,6 +1136,20 @@ kbd {
   padding: 1rem 1.25rem;
   border-top: 1px solid var(--border);
   background: var(--bg-tertiary);
+}
+
+/* Touch targets: 44px minimum for coarse pointers */
+@media (pointer: coarse) {
+  .nav button,
+  .theme-toggle,
+  .close-btn,
+  .link-btn,
+  .primary-btn,
+  .secondary-btn,
+  .token-input button {
+    min-height: 44px;
+    min-width: 44px;
+  }
 }
 
 /* Reduced motion */
