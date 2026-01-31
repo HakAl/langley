@@ -740,3 +740,89 @@ test.describe('Keyboard Shortcuts', () => {
     await expect(firstItem).toHaveAttribute('aria-selected', 'true');
   });
 });
+
+test.describe('Hash Routing', () => {
+  // Deep linking tests (langley-262)
+  test('/#analytics loads analytics view on page load', async ({ page }) => {
+    await setupMocks(page);
+    await page.goto('/#analytics');
+    await authenticate(page);
+
+    await expect(page.getByRole('button', { name: 'Analytics' })).toHaveClass(/active/);
+    await expect(page.getByText('Total Flows')).toBeVisible();
+  });
+
+  test('/#settings loads settings view on page load', async ({ page }) => {
+    await setupMocks(page);
+    await page.goto('/#settings');
+    await authenticate(page);
+
+    await expect(page.getByRole('button', { name: 'Settings', exact: true })).toHaveClass(/active/);
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+  });
+
+  test('/#garbage falls back to flows', async ({ page }) => {
+    await setupMocks(page);
+    await page.goto('/#garbage');
+    await authenticate(page);
+
+    await expect(page.getByRole('button', { name: 'Flows' })).toHaveClass(/active/);
+  });
+
+  test('/# (empty hash) loads flows', async ({ page }) => {
+    await setupMocks(page);
+    await page.goto('/#');
+    await authenticate(page);
+
+    await expect(page.getByRole('button', { name: 'Flows' })).toHaveClass(/active/);
+  });
+
+  // Back button tests (langley-8rh)
+  test('back button returns to previous view after navigation', async ({ page }) => {
+    await setupMocks(page);
+    await page.goto('/');
+    await authenticate(page);
+
+    // Navigate: flows -> analytics -> tasks
+    await page.getByRole('button', { name: 'Analytics' }).click();
+    await expect(page.getByRole('button', { name: 'Analytics' })).toHaveClass(/active/);
+
+    await page.getByRole('button', { name: 'Tasks' }).click();
+    await expect(page.getByRole('button', { name: 'Tasks' })).toHaveClass(/active/);
+
+    // Go back to analytics
+    await page.goBack();
+    await expect(page.getByRole('button', { name: 'Analytics' })).toHaveClass(/active/);
+
+    // Go back to flows
+    await page.goBack();
+    await expect(page.getByRole('button', { name: 'Flows' })).toHaveClass(/active/);
+  });
+
+  test('clicking nav updates URL hash', async ({ page }) => {
+    await setupMocks(page);
+    await page.goto('/');
+    await authenticate(page);
+
+    await page.getByRole('button', { name: 'Analytics' }).click();
+    await expect(page).toHaveURL(/#analytics/);
+
+    await page.getByRole('button', { name: 'Tools' }).click();
+    await expect(page).toHaveURL(/#tools/);
+  });
+
+  test('keyboard shortcut updates URL hash', async ({ page }) => {
+    await setupMocks(page);
+    await page.goto('/');
+    await authenticate(page);
+
+    // Click body to ensure keyboard focus after reload
+    await page.locator('.flow-list').click();
+
+    await page.keyboard.press('2');
+    await expect(page).toHaveURL(/#analytics/);
+
+    await page.keyboard.press('6');
+    await expect(page).toHaveURL(/#settings/);
+  });
+});

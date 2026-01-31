@@ -89,6 +89,31 @@ interface CostPeriod {
 
 type View = 'flows' | 'analytics' | 'tasks' | 'tools' | 'anomalies' | 'settings'
 
+const VALID_VIEWS: View[] = ['flows', 'analytics', 'tasks', 'tools', 'anomalies', 'settings']
+const DEFAULT_VIEW: View = 'flows'
+
+function parseHash(hash: string): View {
+  const raw = hash.replace(/^#\/?/, '')
+  return VALID_VIEWS.includes(raw as View) ? (raw as View) : DEFAULT_VIEW
+}
+
+function useHashRoute(): [View, (v: View) => void] {
+  const [view, setView] = useState<View>(() => parseHash(window.location.hash))
+
+  const navigateTo = useCallback((v: View) => {
+    setView(v)
+    window.history.pushState(null, '', `#${v}`)
+  }, [])
+
+  useEffect(() => {
+    const onPopState = () => setView(parseHash(window.location.hash))
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  return [view, navigateTo]
+}
+
 interface Settings {
   idle_gap_minutes: number
 }
@@ -107,7 +132,7 @@ function App() {
   const [connected, setConnected] = useState(false)
   const [initialLoading, setInitialLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [view, setView] = useState<View>('flows')
+  const [view, navigateTo] = useHashRoute()
   const [stats, setStats] = useState<Stats | null>(null)
   const [tasks, setTasks] = useState<TaskSummary[]>([])
   const [tools, setTools] = useState<ToolStats[]>([])
@@ -446,12 +471,12 @@ function App() {
               fetchFlowDetail((item as Flow).id)
             } else if (view === 'tasks' && 'task_id' in item) {
               setTaskFilter((item as TaskSummary).task_id)
-              setView('flows')
+              navigateTo('flows')
             } else if (view === 'anomalies' && 'flow_id' in item) {
               const anomaly = item as Anomaly
               if (anomaly.flow_id) {
                 fetchFlowDetail(anomaly.flow_id)
-                setView('flows')
+                navigateTo('flows')
               }
             }
           }
@@ -473,22 +498,22 @@ function App() {
           setShowHelp(h => !h)
           break
         case '1':
-          setView('flows')
+          navigateTo('flows')
           break
         case '2':
-          setView('analytics')
+          navigateTo('analytics')
           break
         case '3':
-          setView('tasks')
+          navigateTo('tasks')
           break
         case '4':
-          setView('tools')
+          navigateTo('tools')
           break
         case '5':
-          setView('anomalies')
+          navigateTo('anomalies')
           break
         case '6':
-          setView('settings')
+          navigateTo('settings')
           break
       }
     }
@@ -520,14 +545,14 @@ function App() {
   // Render navigation
   const renderNav = () => (
     <nav className="nav">
-      <button className={view === 'flows' ? 'active' : ''} onClick={() => setView('flows')}>Flows</button>
-      <button className={view === 'analytics' ? 'active' : ''} onClick={() => setView('analytics')}>Analytics</button>
-      <button className={view === 'tasks' ? 'active' : ''} onClick={() => setView('tasks')}>Tasks</button>
-      <button className={view === 'tools' ? 'active' : ''} onClick={() => setView('tools')}>Tools</button>
-      <button className={view === 'anomalies' ? 'active' : ''} onClick={() => setView('anomalies')}>
+      <button className={view === 'flows' ? 'active' : ''} onClick={() => navigateTo('flows')}>Flows</button>
+      <button className={view === 'analytics' ? 'active' : ''} onClick={() => navigateTo('analytics')}>Analytics</button>
+      <button className={view === 'tasks' ? 'active' : ''} onClick={() => navigateTo('tasks')}>Tasks</button>
+      <button className={view === 'tools' ? 'active' : ''} onClick={() => navigateTo('tools')}>Tools</button>
+      <button className={view === 'anomalies' ? 'active' : ''} onClick={() => navigateTo('anomalies')}>
         Anomalies {anomalies.length > 0 && <span className="badge error">{anomalies.length}</span>}
       </button>
-      <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}>
+      <button className={view === 'settings' ? 'active' : ''} onClick={() => navigateTo('settings')}>
         Settings
       </button>
     </nav>
@@ -784,7 +809,7 @@ function App() {
               role="option"
               aria-selected={index === selectedIndex}
               className={index === selectedIndex ? 'keyboard-selected' : ''}
-              onClick={() => { setTaskFilter(task.task_id); setView('flows') }}
+              onClick={() => { setTaskFilter(task.task_id); navigateTo('flows') }}
               ref={el => {
                 if (index === selectedIndex && el) {
                   el.scrollIntoView({ block: 'nearest' })
@@ -878,7 +903,7 @@ function App() {
               <div className="anomaly-meta">
                 Value: {anomaly.value.toFixed(2)} | Threshold: {anomaly.threshold.toFixed(2)}
                 {anomaly.flow_id && (
-                  <button className="link-btn" onClick={() => { fetchFlowDetail(anomaly.flow_id); setView('flows') }}>
+                  <button className="link-btn" onClick={() => { fetchFlowDetail(anomaly.flow_id); navigateTo('flows') }}>
                     View Flow
                   </button>
                 )}
