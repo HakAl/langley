@@ -79,6 +79,9 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 	if cfg.CertCache == nil {
 		return nil, fmt.Errorf("CertCache is required")
 	}
+	if cfg.Redactor == nil {
+		return nil, fmt.Errorf("Redactor is required")
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}

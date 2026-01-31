@@ -115,6 +115,7 @@ func DefaultConfig() *Config {
 			AlwaysRedactHeaders: []string{
 				"authorization",
 				"x-api-key",
+				"api-key", // Azure OpenAI uses this header
 				"x-amz-security-token", // AWS session tokens
 				"cookie",
 				"set-cookie",
