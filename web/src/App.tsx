@@ -140,6 +140,7 @@ function App() {
   const [dailyCosts, setDailyCosts] = useState<CostPeriod[]>([])
   const [settings, setSettings] = useState<Settings | null>(null)
   const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsSaved, setSettingsSaved] = useState(false)
   const [idleGapInput, setIdleGapInput] = useState(5)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
@@ -623,6 +624,10 @@ function App() {
         </div>
       </div>
 
+      {stats && stats.total_flows > filteredFlows.length && (
+        <div className="flow-count">Showing {filteredFlows.length} of {stats.total_flows.toLocaleString()} flows</div>
+      )}
+
       <div className="flow-list" role="listbox" aria-label="Flow list" aria-activedescendant={filteredFlows.length > 0 ? `flow-${selectedIndex}` : undefined}>
         {filteredFlows.length === 0 ? (
           <div className="empty-state">
@@ -815,83 +820,93 @@ function App() {
   // Render tasks view
   const renderTasks = () => (
     <div className="tasks-view">
-      <table className="data-table" role="listbox" aria-label="Task list">
-        <thead>
-          <tr>
-            <th>Task ID</th>
-            <th>Flows</th>
-            <th>Tokens In</th>
-            <th>Tokens Out</th>
-            <th>Cost</th>
-            <th>Duration</th>
-            <th>Last Seen</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tasks.map((task, index) => (
-            <tr
-              key={task.task_id}
-              role="option"
-              aria-selected={index === selectedIndex}
-              className={index === selectedIndex ? 'keyboard-selected' : ''}
-              onClick={() => { setTaskFilter(task.task_id); navigateTo('flows') }}
-              ref={el => {
-                if (index === selectedIndex && el) {
-                  el.scrollIntoView({ block: 'nearest' })
-                }
-              }}
-            >
-              <td className="task-id">{task.task_id.slice(0, 8)}...</td>
-              <td>{task.flow_count}</td>
-              <td>{task.total_tokens_in.toLocaleString()}</td>
-              <td>{task.total_tokens_out.toLocaleString()}</td>
-              <td className="cost">{formatCost(task.total_cost)}</td>
-              <td>{formatDuration(task.duration_ms)}</td>
-              <td>{formatTime(task.last_seen)}</td>
+      {tasks.length === 0 ? (
+        <div className="empty-state">
+          <h2>No tasks tracked yet</h2>
+          <p>Tasks appear when API traffic includes task identifiers.</p>
+        </div>
+      ) : (
+        <table className="data-table" aria-label="Task list">
+          <thead>
+            <tr>
+              <th>Task ID</th>
+              <th>Flows</th>
+              <th>Tokens In</th>
+              <th>Tokens Out</th>
+              <th>Cost</th>
+              <th>Duration</th>
+              <th>Last Seen</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {tasks.map((task, index) => (
+              <tr
+                key={task.task_id}
+                className={index === selectedIndex ? 'keyboard-selected' : ''}
+                onClick={() => { setTaskFilter(task.task_id); navigateTo('flows') }}
+                ref={el => {
+                  if (index === selectedIndex && el) {
+                    el.scrollIntoView({ block: 'nearest' })
+                  }
+                }}
+              >
+                <td className="task-id">{task.task_id.slice(0, 8)}...</td>
+                <td>{task.flow_count}</td>
+                <td>{task.total_tokens_in.toLocaleString()}</td>
+                <td>{task.total_tokens_out.toLocaleString()}</td>
+                <td className="cost">{formatCost(task.total_cost)}</td>
+                <td>{formatDuration(task.duration_ms)}</td>
+                <td>{formatTime(task.last_seen)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   )
 
   // Render tools view
   const renderTools = () => (
     <div className="tools-view">
-      <table className="data-table" role="listbox" aria-label="Tool list">
-        <thead>
-          <tr>
-            <th>Tool</th>
-            <th>Invocations</th>
-            <th>Success Rate</th>
-            <th>Avg Duration</th>
-            <th>Total Cost</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tools.map((tool, index) => (
-            <tr
-              key={tool.tool_name}
-              role="option"
-              aria-selected={index === selectedIndex}
-              className={index === selectedIndex ? 'keyboard-selected' : ''}
-              ref={el => {
-                if (index === selectedIndex && el) {
-                  el.scrollIntoView({ block: 'nearest' })
-                }
-              }}
-            >
-              <td className="tool-name">{tool.tool_name}</td>
-              <td>{tool.invocation_count}</td>
-              <td className={tool.success_rate >= 90 ? 'success' : tool.success_rate >= 70 ? 'warning' : 'error'}>
-                {tool.success_rate.toFixed(1)}%
-              </td>
-              <td>{tool.avg_duration_ms.toFixed(0)}ms</td>
-              <td className="cost">{formatCost(tool.total_cost)}</td>
+      {tools.length === 0 ? (
+        <div className="empty-state">
+          <h2>No tool invocations tracked yet</h2>
+          <p>Tool usage data appears when API traffic includes tool calls.</p>
+        </div>
+      ) : (
+        <table className="data-table" aria-label="Tool list">
+          <thead>
+            <tr>
+              <th>Tool</th>
+              <th>Invocations</th>
+              <th>Success Rate</th>
+              <th>Avg Duration</th>
+              <th>Total Cost</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {tools.map((tool, index) => (
+              <tr
+                key={tool.tool_name}
+                className={index === selectedIndex ? 'keyboard-selected' : ''}
+                ref={el => {
+                  if (index === selectedIndex && el) {
+                    el.scrollIntoView({ block: 'nearest' })
+                  }
+                }}
+              >
+                <td className="tool-name">{tool.tool_name}</td>
+                <td>{tool.invocation_count}</td>
+                <td className={tool.success_rate >= 90 ? 'success' : tool.success_rate >= 70 ? 'warning' : 'error'}>
+                  {tool.success_rate.toFixed(1)}%
+                </td>
+                <td>{tool.avg_duration_ms.toFixed(0)}ms</td>
+                <td className="cost">{formatCost(tool.total_cost)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   )
 
@@ -944,7 +959,8 @@ function App() {
   const handleSaveSettings = async () => {
     const success = await updateSettings({ idle_gap_minutes: idleGapInput })
     if (success) {
-      // Settings saved successfully
+      setSettingsSaved(true)
+      setTimeout(() => setSettingsSaved(false), 3000)
     }
   }
 
@@ -988,6 +1004,7 @@ function App() {
         >
           {settingsSaving ? 'Saving...' : 'Save Settings'}
         </button>
+        {settingsSaved && <span className="settings-saved" role="status">Settings saved</span>}
         {idleGapInput !== settings?.idle_gap_minutes && (
           <button
             className="secondary-btn"

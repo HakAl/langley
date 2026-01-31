@@ -257,6 +257,12 @@ header h1 {
   outline-offset: 2px;
 }
 
+.flow-count {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
 /* Flow list */
 .flow-list {
   display: flex;
@@ -869,6 +875,24 @@ header h1 {
   }
 }
 
+@media (max-width: 480px) {
+  .nav {
+    overflow-x: auto;
+    scrollbar-width: none;
+    justify-content: flex-start;
+  }
+
+  .nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav button {
+    font-size: 0.8125rem;
+    padding: 0.375rem 0.625rem;
+    flex-shrink: 0;
+  }
+}
+
 /* Settings view */
 .settings-view {
   max-width: 600px;
@@ -954,8 +978,15 @@ header h1 {
 
 .settings-actions {
   display: flex;
+  align-items: center;
   gap: 0.75rem;
   margin-bottom: 1.5rem;
+}
+
+.settings-saved {
+  color: var(--success);
+  font-size: 0.875rem;
+  font-weight: 500;
 }
 
 .primary-btn {
