@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/HakAl/langley/internal/analytics"
@@ -194,18 +195,14 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	p.logger.Debug("HTTP request", "flow_id", flowID, "method", r.Method, "url", r.URL.String())
 
-	// Read and capture request body (with limit)
+	// Read full request body for forwarding and parsing.
+	// Only the stored copy in flow.RequestBody is truncated to BodyMaxBytes.
 	var reqBody []byte
 	var reqBodyTruncated bool
 	if r.Body != nil {
-		maxBody := p.cfg.Persistence.BodyMaxBytes
-		limitedReader := io.LimitReader(r.Body, int64(maxBody+1))
-		reqBody, _ = io.ReadAll(limitedReader)
-		if len(reqBody) > maxBody {
-			reqBodyTruncated = true
-			reqBody = reqBody[:maxBody]
-		}
+		reqBody, _ = io.ReadAll(r.Body)
 		r.Body.Close()
+		reqBodyTruncated = len(reqBody) > p.cfg.Persistence.BodyMaxBytes
 		r.Body = io.NopCloser(bytes.NewReader(reqBody))
 	}
 
@@ -230,18 +227,22 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		flow.TaskSource = &assignment.Source
 	}
 
-	// Redact and store request
+	// Redact and store request (body truncated to BodyMaxBytes for storage only)
+	storedBody := reqBody
+	if len(storedBody) > p.cfg.Persistence.BodyMaxBytes {
+		storedBody = storedBody[:p.cfg.Persistence.BodyMaxBytes]
+	}
 	if p.redactor != nil {
 		flow.RequestHeaders = redact.HeadersToMap(p.redactor.RedactHeaders(r.Header))
 		// Only store body if RawBodyStorage is enabled (default: OFF for security)
-		if p.redactor.ShouldStoreRawBody() && len(reqBody) > 0 {
-			redacted := p.redactor.RedactBody(string(reqBody))
+		if p.redactor.ShouldStoreRawBody() && len(storedBody) > 0 {
+			redacted := p.redactor.RedactBody(string(storedBody))
 			flow.RequestBody = &redacted
 		}
 	} else {
 		flow.RequestHeaders = redact.HeadersToMap(r.Header)
-		if len(reqBody) > 0 {
-			s := string(reqBody)
+		if len(storedBody) > 0 {
+			s := string(storedBody)
 			flow.RequestBody = &s
 		}
 	}
@@ -254,6 +255,9 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		cancel()
 	}
+
+	// Correlate tool_results in request body with prior tool invocations (langley-io4)
+	p.correlateToolResults(reqBody)
 
 	// Notify flow started
 	if p.onFlow != nil {
@@ -332,9 +336,15 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	flow.ResponseBodyTruncated = limitedWriter.truncated
 
-	// Detect provider from host
+	// Detect provider and extract usage from captured body (not from flow.ResponseBody,
+	// which may be nil when RawBodyStorage is OFF)
 	if prov := p.providers.Detect(r.Host); prov != nil {
 		flow.Provider = prov.Name()
+		if respBody.Len() > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			p.extractUsageAndCost(ctx, flow, prov, respBody.Bytes())
+			cancel()
+		}
 	}
 
 	// Save flow
@@ -442,18 +452,14 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 
 	p.logger.Debug("HTTPS request", "flow_id", flowID, "method", r.Method, "host", host, "path", r.URL.Path)
 
-	// Read request body
+	// Read full request body for forwarding and parsing.
+	// Only the stored copy in flow.RequestBody is truncated to BodyMaxBytes.
 	var reqBody []byte
 	var reqBodyTruncated bool
 	if r.Body != nil {
-		maxBody := p.cfg.Persistence.BodyMaxBytes
-		limitedReader := io.LimitReader(r.Body, int64(maxBody+1))
-		reqBody, _ = io.ReadAll(limitedReader)
-		if len(reqBody) > maxBody {
-			reqBodyTruncated = true
-			reqBody = reqBody[:maxBody]
-		}
+		reqBody, _ = io.ReadAll(r.Body)
 		r.Body.Close()
+		reqBodyTruncated = len(reqBody) > p.cfg.Persistence.BodyMaxBytes
 	}
 
 	// Create flow
@@ -477,18 +483,22 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 		flow.TaskSource = &assignment.Source
 	}
 
-	// Redact and store request
+	// Redact and store request (body truncated to BodyMaxBytes for storage only)
+	storedBody := reqBody
+	if len(storedBody) > p.cfg.Persistence.BodyMaxBytes {
+		storedBody = storedBody[:p.cfg.Persistence.BodyMaxBytes]
+	}
 	if p.redactor != nil {
 		flow.RequestHeaders = redact.HeadersToMap(p.redactor.RedactHeaders(r.Header))
 		// Only store body if RawBodyStorage is enabled (default: OFF for security)
-		if p.redactor.ShouldStoreRawBody() && len(reqBody) > 0 {
-			redacted := p.redactor.RedactBody(string(reqBody))
+		if p.redactor.ShouldStoreRawBody() && len(storedBody) > 0 {
+			redacted := p.redactor.RedactBody(string(storedBody))
 			flow.RequestBody = &redacted
 		}
 	} else {
 		flow.RequestHeaders = redact.HeadersToMap(r.Header)
-		if len(reqBody) > 0 {
-			s := string(reqBody)
+		if len(storedBody) > 0 {
+			s := string(storedBody)
 			flow.RequestBody = &s
 		}
 	}
@@ -506,6 +516,9 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 		}
 		cancel()
 	}
+
+	// Correlate tool_results in request body with prior tool invocations (langley-io4)
+	p.correlateToolResults(reqBody)
 
 	// Notify flow started
 	if p.onFlow != nil {
@@ -633,6 +646,15 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 	}
 	flow.ResponseBodyTruncated = limitedWriter.truncated
 
+	// Extract usage from captured body (provider was detected earlier at request time)
+	if flow.Provider != "" && respBody.Len() > 0 {
+		if prov := p.providers.Get(flow.Provider); prov != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			p.extractUsageAndCost(ctx, flow, prov, respBody.Bytes())
+			cancel()
+		}
+	}
+
 	// Save flow
 	p.saveFlow(flow)
 
@@ -649,6 +671,30 @@ func (p *MITMProxy) sendError(conn net.Conn, status int, message string) {
 	_, _ = conn.Write([]byte(response))
 }
 
+// correlateToolResults parses request bodies for tool_result blocks and updates
+// the matching tool invocations with success/failure and duration (langley-io4).
+func (p *MITMProxy) correlateToolResults(reqBody []byte) {
+	if p.store == nil || len(reqBody) == 0 {
+		return
+	}
+
+	results := parser.ExtractToolResults(reqBody)
+	if len(results) == 0 {
+		return
+	}
+
+	now := time.Now()
+	for _, result := range results {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := p.store.UpdateToolResult(ctx, result.ToolUseID, !result.IsError, result.Content, now); err != nil {
+			p.logger.Error("failed to update tool result", "tool_use_id", result.ToolUseID, "error", err)
+		} else {
+			p.logger.Debug("correlated tool result", "tool_use_id", result.ToolUseID, "success", !result.IsError)
+		}
+		cancel()
+	}
+}
+
 // saveFlow persists a flow to the store.
 func (p *MITMProxy) saveFlow(flow *store.Flow) {
 	if p.store == nil {
@@ -657,13 +703,6 @@ func (p *MITMProxy) saveFlow(flow *store.Flow) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	// Extract token usage and calculate cost if we have a known provider
-	if flow.ResponseBody != nil {
-		if prov := p.providers.Get(flow.Provider); prov != nil {
-			p.extractUsageAndCost(ctx, flow, prov)
-		}
-	}
 
 	// Set expiration based on retention config
 	expiresAt := time.Now().AddDate(0, 0, p.cfg.Retention.FlowsTTLDays)
@@ -675,14 +714,16 @@ func (p *MITMProxy) saveFlow(flow *store.Flow) {
 	}
 }
 
-// extractUsageAndCost parses usage data from provider responses and calculates cost.
-func (p *MITMProxy) extractUsageAndCost(ctx context.Context, flow *store.Flow, prov provider.Provider) {
-	if flow.ResponseBody == nil {
+// extractUsageAndCost parses usage data from the captured response body and calculates cost.
+// The body parameter is the raw captured response — independent of whether it's stored on the flow.
+// This decoupling ensures tokens are extracted even when RawBodyStorage is OFF.
+func (p *MITMProxy) extractUsageAndCost(ctx context.Context, flow *store.Flow, prov provider.Provider, body []byte) {
+	if len(body) == 0 {
 		return
 	}
 
 	// Use provider to parse usage
-	usage, err := prov.ParseUsage([]byte(*flow.ResponseBody), flow.IsSSE)
+	usage, err := prov.ParseUsage(body, flow.IsSSE)
 	if err == nil && usage != nil {
 		if usage.Model != "" {
 			flow.Model = &usage.Model
@@ -752,6 +793,32 @@ func (p *MITMProxy) streamSSEWithParser(flowID string, taskID *string, reader io
 		close(eventsCh)
 	}()
 
+	// Drain events concurrently with io.Copy to prevent deadlock.
+	// The channel buffer is finite — if we wait until after io.Copy returns
+	// to consume events, the parser blocks on a full channel, which blocks the
+	// pipe write, which blocks the multi-writer, which blocks io.Copy. Deadlock.
+	var collectedEvents []*store.Event
+	var eventWg sync.WaitGroup
+	eventWg.Add(1)
+	go func() {
+		defer eventWg.Done()
+		for event := range eventsCh {
+			collectedEvents = append(collectedEvents, event)
+
+			if p.store != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if saveErr := p.store.SaveEvent(ctx, event); saveErr != nil {
+					p.logger.Error("failed to save SSE event", "flow_id", flowID, "error", saveErr)
+				}
+				cancel()
+			}
+
+			if p.onEvent != nil {
+				p.onEvent(event)
+			}
+		}
+	}()
+
 	// Create a multi-writer: client + capture + parser pipe
 	mw := io.MultiWriter(client, capture, pw)
 
@@ -759,37 +826,19 @@ func (p *MITMProxy) streamSSEWithParser(flowID string, taskID *string, reader io
 	_, err := io.Copy(mw, reader)
 	pw.Close() // Signal parser that we're done
 
-	// Collect events for tool extraction
-	var collectedEvents []*store.Event
-
-	// Process events as they come in
-	for event := range eventsCh {
-		// Collect for later tool extraction
-		collectedEvents = append(collectedEvents, event)
-
-		// Persist event
-		if p.store != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			if saveErr := p.store.SaveEvent(ctx, event); saveErr != nil {
-				p.logger.Error("failed to save SSE event", "flow_id", flowID, "error", saveErr)
-			}
-			cancel()
-		}
-
-		// Broadcast event via callback
-		if p.onEvent != nil {
-			p.onEvent(event)
-		}
-	}
+	// Wait for all events to be consumed
+	eventWg.Wait()
 
 	// Extract and save tool invocations (io4-1)
 	if p.store != nil && len(collectedEvents) > 0 {
 		tools := parser.ExtractToolUses(collectedEvents)
 		for _, tool := range tools {
+			toolUseID := tool.ID
 			inv := &store.ToolInvocation{
 				ID:        uuid.New().String(),
 				FlowID:    flowID,
 				TaskID:    taskID,
+				ToolUseID: &toolUseID,
 				ToolName:  tool.Name,
 				Timestamp: time.Now(),
 			}
@@ -798,7 +847,7 @@ func (p *MITMProxy) streamSSEWithParser(flowID string, taskID *string, reader io
 			if saveErr := p.store.SaveToolInvocation(ctx, inv); saveErr != nil {
 				p.logger.Error("failed to save tool invocation", "flow_id", flowID, "tool", tool.Name, "error", saveErr)
 			} else {
-				p.logger.Debug("saved tool invocation", "flow_id", flowID, "tool", tool.Name)
+				p.logger.Debug("saved tool invocation", "flow_id", flowID, "tool", tool.Name, "tool_use_id", toolUseID)
 			}
 			cancel()
 		}

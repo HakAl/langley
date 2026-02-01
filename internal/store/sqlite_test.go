@@ -544,6 +544,130 @@ func TestSaveToolInvocation_GetToolInvocationsByFlow(t *testing.T) {
 	}
 }
 
+func TestUpdateToolResult(t *testing.T) {
+	t.Parallel()
+	store := setupTestDB(t)
+	ctx := context.Background()
+
+	// Create parent flow
+	flow := &Flow{
+		ID:            "flow-tool-result",
+		Host:          "api.anthropic.com",
+		Method:        "POST",
+		Path:          "/v1/messages",
+		URL:           "https://api.anthropic.com/v1/messages",
+		Timestamp:     time.Now(),
+		TimestampMono: time.Now().UnixNano(),
+		FlowIntegrity: "complete",
+		Provider:      "anthropic",
+	}
+	if err := store.SaveFlow(ctx, flow); err != nil {
+		t.Fatalf("SaveFlow failed: %v", err)
+	}
+
+	// Create tool invocation with tool_use_id, no success/duration yet
+	toolUseID := "toolu_abc123"
+	invTimestamp := time.Now().Add(-5 * time.Second) // 5 seconds ago
+	inv := &ToolInvocation{
+		ID:        "tool-result-1",
+		FlowID:    "flow-tool-result",
+		ToolUseID: &toolUseID,
+		ToolName:  "read_file",
+		Timestamp: invTimestamp,
+	}
+	if err := store.SaveToolInvocation(ctx, inv); err != nil {
+		t.Fatalf("SaveToolInvocation failed: %v", err)
+	}
+
+	t.Run("successful result", func(t *testing.T) {
+		resultTime := time.Now()
+		err := store.UpdateToolResult(ctx, "toolu_abc123", true, nil, resultTime)
+		if err != nil {
+			t.Fatalf("UpdateToolResult failed: %v", err)
+		}
+
+		// Verify the invocation was updated
+		invocations, err := store.GetToolInvocationsByFlow(ctx, "flow-tool-result")
+		if err != nil {
+			t.Fatalf("GetToolInvocationsByFlow failed: %v", err)
+		}
+		if len(invocations) != 1 {
+			t.Fatalf("got %d invocations, want 1", len(invocations))
+		}
+
+		got := invocations[0]
+		if got.Success == nil || !*got.Success {
+			t.Errorf("Success = %v, want true", got.Success)
+		}
+		if got.DurationMs == nil {
+			t.Fatal("DurationMs is nil, want non-nil")
+		}
+		if *got.DurationMs < 0 {
+			t.Errorf("DurationMs = %d, want >= 0", *got.DurationMs)
+		}
+		if got.ErrorMessage != nil {
+			t.Errorf("ErrorMessage = %v, want nil", got.ErrorMessage)
+		}
+		if got.ToolUseID == nil || *got.ToolUseID != "toolu_abc123" {
+			t.Errorf("ToolUseID = %v, want toolu_abc123", got.ToolUseID)
+		}
+	})
+
+	t.Run("error result", func(t *testing.T) {
+		// Create another invocation
+		toolUseID2 := "toolu_err789"
+		inv2 := &ToolInvocation{
+			ID:        "tool-result-2",
+			FlowID:    "flow-tool-result",
+			ToolUseID: &toolUseID2,
+			ToolName:  "write_file",
+			Timestamp: time.Now().Add(-2 * time.Second),
+		}
+		if err := store.SaveToolInvocation(ctx, inv2); err != nil {
+			t.Fatalf("SaveToolInvocation failed: %v", err)
+		}
+
+		errMsg := "permission denied"
+		resultTime := time.Now()
+		err := store.UpdateToolResult(ctx, "toolu_err789", false, &errMsg, resultTime)
+		if err != nil {
+			t.Fatalf("UpdateToolResult failed: %v", err)
+		}
+
+		invocations, err := store.GetToolInvocationsByFlow(ctx, "flow-tool-result")
+		if err != nil {
+			t.Fatalf("GetToolInvocationsByFlow failed: %v", err)
+		}
+
+		// Find the error invocation
+		var got *ToolInvocation
+		for _, inv := range invocations {
+			if inv.ToolUseID != nil && *inv.ToolUseID == "toolu_err789" {
+				got = inv
+				break
+			}
+		}
+		if got == nil {
+			t.Fatal("did not find invocation with tool_use_id toolu_err789")
+		}
+
+		if got.Success == nil || *got.Success {
+			t.Errorf("Success = %v, want false", got.Success)
+		}
+		if got.ErrorMessage == nil || *got.ErrorMessage != "permission denied" {
+			t.Errorf("ErrorMessage = %v, want 'permission denied'", got.ErrorMessage)
+		}
+	})
+
+	t.Run("nonexistent tool_use_id", func(t *testing.T) {
+		// Should not error, just update 0 rows
+		err := store.UpdateToolResult(ctx, "toolu_nonexistent", true, nil, time.Now())
+		if err != nil {
+			t.Errorf("UpdateToolResult with nonexistent ID should not error, got: %v", err)
+		}
+	})
+}
+
 func TestLogDrop(t *testing.T) {
 	t.Parallel()
 	store := setupTestDB(t)

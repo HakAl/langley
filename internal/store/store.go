@@ -61,6 +61,7 @@ type ToolInvocation struct {
 	ID           string
 	FlowID       string
 	TaskID       *string
+	ToolUseID    *string // Claude tool_use_id for correlating with tool_result
 	ToolName     string
 	ToolType     *string
 	Timestamp    time.Time
@@ -115,6 +116,7 @@ type Store interface {
 	// Tool Invocations
 	SaveToolInvocation(ctx context.Context, inv *ToolInvocation) error
 	GetToolInvocationsByFlow(ctx context.Context, flowID string) ([]*ToolInvocation, error)
+	UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultTime time.Time) error
 
 	// Drop Log
 	LogDrop(ctx context.Context, entry *DropLogEntry) error

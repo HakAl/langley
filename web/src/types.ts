@@ -62,7 +62,6 @@ export interface ToolStats {
   success_count: number
   failure_count: number
   success_rate: number
-  total_cost: number
   avg_duration_ms: number
 }
 

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/HakAl/langley/internal/config"
+	"github.com/HakAl/langley/internal/provider"
 	"github.com/HakAl/langley/internal/redact"
 	"github.com/HakAl/langley/internal/store"
 	"github.com/HakAl/langley/internal/task"
@@ -274,6 +275,10 @@ func (m *mockStore) SaveToolInvocation(ctx context.Context, inv *store.ToolInvoc
 
 func (m *mockStore) GetToolInvocationsByFlow(ctx context.Context, flowID string) ([]*store.ToolInvocation, error) {
 	return nil, nil
+}
+
+func (m *mockStore) UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultTime time.Time) error {
+	return nil
 }
 
 func (m *mockStore) LogDrop(ctx context.Context, entry *store.DropLogEntry) error {
@@ -1033,4 +1038,132 @@ func TestLimitedBuffer(t *testing.T) {
 			t.Errorf("buf len = %d, want 5", buf.Len())
 		}
 	})
+}
+
+// TestExtractUsageAndCost_SSE verifies that token usage is extracted from SSE
+// response bodies. This is the unit test for the fix that decouples usage extraction
+// from flow.ResponseBody (which is nil when RawBodyStorage is OFF — the default).
+func TestExtractUsageAndCost_SSE(t *testing.T) {
+	t.Parallel()
+
+	p := &MITMProxy{} // Minimal instance — only needs provider, no store or analytics
+
+	sseBody := []byte("event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-4-20250514\",\"usage\":{\"input_tokens\":150,\"cache_creation_input_tokens\":20,\"cache_read_input_tokens\":10}}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hello\"}}\n\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":75}}\n\n" +
+		"event: message_stop\n" +
+		"data: {\"type\":\"message_stop\"}\n\n")
+
+	flow := &store.Flow{IsSSE: true}
+	prov := provider.NewRegistry().Get("anthropic")
+
+	ctx := context.Background()
+	p.extractUsageAndCost(ctx, flow, prov, sseBody)
+
+	if flow.InputTokens == nil || *flow.InputTokens != 150 {
+		t.Errorf("InputTokens = %v, want 150", flow.InputTokens)
+	}
+	if flow.OutputTokens == nil || *flow.OutputTokens != 75 {
+		t.Errorf("OutputTokens = %v, want 75", flow.OutputTokens)
+	}
+	if flow.Model == nil || *flow.Model != "claude-sonnet-4-20250514" {
+		t.Errorf("Model = %v, want claude-sonnet-4-20250514", flow.Model)
+	}
+	if flow.CacheCreationTokens == nil || *flow.CacheCreationTokens != 20 {
+		t.Errorf("CacheCreationTokens = %v, want 20", flow.CacheCreationTokens)
+	}
+	if flow.CacheReadTokens == nil || *flow.CacheReadTokens != 10 {
+		t.Errorf("CacheReadTokens = %v, want 10", flow.CacheReadTokens)
+	}
+}
+
+// TestExtractUsageAndCost_JSON verifies that token usage is extracted from
+// non-streaming JSON response bodies.
+func TestExtractUsageAndCost_JSON(t *testing.T) {
+	t.Parallel()
+
+	p := &MITMProxy{}
+
+	jsonBody := []byte(`{
+		"model": "claude-sonnet-4-20250514",
+		"usage": {
+			"input_tokens": 200,
+			"output_tokens": 100,
+			"cache_creation_input_tokens": 0,
+			"cache_read_input_tokens": 0
+		},
+		"content": [{"type": "text", "text": "Hello"}]
+	}`)
+
+	flow := &store.Flow{IsSSE: false}
+	prov := provider.NewRegistry().Get("anthropic")
+
+	ctx := context.Background()
+	p.extractUsageAndCost(ctx, flow, prov, jsonBody)
+
+	if flow.InputTokens == nil || *flow.InputTokens != 200 {
+		t.Errorf("InputTokens = %v, want 200", flow.InputTokens)
+	}
+	if flow.OutputTokens == nil || *flow.OutputTokens != 100 {
+		t.Errorf("OutputTokens = %v, want 100", flow.OutputTokens)
+	}
+	if flow.Model == nil || *flow.Model != "claude-sonnet-4-20250514" {
+		t.Errorf("Model = %v, want claude-sonnet-4-20250514", flow.Model)
+	}
+}
+
+// TestExtractUsageAndCost_EmptyBody verifies no crash on empty body.
+func TestExtractUsageAndCost_EmptyBody(t *testing.T) {
+	t.Parallel()
+
+	p := &MITMProxy{}
+	flow := &store.Flow{IsSSE: true}
+	prov := provider.NewRegistry().Get("anthropic")
+
+	ctx := context.Background()
+	p.extractUsageAndCost(ctx, flow, prov, nil)
+
+	if flow.InputTokens != nil {
+		t.Errorf("InputTokens should be nil for empty body, got %v", flow.InputTokens)
+	}
+}
+
+// TestExtractUsageAndCost_DecoupledFromResponseBody proves the core fix:
+// extractUsageAndCost works with a []byte body parameter, independent of
+// flow.ResponseBody. With RawBodyStorage=false, ResponseBody is nil but
+// tokens must still be extracted from the captured buffer.
+func TestExtractUsageAndCost_DecoupledFromResponseBody(t *testing.T) {
+	t.Parallel()
+
+	p := &MITMProxy{}
+
+	sseBody := []byte("event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-3-opus\",\"usage\":{\"input_tokens\":500}}}\n\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":250}}\n\n")
+
+	// Simulate RawBodyStorage=false: flow.ResponseBody is nil
+	flow := &store.Flow{IsSSE: true, ResponseBody: nil}
+	prov := provider.NewRegistry().Get("anthropic")
+
+	ctx := context.Background()
+	// Pass body bytes directly — this is the captured buffer, not flow.ResponseBody
+	p.extractUsageAndCost(ctx, flow, prov, sseBody)
+
+	// Tokens extracted even though flow.ResponseBody is nil
+	if flow.ResponseBody != nil {
+		t.Error("ResponseBody should remain nil")
+	}
+	if flow.InputTokens == nil || *flow.InputTokens != 500 {
+		t.Errorf("InputTokens = %v, want 500", flow.InputTokens)
+	}
+	if flow.OutputTokens == nil || *flow.OutputTokens != 250 {
+		t.Errorf("OutputTokens = %v, want 250", flow.OutputTokens)
+	}
+	if flow.Model == nil || *flow.Model != "claude-3-opus" {
+		t.Errorf("Model = %v, want claude-3-opus", flow.Model)
+	}
 }

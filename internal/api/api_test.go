@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/HakAl/langley/internal/config"
 	"github.com/HakAl/langley/internal/store"
@@ -53,6 +54,9 @@ func (m *mockStore) GetEventsByFlow(ctx context.Context, flowID string) ([]*stor
 func (m *mockStore) SaveToolInvocation(ctx context.Context, inv *store.ToolInvocation) error { return nil }
 func (m *mockStore) GetToolInvocationsByFlow(ctx context.Context, flowID string) ([]*store.ToolInvocation, error) {
 	return []*store.ToolInvocation{}, nil
+}
+func (m *mockStore) UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultTime time.Time) error {
+	return nil
 }
 func (m *mockStore) LogDrop(ctx context.Context, entry *store.DropLogEntry) error { return nil }
 func (m *mockStore) RunRetention(ctx context.Context) (int64, error)              { return 0, nil }

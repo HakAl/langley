@@ -116,6 +116,7 @@ func (s *SQLiteStore) migrate() error {
 	// Run migrations
 	migrations := []string{
 		migrationV1, // Initial schema
+		migrationV2, // Add tool_use_id to tool_invocations
 	}
 
 	for i := version; i < len(migrations); i++ {
@@ -251,6 +252,12 @@ CREATE INDEX IF NOT EXISTS idx_tool_invocations_task ON tool_invocations(task_id
 -- Drop log indexes
 CREATE INDEX IF NOT EXISTS idx_drop_log_priority_time ON drop_log(priority, timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_drop_log_flow ON drop_log(flow_id) WHERE flow_id IS NOT NULL;
+`
+
+const migrationV2 = `
+-- Add tool_use_id column for correlating tool_use with tool_result
+ALTER TABLE tool_invocations ADD COLUMN tool_use_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_tool_invocations_tool_use_id ON tool_invocations(tool_use_id);
 `
 
 // SaveFlow inserts a new flow.
@@ -531,10 +538,10 @@ func (s *SQLiteStore) GetEventsByFlow(ctx context.Context, flowID string) ([]*Ev
 // SaveToolInvocation inserts a tool invocation.
 func (s *SQLiteStore) SaveToolInvocation(ctx context.Context, inv *ToolInvocation) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO tool_invocations (id, flow_id, task_id, tool_name, tool_type, timestamp, duration_ms, success, error_message, input_tokens, output_tokens, cost, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO tool_invocations (id, flow_id, task_id, tool_use_id, tool_name, tool_type, timestamp, duration_ms, success, error_message, input_tokens, output_tokens, cost, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
-		inv.ID, inv.FlowID, inv.TaskID, inv.ToolName, inv.ToolType,
+		inv.ID, inv.FlowID, inv.TaskID, inv.ToolUseID, inv.ToolName, inv.ToolType,
 		inv.Timestamp.Format(time.RFC3339Nano), inv.DurationMs, inv.Success, inv.ErrorMessage,
 		inv.InputTokens, inv.OutputTokens, inv.Cost, formatNullableTime(inv.ExpiresAt),
 	)
@@ -544,7 +551,7 @@ func (s *SQLiteStore) SaveToolInvocation(ctx context.Context, inv *ToolInvocatio
 // GetToolInvocationsByFlow returns tool invocations for a flow.
 func (s *SQLiteStore) GetToolInvocationsByFlow(ctx context.Context, flowID string) ([]*ToolInvocation, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, flow_id, task_id, tool_name, tool_type, timestamp, duration_ms, success, error_message, input_tokens, output_tokens, cost, created_at, expires_at
+		SELECT id, flow_id, task_id, tool_use_id, tool_name, tool_type, timestamp, duration_ms, success, error_message, input_tokens, output_tokens, cost, created_at, expires_at
 		FROM tool_invocations WHERE flow_id = ? ORDER BY timestamp
 	`, flowID)
 	if err != nil {
@@ -556,13 +563,13 @@ func (s *SQLiteStore) GetToolInvocationsByFlow(ctx context.Context, flowID strin
 	for rows.Next() {
 		var inv ToolInvocation
 		var ts, createdAt string
-		var expiresAt, taskID, toolType, errorMsg sql.NullString
+		var expiresAt, taskID, toolUseID, toolType, errorMsg sql.NullString
 		var durationMs, inputTokens, outputTokens sql.NullInt64
 		var success sql.NullBool
 		var cost sql.NullFloat64
 
 		err := rows.Scan(
-			&inv.ID, &inv.FlowID, &taskID, &inv.ToolName, &toolType,
+			&inv.ID, &inv.FlowID, &taskID, &toolUseID, &inv.ToolName, &toolType,
 			&ts, &durationMs, &success, &errorMsg,
 			&inputTokens, &outputTokens, &cost, &createdAt, &expiresAt,
 		)
@@ -574,6 +581,9 @@ func (s *SQLiteStore) GetToolInvocationsByFlow(ctx context.Context, flowID strin
 		inv.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		if taskID.Valid {
 			inv.TaskID = &taskID.String
+		}
+		if toolUseID.Valid {
+			inv.ToolUseID = &toolUseID.String
 		}
 		if toolType.Valid {
 			inv.ToolType = &toolType.String
@@ -607,6 +617,19 @@ func (s *SQLiteStore) GetToolInvocationsByFlow(ctx context.Context, flowID strin
 	}
 
 	return invocations, rows.Err()
+}
+
+// UpdateToolResult updates a tool invocation with its result, matched by tool_use_id.
+// Duration is calculated as the difference between resultTime and the stored timestamp.
+func (s *SQLiteStore) UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultTime time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE tool_invocations
+		SET success = ?,
+		    error_message = ?,
+		    duration_ms = CAST((julianday(?) - julianday(timestamp)) * 86400000 AS INTEGER)
+		WHERE tool_use_id = ?
+	`, success, errorMsg, resultTime.Format(time.RFC3339Nano), toolUseID)
+	return err
 }
 
 // LogDrop records a dropped event.

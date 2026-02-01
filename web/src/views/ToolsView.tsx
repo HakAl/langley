@@ -1,5 +1,4 @@
 import type { ToolStats } from '../types'
-import { formatCost } from '../utils'
 
 interface ToolsViewProps {
   tools: ToolStats[]
@@ -38,7 +37,6 @@ export function ToolsView({ tools, selectedIndex, timeRange, onTimeRangeChange }
               <th>Invocations</th>
               <th>Success Rate</th>
               <th>Avg Duration</th>
-              <th>Total Cost</th>
             </tr>
           </thead>
           <tbody>
@@ -60,7 +58,6 @@ export function ToolsView({ tools, selectedIndex, timeRange, onTimeRangeChange }
                   {tool.success_rate.toFixed(1)}%
                 </td>
                 <td>{tool.avg_duration_ms.toFixed(0)}ms</td>
-                <td className="cost">{formatCost(tool.total_cost)}</td>
               </tr>
             ))}
           </tbody>

@@ -53,7 +53,7 @@ export function TasksView({ tasks, selectedIndex, onTaskSelect }: TasksViewProps
                 }
               }}
             >
-              <td className="task-id">{task.task_id.slice(0, 8)}...</td>
+              <td className="task-id" title={task.task_id}>{task.task_id}</td>
               <td>{task.flow_count}</td>
               <td>{task.total_tokens_in.toLocaleString()}</td>
               <td>{task.total_tokens_out.toLocaleString()}</td>
