@@ -6,15 +6,18 @@ interface AnalyticsViewProps {
   dailyCosts: CostPeriod[]
   timeRange: number | null
   onTimeRangeChange: (days: number | null) => void
+  loading?: boolean
 }
 
-export function AnalyticsView({ stats, dailyCosts, timeRange, onTimeRangeChange }: AnalyticsViewProps) {
+export function AnalyticsView({ stats, dailyCosts, timeRange, onTimeRangeChange, loading }: AnalyticsViewProps) {
   return (
     <div className="analytics-view">
       <div className="filters">
         <TimeRangeSelect timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
       </div>
-      {stats && (
+      {loading && !stats ? (
+        <div className="view-loading">Loading analytics&hellip;</div>
+      ) : stats && (
         <div className="stats-grid">
           <div className="stat-card">
             <div className="stat-value">{stats.total_flows}</div>

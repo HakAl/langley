@@ -8,16 +8,19 @@ interface AnomaliesViewProps {
   timeRange: number | null
   onTimeRangeChange: (days: number | null) => void
   onViewFlow: (flowId: string) => void
+  loading?: boolean
 }
 
-export function AnomaliesView({ anomalies, selectedIndex, timeRange, onTimeRangeChange, onViewFlow }: AnomaliesViewProps) {
+export function AnomaliesView({ anomalies, selectedIndex, timeRange, onTimeRangeChange, onViewFlow, loading }: AnomaliesViewProps) {
   return (
     <div className="anomalies-view">
       <div className="filters">
         <TimeRangeSelect timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
       </div>
 
-      {anomalies.length === 0 ? (
+      {loading && anomalies.length === 0 ? (
+        <div className="view-loading">Loading anomalies&hellip;</div>
+      ) : anomalies.length === 0 ? (
         <div className="empty-state">
           <h2>No anomalies detected</h2>
           <p>Everything looks normal!</p>

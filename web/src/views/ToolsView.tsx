@@ -6,16 +6,19 @@ interface ToolsViewProps {
   selectedIndex: number
   timeRange: number | null
   onTimeRangeChange: (days: number | null) => void
+  loading?: boolean
 }
 
-export function ToolsView({ tools, selectedIndex, timeRange, onTimeRangeChange }: ToolsViewProps) {
+export function ToolsView({ tools, selectedIndex, timeRange, onTimeRangeChange, loading }: ToolsViewProps) {
   return (
     <div className="tools-view">
       <div className="filters">
         <TimeRangeSelect timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
       </div>
 
-      {tools.length === 0 ? (
+      {loading && tools.length === 0 ? (
+        <div className="view-loading">Loading tools&hellip;</div>
+      ) : tools.length === 0 ? (
         <div className="empty-state">
           <h2>No tool invocations tracked yet</h2>
           <p>Tool usage data appears when API traffic includes tool calls.</p>

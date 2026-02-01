@@ -8,16 +8,19 @@ interface TasksViewProps {
   timeRange: number | null
   onTimeRangeChange: (days: number | null) => void
   onTaskSelect: (taskId: string) => void
+  loading?: boolean
 }
 
-export function TasksView({ tasks, selectedIndex, timeRange, onTimeRangeChange, onTaskSelect }: TasksViewProps) {
+export function TasksView({ tasks, selectedIndex, timeRange, onTimeRangeChange, onTaskSelect, loading }: TasksViewProps) {
   return (
     <div className="tasks-view">
       <div className="filters">
         <TimeRangeSelect timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
       </div>
 
-      {tasks.length === 0 ? (
+      {loading && tasks.length === 0 ? (
+        <div className="view-loading">Loading tasks&hellip;</div>
+      ) : tasks.length === 0 ? (
         <div className="empty-state">
           <h2>No tasks tracked yet</h2>
           <p>Tasks appear when API traffic includes task identifiers.</p>

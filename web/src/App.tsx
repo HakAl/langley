@@ -10,6 +10,7 @@ import { Nav } from './components/Nav'
 import { FlowDetail } from './components/FlowDetail'
 import { HelpModal } from './components/HelpModal'
 import { ExportModal } from './components/ExportModal'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { FlowListView } from './views/FlowListView'
 import { AnalyticsView } from './views/AnalyticsView'
 import { TasksView } from './views/TasksView'
@@ -32,6 +33,7 @@ function App() {
   const [anomalies, setAnomalies] = useState<Anomaly[]>([])
   const [dailyCosts, setDailyCosts] = useState<CostPeriod[]>([])
   const [settings, setSettings] = useState<Settings | null>(null)
+  const [viewLoading, setViewLoading] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [showHelp, setShowHelp] = useState(false)
   const [exportConfig, setExportConfig] = useState<{ format: string; rowCount: number } | null>(null)
@@ -81,21 +83,27 @@ function App() {
   // View-specific data
   useEffect(() => {
     setViewError(null)
+    setViewLoading(true)
     const days = timeRange ?? undefined
     const showError = (error: string | null) => { if (error) setViewError(error) }
+    const done = () => setViewLoading(false)
     if (view === 'flows') {
-      api.fetchFlows(days).then(({ data, error }) => { if (data) setFlows(prev => mergeFlows(prev, data)); showError(error) })
+      api.fetchFlows(days).then(({ data, error }) => { if (data) setFlows(prev => mergeFlows(prev, data)); showError(error) }).finally(done)
     } else if (view === 'analytics') {
-      api.fetchStats(days).then(({ data, error }) => { if (data) setStats(data); showError(error) })
-      api.fetchDailyCosts(days).then(({ data, error }) => { if (data) setDailyCosts(data); showError(error) })
+      Promise.all([
+        api.fetchStats(days).then(({ data, error }) => { if (data) setStats(data); showError(error) }),
+        api.fetchDailyCosts(days).then(({ data, error }) => { if (data) setDailyCosts(data); showError(error) }),
+      ]).finally(done)
     } else if (view === 'tasks') {
-      api.fetchTasks(days).then(({ data, error }) => { if (data) setTasks(data); showError(error) })
+      api.fetchTasks(days).then(({ data, error }) => { if (data) setTasks(data); showError(error) }).finally(done)
     } else if (view === 'tools') {
-      api.fetchTools(days).then(({ data, error }) => { if (data) setTools(data); showError(error) })
+      api.fetchTools(days).then(({ data, error }) => { if (data) setTools(data); showError(error) }).finally(done)
     } else if (view === 'anomalies') {
-      api.fetchAnomalies(days).then(({ data, error }) => { if (data) setAnomalies(data); showError(error) })
+      api.fetchAnomalies(days).then(({ data, error }) => { if (data) setAnomalies(data); showError(error) }).finally(done)
     } else if (view === 'settings') {
-      api.fetchSettings().then(({ data, error }) => { if (data) setSettings(data); showError(error) })
+      api.fetchSettings().then(({ data, error }) => { if (data) setSettings(data); showError(error) }).finally(done)
+    } else {
+      done()
     }
   }, [view, timeRange, api.fetchFlows, api.fetchStats, api.fetchDailyCosts, api.fetchTasks, api.fetchTools, api.fetchAnomalies, api.fetchSettings])
 
@@ -165,6 +173,7 @@ function App() {
   }, [api.updateSettings])
 
   return (
+    <ErrorBoundary>
     <div className="app">
       <header>
         <div className="header-brand">
@@ -184,15 +193,25 @@ function App() {
       </header>
 
       <div className="container">
-        {error && <div className="error-banner">{error}</div>}
+        {error && (
+          <div className="error-banner" role="alert">
+            <span className="error-banner-message">{error}</span>
+            <button className="error-banner-dismiss" onClick={() => setError(null)} aria-label="Dismiss error">&times;</button>
+          </div>
+        )}
         <div className="main-content">
           <div className="content-area">
-            {viewError && <div className="error-banner" role="alert">{viewError}</div>}
+            {viewError && (
+              <div className="error-banner" role="alert">
+                <span className="error-banner-message">{viewError}</span>
+                <button className="error-banner-dismiss" onClick={() => setViewError(null)} aria-label="Dismiss error">&times;</button>
+              </div>
+            )}
             {view === 'flows' && <FlowListView flows={flows} filteredFlows={filteredFlows} totalFlows={stats?.total_flows} initialLoading={initialLoading} selectedFlowId={selectedFlow?.id ?? null} selectedIndex={selectedIndex} hostFilter={hostFilter} taskFilter={taskFilter} statusFilter={statusFilter} timeRange={timeRange} onHostFilterChange={setHostFilter} onTaskFilterChange={setTaskFilter} onStatusFilterChange={setStatusFilter} onTimeRangeChange={setTimeRange} onFlowSelect={handleFlowSelect} onStartExport={handleStartExport} />}
-            {view === 'analytics' && <AnalyticsView stats={stats} dailyCosts={dailyCosts} timeRange={timeRange} onTimeRangeChange={setTimeRange} />}
-            {view === 'tasks' && <TasksView tasks={tasks} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={setTimeRange} onTaskSelect={(id) => { setTaskFilter(id); navigateTo('flows') }} />}
-            {view === 'tools' && <ToolsView tools={tools} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={setTimeRange} />}
-            {view === 'anomalies' && <AnomaliesView anomalies={anomalies} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={setTimeRange} onViewFlow={async (id) => { await handleFlowSelect(id); navigateTo('flows') }} />}
+            {view === 'analytics' && <AnalyticsView stats={stats} dailyCosts={dailyCosts} timeRange={timeRange} onTimeRangeChange={setTimeRange} loading={viewLoading} />}
+            {view === 'tasks' && <TasksView tasks={tasks} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={setTimeRange} onTaskSelect={(id) => { setTaskFilter(id); navigateTo('flows') }} loading={viewLoading} />}
+            {view === 'tools' && <ToolsView tools={tools} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={setTimeRange} loading={viewLoading} />}
+            {view === 'anomalies' && <AnomaliesView anomalies={anomalies} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={setTimeRange} onViewFlow={async (id) => { await handleFlowSelect(id); navigateTo('flows') }} loading={viewLoading} />}
             {view === 'settings' && <SettingsView settings={settings} onSave={handleSaveSettings} />}
           </div>
           {selectedFlow && view === 'flows' && <>
@@ -205,6 +224,7 @@ function App() {
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
       {exportConfig && <ExportModal format={exportConfig.format} rowCount={exportConfig.rowCount} onConfirm={handleConfirmExport} onCancel={() => setExportConfig(null)} />}
     </div>
+    </ErrorBoundary>
   )
 }
 
