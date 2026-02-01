@@ -1216,23 +1216,6 @@ func setupMITMProxy(t *testing.T, cfgOverride func(*config.Config)) (*MITMProxy,
 	return proxy, ln.Addr().String(), capture, cleanup
 }
 
-// connectClient creates an HTTP client that uses the proxy at proxyAddr and
-// trusts the given CA for MITM'd connections.
-func connectClient(t *testing.T, proxyAddr string, ca *langleytls.CA) *http.Client {
-	t.Helper()
-	proxyURL, _ := url.Parse("http://" + proxyAddr)
-	pool := x509.NewCertPool()
-	pool.AppendCertsFromPEM(ca.CertPEM())
-	return &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyURL),
-			TLSClientConfig: &tls.Config{
-				RootCAs: pool,
-			},
-		},
-	}
-}
-
 // TestMITMProxy_Passthrough_NoMITM verifies that non-LLM HTTPS hosts are
 // tunnelled transparently — no flow is captured and the client sees the
 // upstream's real certificate (not the proxy CA's).
