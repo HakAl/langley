@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { Flow, Stats, TaskSummary, ToolStats, Anomaly, CostPeriod, Settings, ApiResult } from './types'
+import { mergeFlows } from './mergeFlows'
 import { getInitialTheme } from './utils'
 import { useHashRoute } from './hooks/useHashRoute'
 import { useApi } from './hooks/useApi'
@@ -48,10 +49,17 @@ function App() {
     })
   }, [])
 
+  const handleReconnect = useCallback(() => {
+    api.fetchFlows().then(({ data }) => {
+      if (data) setFlows(prev => mergeFlows(prev, data))
+    })
+  }, [api.fetchFlows])
+
   const { connect, cleanup } = useWebSocket({
     onFlowUpdate: handleFlowUpdate,
     onConnectedChange: setConnected,
     onError: setError,
+    onReconnect: handleReconnect,
   })
 
   const filteredFlows = flows.filter(flow => {
@@ -64,7 +72,7 @@ function App() {
 
   // Initial load
   useEffect(() => {
-    api.fetchFlows().then(({ data, error }) => { if (data) setFlows(data); if (error) setViewError(error); setInitialLoading(false); connect() })
+    api.fetchFlows().then(({ data, error }) => { if (data) setFlows(prev => mergeFlows(prev, data)); if (error) setViewError(error); setInitialLoading(false); connect() })
     api.fetchStats().then(({ data }) => { if (data) setStats(data) })
     return cleanup
   }, [api.fetchFlows, api.fetchStats, connect, cleanup])

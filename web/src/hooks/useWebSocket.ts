@@ -7,12 +7,14 @@ interface UseWebSocketOptions {
   onFlowUpdate: (flow: Flow) => void
   onConnectedChange: (connected: boolean) => void
   onError: (error: string | null) => void
+  onReconnect?: () => void
 }
 
-export function useWebSocket({ onFlowUpdate, onConnectedChange, onError }: UseWebSocketOptions) {
+export function useWebSocket({ onFlowUpdate, onConnectedChange, onError, onReconnect }: UseWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
   const reconnectAttemptsRef = useRef(0)
+  const hasConnectedRef = useRef(false)
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
@@ -27,6 +29,10 @@ export function useWebSocket({ onFlowUpdate, onConnectedChange, onError }: UseWe
     ws.onopen = () => {
       onConnectedChange(true)
       onError(null)
+      if (hasConnectedRef.current) {
+        onReconnect?.()
+      }
+      hasConnectedRef.current = true
       reconnectAttemptsRef.current = 0
     }
 
@@ -64,7 +70,7 @@ export function useWebSocket({ onFlowUpdate, onConnectedChange, onError }: UseWe
     }
 
     wsRef.current = ws
-  }, [onFlowUpdate, onConnectedChange, onError])
+  }, [onFlowUpdate, onConnectedChange, onError, onReconnect])
 
   const cleanup = useCallback(() => {
     if (reconnectTimeoutRef.current) {
