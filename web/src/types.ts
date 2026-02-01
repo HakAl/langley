@@ -23,6 +23,8 @@ export interface Flow {
   events_dropped_count?: number
   request_body?: string
   response_body?: string
+  request_body_truncated?: boolean
+  response_body_truncated?: boolean
   request_headers?: Record<string, string[]>
   response_headers?: Record<string, string[]>
 }

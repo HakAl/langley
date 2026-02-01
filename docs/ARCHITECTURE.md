@@ -394,7 +394,7 @@ Key configuration sections:
 
 - **TLS validation** - Upstream connections validate certificates by default
 - **Credential redaction** - API keys masked before storage
-- **Raw body storage OFF** - `RawBodyStorage` defaults to false
+- **Body storage** - Request/response bodies stored after redaction (can be disabled via `disable_body_storage`)
 - **Localhost-only** - Dashboard/API only accessible from localhost
 - **Token auth** - All API endpoints require Bearer token
 - **No URL tokens** - Tokens in query strings are rejected

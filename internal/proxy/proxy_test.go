@@ -702,8 +702,8 @@ func TestMITMProxy_BodyTruncation(t *testing.T) {
 	}
 }
 
-// TestMITMProxy_RawBodyStorageOff verifies that RawBodyStorage=false prevents body storage.
-func TestMITMProxy_RawBodyStorageOff(t *testing.T) {
+// TestMITMProxy_DisableBodyStorage verifies that DisableBodyStorage=true prevents body storage.
+func TestMITMProxy_DisableBodyStorage(t *testing.T) {
 	t.Parallel()
 
 	testBody := "test request body"
@@ -723,9 +723,8 @@ func TestMITMProxy_RawBodyStorageOff(t *testing.T) {
 	ca, _ := langleytls.LoadOrCreateCA(tmpDir)
 	certCache := langleytls.NewCertCache(ca, 100)
 
-	// Create redactor with RawBodyStorage=false (the default)
 	redactor, _ := redact.New(&config.RedactionConfig{
-		RawBodyStorage: false, // Explicitly OFF
+		DisableBodyStorage: true,
 	})
 	mockStore := newMockStore()
 
@@ -756,16 +755,15 @@ func TestMITMProxy_RawBodyStorageOff(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// With RawBodyStorage=false, bodies should NOT be stored
 	capturedFlow := capture.WaitForFlow(2 * time.Second)
 	if capturedFlow == nil {
 		t.Fatal("expected captured flow")
 	}
 	if capturedFlow.RequestBody != nil {
-		t.Errorf("RequestBody should be nil when RawBodyStorage=false, got %q", *capturedFlow.RequestBody)
+		t.Errorf("RequestBody should be nil when body storage disabled, got %q", *capturedFlow.RequestBody)
 	}
 	if capturedFlow.ResponseBody != nil {
-		t.Errorf("ResponseBody should be nil when RawBodyStorage=false, got %q", *capturedFlow.ResponseBody)
+		t.Errorf("ResponseBody should be nil when body storage disabled, got %q", *capturedFlow.ResponseBody)
 	}
 
 	// Verify that metadata is still captured
@@ -1042,7 +1040,7 @@ func TestLimitedBuffer(t *testing.T) {
 
 // TestExtractUsageAndCost_SSE verifies that token usage is extracted from SSE
 // response bodies. This is the unit test for the fix that decouples usage extraction
-// from flow.ResponseBody (which is nil when RawBodyStorage is OFF — the default).
+// from flow.ResponseBody (which may be nil when body storage is disabled).
 func TestExtractUsageAndCost_SSE(t *testing.T) {
 	t.Parallel()
 
@@ -1133,7 +1131,7 @@ func TestExtractUsageAndCost_EmptyBody(t *testing.T) {
 
 // TestExtractUsageAndCost_DecoupledFromResponseBody proves the core fix:
 // extractUsageAndCost works with a []byte body parameter, independent of
-// flow.ResponseBody. With RawBodyStorage=false, ResponseBody is nil but
+// flow.ResponseBody. When body storage is disabled, ResponseBody is nil but
 // tokens must still be extracted from the captured buffer.
 func TestExtractUsageAndCost_DecoupledFromResponseBody(t *testing.T) {
 	t.Parallel()
@@ -1145,7 +1143,7 @@ func TestExtractUsageAndCost_DecoupledFromResponseBody(t *testing.T) {
 		"event: message_delta\n" +
 		"data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":250}}\n\n")
 
-	// Simulate RawBodyStorage=false: flow.ResponseBody is nil
+	// Simulate body storage disabled: flow.ResponseBody is nil
 	flow := &store.Flow{IsSSE: true, ResponseBody: nil}
 	prov := provider.NewRegistry().Get("anthropic")
 

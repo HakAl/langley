@@ -113,7 +113,7 @@ redaction:
     - "^x-.*-key$"
   redact_api_keys: true       # Masks sk-*, AKIA*, AIza* patterns
   redact_base64_images: true  # Replaces images with placeholders
-  raw_body_storage: false     # Keep OFF unless you need forensic data
+  disable_body_storage: false  # Set to true to stop storing bodies
 
 retention:
   flows_ttl_days: 30

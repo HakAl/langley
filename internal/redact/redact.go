@@ -210,10 +210,9 @@ func (r *Redactor) RedactBodyBytes(body []byte) []byte {
 	return []byte(r.RedactBody(string(body)))
 }
 
-// ShouldStoreRawBody returns whether raw body storage is enabled.
-// This is OFF by default for security (addresses langley-oy9).
-func (r *Redactor) ShouldStoreRawBody() bool {
-	return r.cfg.RawBodyStorage
+// ShouldStoreBody returns whether body storage is enabled (default: true).
+func (r *Redactor) ShouldStoreBody() bool {
+	return !r.cfg.DisableBodyStorage
 }
 
 // HeadersToMap converts http.Header to a map for JSON serialization.

@@ -73,9 +73,9 @@ type RetentionConfig struct {
 type RedactionConfig struct {
 	AlwaysRedactHeaders []string `yaml:"always_redact_headers"`
 	PatternRedactHeaders []string `yaml:"pattern_redact_headers"`
-	RedactAPIKeys       bool     `yaml:"redact_api_keys"`
-	RedactBase64Images  bool     `yaml:"redact_base64_images"`
-	RawBodyStorage      bool     `yaml:"raw_body_storage"` // Default OFF per security spec
+	RedactAPIKeys        bool `yaml:"redact_api_keys"`
+	RedactBase64Images   bool `yaml:"redact_base64_images"`
+	DisableBodyStorage   bool `yaml:"disable_body_storage"`
 }
 
 // AuthConfig configures API authentication.
@@ -127,7 +127,6 @@ func DefaultConfig() *Config {
 			},
 			RedactAPIKeys:      true,
 			RedactBase64Images: true,
-			RawBodyStorage:     false, // Security: OFF by default
 		},
 		Auth: AuthConfig{
 			Token: "", // Generated on first run if empty

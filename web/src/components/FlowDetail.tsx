@@ -1,5 +1,6 @@
 import type { Flow } from '../types'
 import { formatTime, formatDate, formatCost, formatDuration, getStatusClass } from '../utils'
+import { BodyViewer } from './BodyViewer'
 
 interface FlowDetailProps {
   flow: Flow
@@ -60,12 +61,14 @@ export function FlowDetail({ flow, onClose }: FlowDetailProps) {
         </div>
       </div>
 
-      {flow.response_body && (
-        <div className="body-section">
-          <h3>Response Body</h3>
-          <pre className="body-content">{flow.response_body}</pre>
-        </div>
-      )}
+      <BodyViewer
+        requestBody={flow.request_body}
+        responseBody={flow.response_body}
+        requestTruncated={flow.request_body_truncated}
+        responseTruncated={flow.response_body_truncated}
+        requestHeaders={flow.request_headers}
+        responseHeaders={flow.response_headers}
+      />
     </div>
   )
 }

@@ -234,8 +234,7 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.redactor != nil {
 		flow.RequestHeaders = redact.HeadersToMap(p.redactor.RedactHeaders(r.Header))
-		// Only store body if RawBodyStorage is enabled (default: OFF for security)
-		if p.redactor.ShouldStoreRawBody() && len(storedBody) > 0 {
+		if p.redactor.ShouldStoreBody() && len(storedBody) > 0 {
 			redacted := p.redactor.RedactBody(string(storedBody))
 			flow.RequestBody = &redacted
 		}
@@ -273,6 +272,9 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	copyHeaders(outReq.Header, r.Header)
 	removeHopByHopHeaders(outReq.Header)
+	// Strip Accept-Encoding so upstream sends uncompressed responses.
+	// The proxy needs plaintext to store readable bodies and parse usage/SSE.
+	outReq.Header.Del("Accept-Encoding")
 
 	resp, err := p.client.Do(outReq)
 	if err != nil {
@@ -322,8 +324,7 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Finalize flow
 	if p.redactor != nil {
 		flow.ResponseHeaders = redact.HeadersToMap(p.redactor.RedactHeaders(resp.Header))
-		// Only store body if RawBodyStorage is enabled (default: OFF for security)
-		if p.redactor.ShouldStoreRawBody() && respBody.Len() > 0 {
+		if p.redactor.ShouldStoreBody() && respBody.Len() > 0 {
 			redacted := p.redactor.RedactBody(respBody.String())
 			flow.ResponseBody = &redacted
 		}
@@ -336,8 +337,7 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	flow.ResponseBodyTruncated = limitedWriter.truncated
 
-	// Detect provider and extract usage from captured body (not from flow.ResponseBody,
-	// which may be nil when RawBodyStorage is OFF)
+	// Detect provider and extract usage from captured body
 	if prov := p.providers.Detect(r.Host); prov != nil {
 		flow.Provider = prov.Name()
 		if respBody.Len() > 0 {
@@ -565,8 +565,7 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 	}
 	if p.redactor != nil {
 		flow.RequestHeaders = redact.HeadersToMap(p.redactor.RedactHeaders(r.Header))
-		// Only store body if RawBodyStorage is enabled (default: OFF for security)
-		if p.redactor.ShouldStoreRawBody() && len(storedBody) > 0 {
+		if p.redactor.ShouldStoreBody() && len(storedBody) > 0 {
 			redacted := p.redactor.RedactBody(string(storedBody))
 			flow.RequestBody = &redacted
 		}
@@ -608,6 +607,9 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 	}
 	copyHeaders(outReq.Header, r.Header)
 	removeHopByHopHeaders(outReq.Header)
+	// Strip Accept-Encoding so upstream sends uncompressed responses.
+	// The proxy needs plaintext to store readable bodies and parse usage/SSE.
+	outReq.Header.Del("Accept-Encoding")
 
 	// Write request to upstream
 	if err := outReq.Write(upstreamConn); err != nil {
@@ -707,8 +709,7 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 	// Finalize flow
 	if p.redactor != nil {
 		flow.ResponseHeaders = redact.HeadersToMap(p.redactor.RedactHeaders(resp.Header))
-		// Only store body if RawBodyStorage is enabled (default: OFF for security)
-		if p.redactor.ShouldStoreRawBody() && respBody.Len() > 0 {
+		if p.redactor.ShouldStoreBody() && respBody.Len() > 0 {
 			redacted := p.redactor.RedactBody(respBody.String())
 			flow.ResponseBody = &redacted
 		}
@@ -791,7 +792,6 @@ func (p *MITMProxy) saveFlow(flow *store.Flow) {
 
 // extractUsageAndCost parses usage data from the captured response body and calculates cost.
 // The body parameter is the raw captured response — independent of whether it's stored on the flow.
-// This decoupling ensures tokens are extracted even when RawBodyStorage is OFF.
 func (p *MITMProxy) extractUsageAndCost(ctx context.Context, flow *store.Flow, prov provider.Provider, body []byte) {
 	if len(body) == 0 {
 		return

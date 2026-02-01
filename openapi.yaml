@@ -749,12 +749,12 @@ components:
               type: integer
             request_body:
               type: string
-              description: Request body (if raw_body_storage enabled)
+              description: Request body (unless disable_body_storage is set)
             request_body_truncated:
               type: boolean
             response_body:
               type: string
-              description: Response body (if raw_body_storage enabled)
+              description: Response body (unless disable_body_storage is set)
             response_body_truncated:
               type: boolean
             request_headers:

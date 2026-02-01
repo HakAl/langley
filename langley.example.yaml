@@ -44,7 +44,7 @@ redaction:
     - "^x-.*-key$"
   redact_api_keys: true
   redact_base64_images: true
-  raw_body_storage: false  # SECURITY: Keep this OFF unless you need forensic data
+  disable_body_storage: false  # Set to true to stop storing request/response bodies
 
 auth:
   # token: auto-generated on first run if not set

@@ -23,7 +23,7 @@ func testConfig() *config.RedactionConfig {
 		},
 		RedactAPIKeys:      true,
 		RedactBase64Images: true,
-		RawBodyStorage:     false,
+		DisableBodyStorage: false,
 	}
 }
 
@@ -421,23 +421,23 @@ func TestRedactBodyBytes(t *testing.T) {
 	}
 }
 
-// TestShouldStoreRawBody verifies raw body storage config.
-func TestShouldStoreRawBody(t *testing.T) {
+// TestShouldStoreBody verifies body storage config.
+func TestShouldStoreBody(t *testing.T) {
 	tests := []struct {
 		name    string
-		rawBody bool
+		disable bool
 		want    bool
 	}{
-		{"disabled by default", false, false},
-		{"enabled when configured", true, true},
+		{"enabled by default", false, true},
+		{"disabled when configured", true, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config.RedactionConfig{RawBodyStorage: tt.rawBody}
+			cfg := &config.RedactionConfig{DisableBodyStorage: tt.disable}
 			r, _ := New(cfg)
-			if got := r.ShouldStoreRawBody(); got != tt.want {
-				t.Errorf("ShouldStoreRawBody() = %v, want %v", got, tt.want)
+			if got := r.ShouldStoreBody(); got != tt.want {
+				t.Errorf("ShouldStoreBody() = %v, want %v", got, tt.want)
 			}
 		})
 	}
