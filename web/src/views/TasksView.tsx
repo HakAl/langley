@@ -38,7 +38,15 @@ export function TasksView({ tasks, selectedIndex, onTaskSelect }: TasksViewProps
             <tr
               key={task.task_id}
               className={index === selectedIndex ? 'keyboard-selected' : ''}
+              tabIndex={index === selectedIndex ? 0 : -1}
+              aria-selected={index === selectedIndex}
               onClick={() => onTaskSelect(task.task_id)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onTaskSelect(task.task_id)
+                }
+              }}
               ref={el => {
                 if (index === selectedIndex && el) {
                   el.scrollIntoView({ block: 'nearest' })

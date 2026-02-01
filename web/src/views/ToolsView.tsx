@@ -35,6 +35,8 @@ export function ToolsView({ tools, selectedIndex }: ToolsViewProps) {
             <tr
               key={tool.tool_name}
               className={index === selectedIndex ? 'keyboard-selected' : ''}
+              tabIndex={index === selectedIndex ? 0 : -1}
+              aria-selected={index === selectedIndex}
               ref={el => {
                 if (index === selectedIndex && el) {
                   el.scrollIntoView({ block: 'nearest' })

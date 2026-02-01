@@ -11,7 +11,7 @@ export function FlowDetail({ flow, onClose }: FlowDetailProps) {
     <div className="flow-detail">
       <div className="detail-header">
         <h2>{flow.method} {flow.path}</h2>
-        <button className="close-btn" onClick={onClose}>×</button>
+        <button className="close-btn" onClick={onClose} aria-label="Close flow detail">×</button>
       </div>
 
       <div className="detail-grid">
