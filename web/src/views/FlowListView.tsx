@@ -142,13 +142,13 @@ export function FlowListView({
               <div className="tokens">
                 {flow.input_tokens != null && (
                   <span className="token-count">
-                    <span style={{ color: 'var(--accent)' }}>↓</span>
+                    <span className="token-arrow-in">↓</span>
                     {flow.input_tokens.toLocaleString()}
                   </span>
                 )}
                 {flow.output_tokens != null && (
                   <span className="token-count">
-                    <span style={{ color: 'var(--success)' }}>↑</span>
+                    <span className="token-arrow-out">↑</span>
                     {flow.output_tokens.toLocaleString()}
                   </span>
                 )}

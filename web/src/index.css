@@ -404,6 +404,9 @@ header h1 {
   gap: 0.25rem;
 }
 
+.token-arrow-in { color: var(--accent); }
+.token-arrow-out { color: var(--success); }
+
 .timestamp {
   font-size: 0.75rem;
   color: var(--text-muted);
@@ -1178,6 +1181,13 @@ header h1 {
 .flow-item.keyboard-selected,
 .anomaly-item.keyboard-selected,
 .data-table tbody tr.keyboard-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.flow-item:focus-visible,
+.anomaly-item:focus-visible,
+.data-table tbody tr:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }

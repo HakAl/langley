@@ -15,10 +15,26 @@
       }
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background: #161618;
-        color: #ffffff;
+        background: #111318;
+        color: #f0f0f4;
+      }
+      @media (prefers-color-scheme: light) {
+        body {
+          background: #eeeef4;
+          color: #111318;
+        }
       }
     </style>
+    <script>
+      // Blocking theme init — runs before first paint to prevent flash.
+      // Reads stored preference or falls back to system preference.
+      (function() {
+        var t = localStorage.getItem('langley_theme');
+        if (t !== 'dark' && t !== 'light')
+          t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', t);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
