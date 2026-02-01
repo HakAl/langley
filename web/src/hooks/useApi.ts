@@ -31,8 +31,16 @@ export function useApi() {
     return apiFetch<TaskSummary[]>('/api/analytics/tasks')
   }, [apiFetch])
 
-  const fetchTools = useCallback(async () => {
-    return apiFetch<ToolStats[]>('/api/analytics/tools')
+  const fetchTools = useCallback(async (days?: number) => {
+    const end = new Date()
+    const start = days != null
+      ? new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
+      : new Date(0)
+    const params = new URLSearchParams({
+      start: start.toISOString(),
+      end: end.toISOString()
+    })
+    return apiFetch<ToolStats[]>(`/api/analytics/tools?${params}`)
   }, [apiFetch])
 
   const fetchAnomalies = useCallback(async () => {

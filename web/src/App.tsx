@@ -38,6 +38,7 @@ function App() {
   const [hostFilter, setHostFilter] = useState('')
   const [taskFilter, setTaskFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'error'>('all')
+  const [toolsTimeRange, setToolsTimeRange] = useState<number | null>(30)
 
   const api = useApi()
 
@@ -87,13 +88,13 @@ function App() {
     } else if (view === 'tasks') {
       api.fetchTasks().then(({ data, error }) => { if (data) setTasks(data); showError(error) })
     } else if (view === 'tools') {
-      api.fetchTools().then(({ data, error }) => { if (data) setTools(data); showError(error) })
+      api.fetchTools(toolsTimeRange ?? undefined).then(({ data, error }) => { if (data) setTools(data); showError(error) })
     } else if (view === 'anomalies') {
       api.fetchAnomalies().then(({ data, error }) => { if (data) setAnomalies(data); showError(error) })
     } else if (view === 'settings') {
       api.fetchSettings().then(({ data, error }) => { if (data) setSettings(data); showError(error) })
     }
-  }, [view, api.fetchStats, api.fetchDailyCosts, api.fetchTasks, api.fetchTools, api.fetchAnomalies, api.fetchSettings])
+  }, [view, toolsTimeRange, api.fetchStats, api.fetchDailyCosts, api.fetchTasks, api.fetchTools, api.fetchAnomalies, api.fetchSettings])
 
   // Theme
   useEffect(() => {
@@ -186,7 +187,7 @@ function App() {
             {view === 'flows' && <FlowListView flows={flows} filteredFlows={filteredFlows} totalFlows={stats?.total_flows} initialLoading={initialLoading} selectedFlowId={selectedFlow?.id ?? null} selectedIndex={selectedIndex} hostFilter={hostFilter} taskFilter={taskFilter} statusFilter={statusFilter} onHostFilterChange={setHostFilter} onTaskFilterChange={setTaskFilter} onStatusFilterChange={setStatusFilter} onFlowSelect={handleFlowSelect} onStartExport={handleStartExport} />}
             {view === 'analytics' && <AnalyticsView stats={stats} dailyCosts={dailyCosts} />}
             {view === 'tasks' && <TasksView tasks={tasks} selectedIndex={selectedIndex} onTaskSelect={(id) => { setTaskFilter(id); navigateTo('flows') }} />}
-            {view === 'tools' && <ToolsView tools={tools} selectedIndex={selectedIndex} />}
+            {view === 'tools' && <ToolsView tools={tools} selectedIndex={selectedIndex} timeRange={toolsTimeRange} onTimeRangeChange={setToolsTimeRange} />}
             {view === 'anomalies' && <AnomaliesView anomalies={anomalies} selectedIndex={selectedIndex} onViewFlow={(id) => { handleFlowSelect(id); navigateTo('flows') }} />}
             {view === 'settings' && <SettingsView settings={settings} onSave={handleSaveSettings} />}
           </div>
