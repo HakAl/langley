@@ -1,166 +1,143 @@
 # Langley
 
-An intercepting proxy for LLM API traffic with persistence, real-time monitoring, and analytics. Supports Anthropic, OpenAI, AWS Bedrock, and Google Gemini.
+An intercepting proxy that captures LLM API traffic, tracks costs, and surfaces anomalies. Supports Anthropic, OpenAI, AWS Bedrock, and Google Gemini.
 
-## Overview
+## What It Does
 
-Langley sits between your application and LLM APIs, capturing all traffic for debugging, cost tracking, and analysis. It provides:
+Langley sits between your application and LLM provider APIs. Every request and response passes through, gets stored in SQLite, and appears in a real-time dashboard. Nothing reaches your agent that didn't come through the provider, and nothing leaves without being recorded.
 
-- **Multi-Provider Support** - Anthropic, OpenAI, AWS Bedrock, Google Gemini
-- **Real-time Dashboard** - WebSocket-powered flow viewer with instant updates
-- **Token & Cost Tracking** - Per-request and per-task cost breakdown
-- **TLS Interception** - Transparent MITM proxy with dynamic certificates
-- **Credential Redaction** - API keys and sensitive data never hit disk
-- **Anomaly Detection** - Alerts for large contexts, slow responses, rapid retries
-- **Task Grouping** - Group related requests by task boundary detection
-- **Export** - Download flows as NDJSON, JSON, or CSV
+```
+Your App  --HTTPS-->  Langley Proxy  --HTTPS-->  LLM API
+                          |
+                       SQLite
+                          |
+                   WebSocket --> Dashboard
+```
+
+**Why this exists:** LLM agents make opaque, expensive API calls. Langley makes them visible. You see what your agent sends, what it gets back, what it costs, and where it wastes tokens.
 
 ## Quick Start
 
-### 1. Build
-
 ```bash
+# 1. Build
 go build -o langley ./cmd/langley
-```
 
-### 2. Trust the CA Certificate
-
-On first run, Langley generates a CA certificate. Install it to your system trust store:
-
-```bash
+# 2. Trust the CA certificate (one-time)
 langley setup
-```
 
-This auto-detects your OS and installs the CA. For manual instructions, run `langley setup --no-mkcert`.
-
-### 3. Start Langley
-
-```bash
+# 3. Start
 ./langley
-```
 
-You'll see output like:
-```
-  Proxy:     http://localhost:9090
-  API:       http://localhost:9091
-  WebSocket: ws://localhost:9091/ws
-  CA:        ~/.config/langley/certs/ca.crt
-  DB:        ~/.config/langley/langley.db
-  Token:     langley_abc123...
-```
-
-### 4. Run Your Agent
-
-Use `langley run` to launch any command with proxy environment pre-configured:
-
-```bash
+# 4. Run your agent through the proxy
 langley run claude
 langley run python script.py
-langley run curl https://api.anthropic.com/v1/messages
 ```
 
-This reads the running server's address and sets `HTTPS_PROXY`, `HTTP_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, and `REQUESTS_CA_BUNDLE` automatically.
+Open `http://localhost:9091` and enter the auth token shown at startup.
 
-Or set environment variables manually:
+`langley run` sets `HTTPS_PROXY`, `HTTP_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, and `REQUESTS_CA_BUNDLE` automatically. Or set them yourself:
 
 ```bash
 # Unix
-export HTTP_PROXY=http://localhost:9090
 export HTTPS_PROXY=http://localhost:9090
 
 # PowerShell
-$env:HTTP_PROXY = "http://localhost:9090"
 $env:HTTPS_PROXY = "http://localhost:9090"
 ```
 
-### 5. Open the Dashboard
+## Dashboard
 
-Navigate to `http://localhost:9091` and enter your auth token (shown at startup).
+Six views, all fed by real-time WebSocket updates:
 
-## Features
+| View | What you see |
+|------|-------------|
+| **Flows** | Every request/response with method, host, path, status, tokens, cost. Click to inspect headers and bodies. Filter by host, task, or status. |
+| **Analytics** | Total cost, token counts, daily cost chart. The numbers that answer "how much did that session cost?" |
+| **Tasks** | Flows grouped by task. See token usage and cost per logical unit of work, not just per request. |
+| **Tools** | Tool invocation stats: call counts, success rates, average duration. Find the tools that fail or drag. |
+| **Anomalies** | Flagged events: large contexts (>100k tokens), slow responses (>30s), rapid retries, high-cost requests (>$1), tool failures. |
+| **Settings** | Configure task idle gap. |
 
-### Real-time Flow Monitoring
-- Watch requests flow through in real-time via WebSocket
-- Click any flow to see full request/response details
-- Filter by host, task, or status code
-- Keyboard navigation (j/k to move, Enter to select, / to search)
-- Dark/light theme toggle
+Keyboard navigation: `j`/`k` to move, `Enter` to select, `Esc` to close, `?` for help. Dark/light theme toggle in the header.
 
-### Analytics Dashboard
-- Total cost, tokens, and request counts
-- Daily cost chart
-- Per-task breakdown with token usage
-- Tool invocation statistics with success rates
+## How Task Grouping Works
 
-### Anomaly Detection
-Langley automatically flags:
-- **Large Context** - Input tokens exceeding threshold (default: 100k)
-- **Slow Responses** - Requests taking longer than threshold (default: 30s)
-- **Rapid Repeats** - Multiple similar requests in short window (possible retries)
-- **High Cost** - Single requests costing more than threshold (default: $1)
-- **Tool Failures** - Failed tool invocations
-- **Dropped Events** - Events lost due to backpressure
+Langley groups related requests into tasks using a layered strategy:
 
-### Task Grouping
-Langley groups related requests into tasks using:
-1. **Explicit** - `X-Langley-Task` header
-2. **Metadata** - User ID from request body
-3. **Inferred** - Same host with 5-minute idle gap
+1. **Explicit header** -- `X-Langley-Task` on the request
+2. **Request metadata** -- User ID from the request body
+3. **Inferred** -- Same host, gap of less than 5 minutes between requests
+
+Inferred tasks are marked `task_source: 'inferred'` so you can filter them in analytics.
+
+## Anomaly Detection
+
+Langley flags unusual patterns automatically:
+
+| Anomaly | Default Threshold | What it catches |
+|---------|------------------|-----------------|
+| Large context | >100k input tokens | Runaway context windows |
+| Slow response | >30s | Stuck or overloaded endpoints |
+| Rapid repeats | >5 calls in 10s | Retry loops |
+| High cost | >$1 per request | Expensive single calls |
+| Tool failures | Any failure | Broken tool integrations |
+| Dropped events | Any drop | Backpressure in the proxy pipeline |
+
+All thresholds are configurable in `langley.yaml`.
 
 ## Configuration
 
-Langley uses YAML configuration with environment variable overrides.
+YAML config with environment variable overrides. Config file locations:
 
-### Config File Locations
-- **Windows**: `%APPDATA%\langley\langley.yaml`
 - **Unix**: `~/.config/langley/langley.yaml`
-
-### Example Configuration
+- **Windows**: `%APPDATA%\langley\langley.yaml`
 
 ```yaml
-# Proxy settings
 proxy:
   listen: "localhost:9090"
 
-# Authentication
 auth:
   token: "your-secret-token"  # Auto-generated if not set
 
-# Data persistence
 persistence:
-  db_path: "langley.db"
-  body_max_bytes: 1048576  # 1MB
+  body_max_bytes: 1048576     # 1MB max body storage per flow
 
-# Credential redaction
 redaction:
-  always_redact_headers:     # Headers always redacted
-    - "authorization"
-    - "x-api-key"
-    - "cookie"
-    - "set-cookie"
-  pattern_redact_headers:    # Regex patterns for headers
+  always_redact_headers:
+    - authorization
+    - x-api-key
+    - cookie
+    - set-cookie
+  pattern_redact_headers:
     - "^x-.*-token$"
     - "^x-.*-key$"
-  redact_api_keys: true      # Redact sk-*, AKIA*, AIza* patterns in body
-  redact_base64_images: true # Replace base64 images with placeholders
-  raw_body_storage: false    # Store redacted bodies (security: keep OFF)
+  redact_api_keys: true       # Masks sk-*, AKIA*, AIza* patterns
+  redact_base64_images: true  # Replaces images with placeholders
+  raw_body_storage: false     # Keep OFF unless you need forensic data
 
-# Data retention
 retention:
   flows_ttl_days: 30
   events_ttl_days: 7
   drop_log_ttl_days: 1
+
+analytics:
+  anomaly_context_tokens: 100000
+  anomaly_tool_delay_ms: 30000
+  anomaly_rapid_calls_window_s: 10
+  anomaly_rapid_calls_threshold: 5
 ```
+
+See `langley.example.yaml` for the full annotated config.
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `LANGLEY_LISTEN` | Proxy listen address (e.g., `localhost:9090`) |
-| `LANGLEY_AUTH_TOKEN` | API authentication token |
-| `LANGLEY_DB_PATH` | Database file path |
+| Variable | Overrides |
+|----------|-----------|
+| `LANGLEY_LISTEN` | `proxy.listen` |
+| `LANGLEY_AUTH_TOKEN` | `auth.token` |
+| `LANGLEY_DB_PATH` | `persistence.db_path` |
 
-**Note**: Relative paths in `LANGLEY_DB_PATH` are relative to the current working directory. When running as a Windows service, use absolute paths or set the service's "Start in" directory.
+Relative paths in `LANGLEY_DB_PATH` resolve from the working directory. Use absolute paths when running as a service.
 
 ## CLI Reference
 
@@ -169,94 +146,96 @@ langley [OPTIONS]
 langley <command> [args]
 
 COMMANDS:
-    run <cmd> [args]  Run a command with proxy environment configured
-    setup             Install CA certificate to system trust store
-    token show        Show the current auth token
-    token rotate      Generate a new auth token
+  run <cmd> [args]    Run a command with proxy environment configured
+  setup               Install CA certificate to system trust store
+  token show          Show the current auth token
+  token rotate        Generate a new auth token
 
 OPTIONS:
-    -config <path>    Path to configuration file
-    -listen <addr>    Proxy listen address (default: from config or localhost:9090)
-    -api <addr>       API/WebSocket server address (default: localhost:9091)
-    -version          Show version information
-    -show-ca          Show CA certificate path and trust instructions
-    -help             Show this help message
+  -config <path>      Path to configuration file
+  -listen <addr>      Proxy listen address (default: localhost:9090)
+  -api <addr>         API server address (default: localhost:9091)
+  -version            Show version information
+  -show-ca            Show CA certificate path and trust instructions
+  -help               Show help
 ```
 
-## API Endpoints
+## API
 
-All endpoints require `Authorization: Bearer <token>` header.
+All endpoints require `Authorization: Bearer <token>`. Rate limited to 20 req/sec sustained, 100 burst.
 
 ### Flows
-- `GET /api/flows` - List flows (supports `?limit=`, `?host=`, `?task_id=`, `?model=`)
-- `GET /api/flows/{id}` - Get flow details
-- `GET /api/flows/{id}/events` - Get SSE events for a flow
-- `GET /api/flows/{id}/anomalies` - Get anomalies for a flow
-- `GET /api/flows/export` - Export flows (`?format=ndjson|json|csv`, `?max_rows=`, `?include_bodies=true`)
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/flows` | List flows. Params: `limit`, `host`, `task_id`, `model` |
+| `GET /api/flows/{id}` | Single flow with full detail |
+| `GET /api/flows/{id}/events` | SSE events for a streaming flow |
+| `GET /api/flows/{id}/anomalies` | Anomalies linked to a flow |
+| `GET /api/flows/export` | Export. Params: `format` (ndjson/json/csv), `max_rows`, `include_bodies` |
+| `GET /api/flows/count` | Count flows matching filters |
 
 ### Analytics
-- `GET /api/stats` - Overall statistics
-- `GET /api/analytics/tasks` - Task summaries
-- `GET /api/analytics/tasks/{id}` - Single task details
-- `GET /api/analytics/tools` - Tool usage statistics
-- `GET /api/analytics/cost/daily` - Daily cost breakdown
-- `GET /api/analytics/cost/model` - Cost by model
-- `GET /api/analytics/anomalies` - Recent anomalies
 
-### WebSocket
-- `ws://localhost:9091/ws?token=<token>` - Real-time flow updates
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/stats` | Overall statistics |
+| `GET /api/analytics/tasks` | Per-task summaries |
+| `GET /api/analytics/tasks/{id}` | Single task detail |
+| `GET /api/analytics/tools` | Tool invocation stats |
+| `GET /api/analytics/cost/daily` | Daily cost breakdown |
+| `GET /api/analytics/cost/model` | Cost by model |
+| `GET /api/analytics/anomalies` | Recent anomalies |
+
+### System
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/health` | Health check (no auth required) |
+| `GET /api/settings` | Current settings |
+| `PUT /api/settings` | Update settings |
+| `WS /ws` | Real-time flow updates. Auth via `token` query param. |
+
+Full API spec in `openapi.yaml`.
 
 ## Security
 
-### Credential Redaction
-- Authorization headers, API keys, and cookies are redacted before storage
+**Credential redaction** happens on write. Sensitive data never reaches disk:
+- Authorization headers, API keys, cookies stripped before storage
+- Body patterns (`sk-ant-*`, `sk-*`, `AKIA*`, `AIza*`) masked
+- Base64 images replaced with `[IMAGE base64 redacted]`
 - Configurable patterns for custom secrets
-- Base64-encoded images are replaced with placeholders
 
-### TLS Security
-- Upstream TLS certificates are validated by default
-- CA private key uses 0600 permissions
-- Certificates use random serial numbers
+**TLS**: Upstream certificates validated by default. CA private key at 0600 permissions. Certificates use random serial numbers.
 
-### Authentication
-- All API endpoints require bearer token authentication
-- WebSocket connections validate origin (localhost only)
-- Tokens are auto-generated and stored securely
+**Authentication**: Bearer token on all API endpoints. WebSocket validates localhost origin. Tokens auto-generated and stored in config.
+
+**Network**: Proxy and API bind to localhost only. No remote access by default.
 
 ## Architecture
 
-```
-Client -> [HTTPS] -> Langley Proxy -> [HTTPS] -> LLM API
-                          |
-                          v
-                     SQLite DB
-                          |
-                          v
-              WebSocket -> Dashboard
-```
+- **Go backend** -- MITM proxy, REST API, WebSocket server, analytics engine
+- **SQLite** -- WAL mode, async batch writes, TTL-based retention, hourly cleanup
+- **React frontend** -- Vite build, WebSocket for live updates, hash-based routing
 
-- **Go Backend** - HTTP/TLS proxy, REST API, WebSocket server
-- **SQLite** - WAL mode, async writes, TTL-based retention
-- **React Frontend** - Real-time updates, responsive design
+Provider detection is pluggable. Each provider (Anthropic, OpenAI, Bedrock, Gemini) implements host detection and response parsing through a common interface.
+
+See `docs/ARCHITECTURE.md` for internals: data flow, store interface, extension points.
 
 ## Development
 
 ```bash
-# Install dependencies
-make install-deps
-
-# Run in development mode (backend + frontend with hot reload)
-make dev
-
-# Run tests
-make test
-
-# Build for production
-make build
-
-# Stop dev servers (Windows: use after Ctrl+C)
-make stop
+make install-deps   # Go modules + npm install (first time)
+make dev            # Backend + Vite dev server with hot reload
+make test           # All tests with race detector
+make check          # Lint + test (quality gate)
+make build          # Production binary + frontend bundle
+make stop           # Kill orphaned dev processes (Windows Ctrl+C workaround)
 ```
+
+Dashboard at `http://localhost:5173` during development. Proxy at `localhost:9090`.
+
+Frontend tests use Playwright. Backend tests use Go's race detector.
 
 ## License
 

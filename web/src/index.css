@@ -1,17 +1,19 @@
 /* CIA.gov-inspired dark theme (default) */
 :root {
-  --bg-primary: #161618;
-  --bg-secondary: #1a1a1c;
-  --bg-tertiary: #242426;
-  --text-primary: #ffffff;
-  --text-secondary: #efeff3;
-  --text-muted: #8a8a8e;
+  --bg-primary: #111318;
+  --bg-secondary: #161820;
+  --bg-tertiary: #1e2028;
+  --text-primary: #f0f0f4;
+  --text-secondary: #c8c8d0;
+  --text-muted: #9a9aaa;
   --accent: #e21a41;
   --accent-hover: #c41535;
+  --accent-dim: color-mix(in srgb, var(--accent) 8%, transparent);
   --success: #22c55e;
   --warning: #f59e0b;
   --error: #ef4444;
-  --border: #ffffff;
+  --border: #2a2c38;
+  --border-strong: #3a3c4a;
   --info: #06b6d4;
   --sse: #8b5cf6;
   --error-bg: color-mix(in srgb, var(--error) 10%, transparent);
@@ -19,18 +21,20 @@
 
 /* Light theme */
 [data-theme="light"] {
-  --bg-primary: #efeff3;
+  --bg-primary: #eeeef4;
   --bg-secondary: #ffffff;
-  --bg-tertiary: #e5e5e9;
-  --text-primary: #161618;
-  --text-secondary: #4a4a4e;
-  --text-muted: #595960;
+  --bg-tertiary: #e2e2ea;
+  --text-primary: #111318;
+  --text-secondary: #3a3a44;
+  --text-muted: #5a5a6a;
   --accent: #e21a41;
   --accent-hover: #c41535;
+  --accent-dim: color-mix(in srgb, var(--accent) 6%, transparent);
   --success: #16a34a;
   --warning: #d97706;
   --error: #dc2626;
-  --border: #d0d0d4;
+  --border: #c8c8d4;
+  --border-strong: #a8a8b8;
   --info: #0891b2;
   --sse: #8b5cf6;
   --error-bg: color-mix(in srgb, var(--error) 10%, transparent);
@@ -69,7 +73,7 @@ header {
   align-items: center;
   padding: 0.75rem 1rem;
   background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 2px solid var(--accent);
   gap: 1rem;
 }
 
@@ -83,7 +87,8 @@ header h1 {
   font-size: 1.5rem;
   font-weight: 700;
   margin: 0;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .header-logo {
@@ -322,26 +327,31 @@ header h1 {
   background: var(--bg-secondary);
   border-radius: 0;
   border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .flow-item:hover {
   background: var(--bg-tertiary);
+  border-left-color: var(--text-muted);
 }
 
 .flow-item.selected {
   border-color: var(--accent);
-  background: var(--bg-tertiary);
+  border-left-color: var(--accent);
+  background: var(--accent-dim);
 }
 
 .method {
   font-family: monospace;
   font-weight: 600;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   padding: 0.25rem 0.5rem;
   border-radius: 0;
   background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  letter-spacing: 0.04em;
 }
 
 .method.GET { color: var(--success); }
@@ -408,13 +418,14 @@ header h1 {
 
 /* Badge */
 .badge {
-  font-size: 0.625rem;
+  font-size: 0.5625rem;
   padding: 0.125rem 0.375rem;
   border-radius: 0;
   background: var(--accent);
   color: white;
   text-transform: uppercase;
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: 0.06em;
 }
 
 .badge.sse { background: var(--sse); }
@@ -425,12 +436,17 @@ header h1 {
 .empty-state {
   text-align: center;
   padding: 4rem 2rem;
-  color: var(--text-secondary);
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  background: var(--bg-secondary);
 }
 
 .empty-state h2 {
-  font-size: 1.25rem;
+  font-size: 1rem;
   margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
 }
 
 /* Token input */
@@ -516,16 +532,18 @@ header h1 {
   justify-content: space-between;
   align-items: center;
   padding: 1rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 2px solid var(--accent);
   background: var(--bg-tertiary);
 }
 
 .detail-header h2 {
-  font-size: 1rem;
+  font-size: 0.875rem;
   margin: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .close-btn {
@@ -566,14 +584,18 @@ header h1 {
   padding: 1rem;
   background: var(--bg-primary);
   border-radius: 0;
+  border-left: 3px solid var(--accent);
 }
 
 .detail-section h3 {
-  font-size: 0.875rem;
-  color: var(--text-secondary);
+  font-size: 0.75rem;
+  color: var(--text-muted);
   margin: 0 0 0.75rem 0;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
 }
 
 .detail-row {
@@ -652,21 +674,30 @@ header h1 {
 .stat-card {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
+  border-top: 3px solid var(--accent);
   border-radius: 0;
   padding: 1.5rem;
   text-align: center;
+  transition: border-color 0.2s;
+}
+
+.stat-card:hover {
+  border-top-color: var(--accent-hover);
 }
 
 .stat-value {
   font-size: 2rem;
   font-weight: 700;
+  font-family: monospace;
   color: var(--accent);
 }
 
 .stat-label {
-  font-size: 1rem;
-  color: var(--text-secondary);
+  font-size: 0.75rem;
+  color: var(--text-muted);
   margin-top: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 /* Chart */
@@ -679,8 +710,12 @@ header h1 {
 
 .chart-section h3 {
   margin: 0 0 1rem 0;
-  font-size: 1.125rem;
-  color: var(--text-secondary);
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
 }
 
 .chart-bars {
@@ -759,10 +794,12 @@ header h1 {
 
 .data-table th {
   background: var(--bg-tertiary);
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary);
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  font-weight: 600;
+  border-bottom: 2px solid var(--border-strong);
 }
 
 .data-table tbody tr {
@@ -800,10 +837,12 @@ header h1 {
 
 .anomaly-item.error {
   border-left: 4px solid var(--error);
+  background: color-mix(in srgb, var(--error) 4%, var(--bg-secondary));
 }
 
 .anomaly-item.warning {
   border-left: 4px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 4%, var(--bg-secondary));
 }
 
 .anomaly-item.info {
@@ -944,7 +983,9 @@ header h1 {
 
 .settings-view h2 {
   margin: 0 0 1.5rem 0;
-  font-size: 1.5rem;
+  font-size: 1.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .settings-section {
@@ -1144,12 +1185,14 @@ header h1 {
   justify-content: space-between;
   align-items: center;
   padding: 1rem 1.25rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 2px solid var(--accent);
 }
 
 .help-header h2 {
   margin: 0;
-  font-size: 1.125rem;
+  font-size: 0.9375rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .help-table {
