@@ -32,9 +32,10 @@ type TaskConfig struct {
 
 // ProxyConfig configures the HTTP/TLS proxy.
 type ProxyConfig struct {
-	Listen string `yaml:"listen"` // e.g., "localhost:9090"
-	Host   string `yaml:"host"`   // Bind host
-	Port   int    `yaml:"port"`   // Bind port (alternative to listen)
+	Listen         string   `yaml:"listen"`          // e.g., "localhost:9090"
+	Host           string   `yaml:"host"`            // Bind host
+	Port           int      `yaml:"port"`            // Bind port (alternative to listen)
+	InterceptHosts []string `yaml:"intercept_hosts"` // Additional hosts to MITM (e.g., Azure OpenAI, OpenRouter)
 }
 
 // MemoryConfig configures in-memory caching.
@@ -266,6 +267,18 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("LANGLEY_AUTH_TOKEN"); v != "" {
 		c.Auth.Token = v
+	}
+	if v := os.Getenv("LANGLEY_INTERCEPT_HOSTS"); v != "" {
+		var hosts []string
+		for _, h := range strings.Split(v, ",") {
+			h = strings.TrimSpace(h)
+			if h != "" {
+				hosts = append(hosts, h)
+			}
+		}
+		if len(hosts) > 0 {
+			c.Proxy.InterceptHosts = hosts
+		}
 	}
 }
 

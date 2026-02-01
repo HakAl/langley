@@ -356,10 +356,85 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleConnect handles HTTPS CONNECT requests with MITM.
+// handleConnect routes HTTPS CONNECT requests: MITM for known LLM hosts,
+// transparent passthrough for everything else.
 func (p *MITMProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	p.logger.Debug("CONNECT request", "host", r.Host)
 
+	if p.shouldIntercept(r.Host) {
+		p.handleConnectMITM(w, r)
+		return
+	}
+	p.handleConnectPassthrough(w, r)
+}
+
+// shouldIntercept returns true if the host should be MITM'd — either it's a
+// built-in provider host or the user added it to intercept_hosts config.
+func (p *MITMProxy) shouldIntercept(host string) bool {
+	if p.providers.ShouldIntercept(host) {
+		return true
+	}
+	return matchConfigHosts(host, p.cfg.Proxy.InterceptHosts)
+}
+
+// matchConfigHosts checks whether host matches any entry in the user-configured
+// intercept_hosts list using domain-suffix matching.
+func matchConfigHosts(host string, interceptHosts []string) bool {
+	for _, h := range interceptHosts {
+		if provider.MatchDomainSuffix(host, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// handleConnectPassthrough tunnels the connection transparently without MITM.
+// The client sees the upstream server's real TLS certificate.
+func (p *MITMProxy) handleConnectPassthrough(w http.ResponseWriter, r *http.Request) {
+	// Parse host for upstream connection
+	host := r.Host
+	if !strings.Contains(host, ":") {
+		host = host + ":443"
+	}
+
+	// Dial upstream BEFORE sending 200 OK — so we can report errors properly
+	upstreamConn, err := net.DialTimeout("tcp", host, 10*time.Second)
+	if err != nil {
+		p.logger.Error("passthrough: failed to connect to upstream", "host", host, "error", err)
+		http.Error(w, "Bad gateway", http.StatusBadGateway)
+		return
+	}
+
+	// Now hijack the client connection
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		p.logger.Error("hijacking not supported")
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		upstreamConn.Close()
+		return
+	}
+
+	clientConn, _, err := hijacker.Hijack()
+	if err != nil {
+		p.logger.Error("failed to hijack connection", "error", err)
+		upstreamConn.Close()
+		return
+	}
+
+	// Send 200 OK — upstream is reachable
+	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+		p.logger.Error("failed to write tunnel response", "error", err)
+		clientConn.Close()
+		upstreamConn.Close()
+		return
+	}
+
+	// Hand off to bidirectional tunnel with idle timeout
+	go tunnel(clientConn, upstreamConn, p.logger, r.Host)
+}
+
+// handleConnectMITM handles HTTPS CONNECT requests with TLS interception.
+func (p *MITMProxy) handleConnectMITM(w http.ResponseWriter, r *http.Request) {
 	// Hijack the connection
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {

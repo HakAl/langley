@@ -22,8 +22,16 @@ func TestAnthropic_DetectHost(t *testing.T) {
 		{"anthropic.com", true},
 		{"claude.ai", true},
 		{"api.claude.ai", true},
+		{"api.anthropic.com:443", true},
+		{"claude.ai:443", true},
 		{"api.openai.com", false},
 		{"example.com", false},
+		// False positives that must NOT match
+		{"misanthropic.com", false},
+		{"misanthropic.io", false},
+		{"notanthropic.com", false},
+		{"claudesmith.com", false},
+		{"fakeclaude.ai.evil.com", false},
 	}
 
 	for _, tt := range tests {

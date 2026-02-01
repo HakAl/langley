@@ -15,7 +15,7 @@ func (a *Anthropic) Name() string {
 
 // DetectHost returns true for Anthropic API hosts.
 func (a *Anthropic) DetectHost(host string) bool {
-	return strings.Contains(host, "anthropic") || strings.Contains(host, "claude")
+	return MatchDomainSuffix(host, "anthropic.com") || MatchDomainSuffix(host, "claude.ai")
 }
 
 // ParseUsage extracts token usage from Anthropic responses.

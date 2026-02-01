@@ -15,7 +15,7 @@ func (o *OpenAI) Name() string {
 
 // DetectHost returns true for OpenAI API hosts.
 func (o *OpenAI) DetectHost(host string) bool {
-	return strings.Contains(host, "openai.com")
+	return MatchDomainSuffix(host, "openai.com")
 }
 
 // ParseUsage extracts token usage from OpenAI responses.

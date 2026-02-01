@@ -3,6 +3,12 @@
 
 proxy:
   listen: "localhost:9090"
+  # intercept_hosts:              # Additional hosts to MITM (beyond built-in providers)
+  #   - openai.azure.com          # Azure OpenAI
+  #   - openrouter.ai             # OpenRouter
+  #   - api.mistral.ai            # Mistral
+  #   - api.together.xyz          # Together AI
+  # Can also set via LANGLEY_INTERCEPT_HOSTS=host1,host2 environment variable
 
 memory:
   max_flows: 1000

@@ -20,8 +20,13 @@ func TestOpenAI_DetectHost(t *testing.T) {
 	}{
 		{"api.openai.com", true},
 		{"openai.com", true},
+		{"api.openai.com:443", true},
 		{"api.anthropic.com", false},
 		{"example.com", false},
+		// False positives that must NOT match
+		{"notopenai.com", false},
+		{"myopenai.com", false},
+		{"openai.com.evil.net", false},
 	}
 
 	for _, tt := range tests {

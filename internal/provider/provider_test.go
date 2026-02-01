@@ -37,6 +37,38 @@ func TestRegistry_Detect(t *testing.T) {
 	}
 }
 
+func TestRegistry_ShouldIntercept(t *testing.T) {
+	r := NewRegistry()
+
+	tests := []struct {
+		host string
+		want bool
+	}{
+		// Known LLM hosts
+		{"api.anthropic.com", true},
+		{"claude.ai", true},
+		{"api.openai.com", true},
+		{"bedrock-runtime.us-east-1.amazonaws.com", true},
+		{"generativelanguage.googleapis.com", true},
+		{"api.anthropic.com:443", true},
+
+		// Non-LLM hosts — must NOT intercept
+		{"github.com", false},
+		{"pypi.org", false},
+		{"registry.npmjs.org", false},
+		{"misanthropic.io", false},
+		{"example.com", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			if got := r.ShouldIntercept(tt.host); got != tt.want {
+				t.Errorf("ShouldIntercept(%q) = %v, want %v", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRegistry_Get(t *testing.T) {
 	r := NewRegistry()
 

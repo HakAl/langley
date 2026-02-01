@@ -36,3 +36,10 @@ func (r *Registry) Get(name string) Provider {
 	}
 	return nil
 }
+
+// ShouldIntercept returns true if any registered provider recognises the host.
+// This is the interception gate: it answers "should we MITM this host?" without
+// selecting a specific provider (use Detect for that).
+func (r *Registry) ShouldIntercept(host string) bool {
+	return r.Detect(host) != nil
+}

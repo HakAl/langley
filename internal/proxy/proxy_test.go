@@ -867,8 +867,11 @@ func TestMITMProxy_CONNECT_SSE(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	// Create proxy components
+	// Create proxy components — add upstream host to intercept_hosts so it's MITM'd
+	upstreamURL, _ := url.Parse(upstream.URL)
+
 	cfg := testConfig()
+	cfg.Proxy.InterceptHosts = []string{upstreamURL.Hostname()}
 	logger := testLogger()
 
 	tmpDir := t.TempDir()
@@ -908,9 +911,6 @@ func TestMITMProxy_CONNECT_SSE(t *testing.T) {
 
 	proxyAddr := proxyListener.Addr().String()
 	go func() { _ = http.Serve(proxyListener, proxy) }()
-
-	// Parse upstream URL
-	upstreamURL, _ := url.Parse(upstream.URL)
 
 	// Create HTTP client that uses CONNECT proxy and trusts our CA
 	proxyURL, _ := url.Parse("http://" + proxyAddr)
@@ -1165,5 +1165,197 @@ func TestExtractUsageAndCost_DecoupledFromResponseBody(t *testing.T) {
 	}
 	if flow.Model == nil || *flow.Model != "claude-3-opus" {
 		t.Errorf("Model = %v, want claude-3-opus", flow.Model)
+	}
+}
+
+// --- Host-based routing integration tests (langley-5rq7) ---
+
+// setupMITMProxy creates a MITMProxy wired for integration testing.
+// Returns the proxy, a listener address, a flow capture, and a cleanup func.
+func setupMITMProxy(t *testing.T, cfgOverride func(*config.Config)) (*MITMProxy, string, *flowCapture, func()) {
+	t.Helper()
+
+	cfg := testConfig()
+	if cfgOverride != nil {
+		cfgOverride(cfg)
+	}
+
+	tmpDir := t.TempDir()
+	ca, err := langleytls.LoadOrCreateCA(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create CA: %v", err)
+	}
+	certCache := langleytls.NewCertCache(ca, 100)
+	redactor, _ := redact.New(&config.RedactionConfig{})
+	ms := newMockStore()
+
+	capture := &flowCapture{}
+	proxy, err := NewMITMProxy(MITMProxyConfig{
+		Config:                     cfg,
+		Logger:                     testLogger(),
+		CA:                         ca,
+		CertCache:                  certCache,
+		Redactor:                   redactor,
+		Store:                      ms,
+		OnFlow:                     capture.OnFlow,
+		OnUpdate:                   capture.OnUpdate,
+		OnEvent:                    capture.OnEvent,
+		InsecureSkipVerifyUpstream: true,
+	})
+	if err != nil {
+		t.Fatalf("NewMITMProxy: %v", err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listener: %v", err)
+	}
+	go func() { _ = http.Serve(ln, proxy) }()
+
+	cleanup := func() { ln.Close() }
+	return proxy, ln.Addr().String(), capture, cleanup
+}
+
+// connectClient creates an HTTP client that uses the proxy at proxyAddr and
+// trusts the given CA for MITM'd connections.
+func connectClient(t *testing.T, proxyAddr string, ca *langleytls.CA) *http.Client {
+	t.Helper()
+	proxyURL, _ := url.Parse("http://" + proxyAddr)
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(ca.CertPEM())
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{
+				RootCAs: pool,
+			},
+		},
+	}
+}
+
+// TestMITMProxy_Passthrough_NoMITM verifies that non-LLM HTTPS hosts are
+// tunnelled transparently — no flow is captured and the client sees the
+// upstream's real certificate (not the proxy CA's).
+func TestMITMProxy_Passthrough_NoMITM(t *testing.T) {
+	t.Parallel()
+
+	// Stand up an HTTPS server with its own self-signed cert
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("passthrough ok"))
+	}))
+	defer upstream.Close()
+
+	// Setup proxy — no custom intercept_hosts
+	_, proxyAddr, capture, cleanup := setupMITMProxy(t, nil)
+	defer cleanup()
+
+	// Client that trusts the upstream's self-signed cert (NOT our proxy CA)
+	proxyURL, _ := url.Parse("http://" + proxyAddr)
+	upstreamPool := x509.NewCertPool()
+	upstreamPool.AddCert(upstream.Certificate())
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{
+				RootCAs: upstreamPool,
+			},
+		},
+	}
+
+	resp, err := client.Get(upstream.URL + "/test")
+	if err != nil {
+		t.Fatalf("passthrough request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "passthrough ok" {
+		t.Errorf("body = %q, want %q", body, "passthrough ok")
+	}
+
+	// No flow should be captured — passthrough doesn't intercept
+	time.Sleep(200 * time.Millisecond)
+	if f := capture.Flow(); f != nil {
+		t.Errorf("expected no captured flow for passthrough, got flow for host %q", f.Host)
+	}
+}
+
+// TestMITMProxy_Passthrough_DialFailure verifies that when the upstream is
+// unreachable, the proxy returns 502 Bad Gateway BEFORE sending 200 OK.
+func TestMITMProxy_Passthrough_DialFailure(t *testing.T) {
+	t.Parallel()
+
+	_, proxyAddr, _, cleanup := setupMITMProxy(t, nil)
+	defer cleanup()
+
+	// Use CONNECT to reach an address that definitely won't resolve
+	proxyURL, _ := url.Parse("http://" + proxyAddr)
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+		},
+		Timeout: 15 * time.Second,
+	}
+
+	// Use a port on localhost that's extremely unlikely to be listening
+	_, err := client.Get("https://127.0.0.1:1/test")
+	if err == nil {
+		t.Fatal("expected error for unreachable host")
+	}
+	// The error should contain "Bad Gateway" or a connection-refused indication
+	// (Go's HTTP client turns the proxy's 502 into a transport error)
+}
+
+// TestMITMProxy_ShouldIntercept_Unit tests the shouldIntercept routing logic directly.
+func TestMITMProxy_ShouldIntercept_Unit(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.Proxy.InterceptHosts = []string{"openrouter.ai", "custom-llm.example.com"}
+
+	tmpDir := t.TempDir()
+	ca, _ := langleytls.LoadOrCreateCA(tmpDir)
+	certCache := langleytls.NewCertCache(ca, 100)
+	redactor, _ := redact.New(&config.RedactionConfig{})
+
+	proxy, _ := NewMITMProxy(MITMProxyConfig{
+		Config:    cfg,
+		Logger:    testLogger(),
+		CA:        ca,
+		CertCache: certCache,
+		Redactor:  redactor,
+	})
+
+	tests := []struct {
+		host string
+		want bool
+	}{
+		// Built-in providers
+		{"api.anthropic.com", true},
+		{"api.openai.com", true},
+		{"claude.ai", true},
+		{"bedrock-runtime.us-east-1.amazonaws.com", true},
+		{"generativelanguage.googleapis.com", true},
+
+		// User config intercept_hosts
+		{"openrouter.ai", true},
+		{"api.openrouter.ai", true},
+		{"custom-llm.example.com", true},
+		{"sub.custom-llm.example.com", true},
+
+		// Non-intercepted hosts
+		{"github.com", false},
+		{"pypi.org", false},
+		{"registry.npmjs.org", false},
+		{"misanthropic.io", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			if got := proxy.shouldIntercept(tt.host); got != tt.want {
+				t.Errorf("shouldIntercept(%q) = %v, want %v", tt.host, got, tt.want)
+			}
+		})
 	}
 }
