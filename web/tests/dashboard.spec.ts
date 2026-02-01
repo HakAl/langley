@@ -129,7 +129,7 @@ async function setupMocks(page: Page, options: { emptyFlows?: boolean; emptyAnom
     });
   });
 
-  await page.route('**/api/stats', async (route) => {
+  await page.route('**/api/stats**', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -137,7 +137,7 @@ async function setupMocks(page: Page, options: { emptyFlows?: boolean; emptyAnom
     });
   });
 
-  await page.route('**/api/analytics/tasks', async (route) => {
+  await page.route('**/api/analytics/tasks**', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -145,7 +145,7 @@ async function setupMocks(page: Page, options: { emptyFlows?: boolean; emptyAnom
     });
   });
 
-  await page.route('**/api/analytics/tools', async (route) => {
+  await page.route('**/api/analytics/tools**', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -153,7 +153,7 @@ async function setupMocks(page: Page, options: { emptyFlows?: boolean; emptyAnom
     });
   });
 
-  await page.route('**/api/analytics/anomalies', async (route) => {
+  await page.route('**/api/analytics/anomalies**', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -161,7 +161,7 @@ async function setupMocks(page: Page, options: { emptyFlows?: boolean; emptyAnom
     });
   });
 
-  await page.route('**/api/analytics/cost/daily', async (route) => {
+  await page.route('**/api/analytics/cost/daily**', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -738,6 +738,63 @@ test.describe('Keyboard Shortcuts', () => {
     const firstItem = page.locator('.flow-item').first();
     await expect(firstItem).toHaveAttribute('role', 'option');
     await expect(firstItem).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
+test.describe('Responsive Detail Panel (langley-gzom)', () => {
+  test.beforeEach(async ({ page }) => {
+    await setupMocks(page);
+    await page.goto('/');
+    await authenticate(page);
+  });
+
+  test('detail panel shows as overlay at narrow widths', async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 600 });
+
+    await page.locator('.flow-item').first().click();
+    await expect(page.locator('.flow-detail')).toBeVisible();
+    await expect(page.locator('.detail-overlay')).toBeVisible();
+  });
+
+  test('detail panel is accessible at mobile width', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+
+    await page.locator('.flow-item').first().click();
+    await expect(page.locator('.flow-detail')).toBeVisible();
+    await expect(page.getByText('POST /v1/messages')).toBeVisible();
+  });
+
+  test('overlay backdrop closes detail panel', async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 600 });
+
+    await page.locator('.flow-item').first().click();
+    await expect(page.locator('.flow-detail')).toBeVisible();
+
+    // Click the overlay backdrop (not the panel itself)
+    await page.locator('.detail-overlay').click({ position: { x: 10, y: 300 } });
+    await expect(page.locator('.flow-detail')).not.toBeVisible();
+  });
+
+  test('Escape closes overlay detail panel', async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 600 });
+
+    await page.locator('.flow-item').first().click();
+    await expect(page.locator('.flow-detail')).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.flow-detail')).not.toBeVisible();
+  });
+
+  test('detail panel has no overlay at wide widths', async ({ page }) => {
+    await page.setViewportSize({ width: 1400, height: 900 });
+
+    await page.locator('.flow-item').first().click();
+    await expect(page.locator('.flow-detail')).toBeVisible();
+
+    // Overlay should exist in DOM but not be visible (no fixed positioning at wide widths)
+    const overlay = page.locator('.detail-overlay');
+    await expect(overlay).toBeAttached();
+    await expect(overlay).not.toHaveCSS('position', 'fixed');
   });
 });
 

@@ -1,13 +1,19 @@
 import type { Stats, CostPeriod } from '../types'
+import { TimeRangeSelect } from '../components/TimeRangeSelect'
 
 interface AnalyticsViewProps {
   stats: Stats | null
   dailyCosts: CostPeriod[]
+  timeRange: number | null
+  onTimeRangeChange: (days: number | null) => void
 }
 
-export function AnalyticsView({ stats, dailyCosts }: AnalyticsViewProps) {
+export function AnalyticsView({ stats, dailyCosts, timeRange, onTimeRangeChange }: AnalyticsViewProps) {
   return (
     <div className="analytics-view">
+      <div className="filters">
+        <TimeRangeSelect timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
+      </div>
       {stats && (
         <div className="stats-grid">
           <div className="stat-card">

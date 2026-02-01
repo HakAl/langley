@@ -13,49 +13,48 @@ export function useApi() {
     }
   }, [])
 
-  const fetchFlows = useCallback(async () => {
-    return apiFetch<Flow[]>('/api/flows?limit=50')
-  }, [apiFetch])
-
-  const fetchStats = useCallback(async () => {
-    const end = new Date()
-    const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000)
-    const params = new URLSearchParams({
-      start: start.toISOString(),
-      end: end.toISOString()
-    })
-    return apiFetch<Stats>(`/api/stats?${params}`)
-  }, [apiFetch])
-
-  const fetchTasks = useCallback(async () => {
-    return apiFetch<TaskSummary[]>('/api/analytics/tasks')
-  }, [apiFetch])
-
-  const fetchTools = useCallback(async (days?: number) => {
+  const timeParams = useCallback((days?: number) => {
     const end = new Date()
     const start = days != null
       ? new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
       : new Date(0)
-    const params = new URLSearchParams({
-      start: start.toISOString(),
-      end: end.toISOString()
-    })
-    return apiFetch<ToolStats[]>(`/api/analytics/tools?${params}`)
+    return new URLSearchParams({ start: start.toISOString(), end: end.toISOString() })
+  }, [])
+
+  const fetchFlows = useCallback(async (days?: number) => {
+    const params = new URLSearchParams({ limit: '50' })
+    if (days != null) {
+      const end = new Date()
+      const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
+      params.set('start_time', start.toISOString())
+      params.set('end_time', end.toISOString())
+    }
+    return apiFetch<Flow[]>(`/api/flows?${params}`)
   }, [apiFetch])
 
-  const fetchAnomalies = useCallback(async () => {
+  const fetchStats = useCallback(async (days?: number) => {
+    return apiFetch<Stats>(`/api/stats?${timeParams(days ?? 30)}`)
+  }, [apiFetch, timeParams])
+
+  const fetchTasks = useCallback(async (days?: number) => {
+    return apiFetch<TaskSummary[]>(`/api/analytics/tasks?${timeParams(days)}`)
+  }, [apiFetch, timeParams])
+
+  const fetchTools = useCallback(async (days?: number) => {
+    return apiFetch<ToolStats[]>(`/api/analytics/tools?${timeParams(days)}`)
+  }, [apiFetch, timeParams])
+
+  const fetchAnomalies = useCallback(async (days?: number) => {
+    if (days != null) {
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+      return apiFetch<Anomaly[]>(`/api/analytics/anomalies?since=${since.toISOString()}`)
+    }
     return apiFetch<Anomaly[]>('/api/analytics/anomalies')
   }, [apiFetch])
 
-  const fetchDailyCosts = useCallback(async () => {
-    const end = new Date()
-    const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000)
-    const params = new URLSearchParams({
-      start: start.toISOString(),
-      end: end.toISOString()
-    })
-    return apiFetch<CostPeriod[]>(`/api/analytics/cost/daily?${params}`)
-  }, [apiFetch])
+  const fetchDailyCosts = useCallback(async (days?: number) => {
+    return apiFetch<CostPeriod[]>(`/api/analytics/cost/daily?${timeParams(days ?? 30)}`)
+  }, [apiFetch, timeParams])
 
   const fetchSettings = useCallback(async () => {
     return apiFetch<Settings>('/api/settings')

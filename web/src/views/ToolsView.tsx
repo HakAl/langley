@@ -1,4 +1,5 @@
 import type { ToolStats } from '../types'
+import { TimeRangeSelect } from '../components/TimeRangeSelect'
 
 interface ToolsViewProps {
   tools: ToolStats[]
@@ -11,17 +12,7 @@ export function ToolsView({ tools, selectedIndex, timeRange, onTimeRangeChange }
   return (
     <div className="tools-view">
       <div className="filters">
-        <select
-          aria-label="Time range"
-          value={timeRange == null ? 'all' : String(timeRange)}
-          onChange={(e) => onTimeRangeChange(e.target.value === 'all' ? null : Number(e.target.value))}
-        >
-          <option value="1">Last 24 hours</option>
-          <option value="7">Last 7 days</option>
-          <option value="30">Last 30 days</option>
-          <option value="90">Last 90 days</option>
-          <option value="all">All time</option>
-        </select>
+        <TimeRangeSelect timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
       </div>
 
       {tools.length === 0 ? (

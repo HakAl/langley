@@ -515,6 +515,11 @@ header h1 {
   margin-bottom: 1rem;
 }
 
+/* Detail overlay (only visible at narrow widths via media query) */
+.detail-overlay {
+  display: none;
+}
+
 /* Flow detail panel */
 .flow-detail {
   width: 500px;
@@ -924,9 +929,25 @@ header h1 {
     flex-direction: column;
   }
 
+  .detail-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 999;
+  }
+
   .flow-detail {
-    width: 100%;
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 90%;
+    max-width: 500px;
+    height: 100vh;
     max-height: none;
+    z-index: 1000;
+    border-left: 2px solid var(--accent);
+    border-radius: 0;
   }
 }
 

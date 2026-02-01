@@ -1,26 +1,28 @@
 import type { Anomaly } from '../types'
 import { formatTime, getSeverityClass } from '../utils'
+import { TimeRangeSelect } from '../components/TimeRangeSelect'
 
 interface AnomaliesViewProps {
   anomalies: Anomaly[]
   selectedIndex: number
+  timeRange: number | null
+  onTimeRangeChange: (days: number | null) => void
   onViewFlow: (flowId: string) => void
 }
 
-export function AnomaliesView({ anomalies, selectedIndex, onViewFlow }: AnomaliesViewProps) {
-  if (anomalies.length === 0) {
-    return (
-      <div className="anomalies-view">
+export function AnomaliesView({ anomalies, selectedIndex, timeRange, onTimeRangeChange, onViewFlow }: AnomaliesViewProps) {
+  return (
+    <div className="anomalies-view">
+      <div className="filters">
+        <TimeRangeSelect timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
+      </div>
+
+      {anomalies.length === 0 ? (
         <div className="empty-state">
           <h2>No anomalies detected</h2>
           <p>Everything looks normal!</p>
         </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="anomalies-view">
+      ) : (
       <div className="anomaly-list" role="listbox" aria-label="Anomaly list" aria-activedescendant={`anomaly-${selectedIndex}`}>
         {anomalies.map((anomaly, index) => (
           <div
@@ -53,6 +55,7 @@ export function AnomaliesView({ anomalies, selectedIndex, onViewFlow }: Anomalie
           </div>
         ))}
       </div>
+      )}
     </div>
   )
 }

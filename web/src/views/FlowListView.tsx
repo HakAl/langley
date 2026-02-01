@@ -1,6 +1,7 @@
 import { useRef, useCallback } from 'react'
 import type { Flow } from '../types'
 import { formatTime, formatCost, getStatusClass } from '../utils'
+import { TimeRangeSelect } from '../components/TimeRangeSelect'
 
 interface FlowListViewProps {
   flows: Flow[]
@@ -12,9 +13,11 @@ interface FlowListViewProps {
   hostFilter: string
   taskFilter: string
   statusFilter: 'all' | 'success' | 'error'
+  timeRange: number | null
   onHostFilterChange: (value: string) => void
   onTaskFilterChange: (value: string) => void
   onStatusFilterChange: (value: 'all' | 'success' | 'error') => void
+  onTimeRangeChange: (days: number | null) => void
   onFlowSelect: (id: string) => void
   onStartExport: (format: string) => void
 }
@@ -31,8 +34,10 @@ export function FlowListView({
   onHostFilterChange,
   onTaskFilterChange,
   onStatusFilterChange,
+  onTimeRangeChange,
   onFlowSelect,
   onStartExport,
+  timeRange,
 }: FlowListViewProps) {
   const hostFilterRef = useRef<HTMLInputElement>(null)
 
@@ -76,6 +81,7 @@ export function FlowListView({
           <option value="success">Success (2xx/3xx)</option>
           <option value="error">Errors (4xx/5xx)</option>
         </select>
+        <TimeRangeSelect timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
         <div className="export-dropdown">
           <select
             aria-label="Export flows"

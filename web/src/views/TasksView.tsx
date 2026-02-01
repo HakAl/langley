@@ -1,26 +1,28 @@
 import type { TaskSummary } from '../types'
 import { formatTime, formatCost, formatDuration } from '../utils'
+import { TimeRangeSelect } from '../components/TimeRangeSelect'
 
 interface TasksViewProps {
   tasks: TaskSummary[]
   selectedIndex: number
+  timeRange: number | null
+  onTimeRangeChange: (days: number | null) => void
   onTaskSelect: (taskId: string) => void
 }
 
-export function TasksView({ tasks, selectedIndex, onTaskSelect }: TasksViewProps) {
-  if (tasks.length === 0) {
-    return (
-      <div className="tasks-view">
+export function TasksView({ tasks, selectedIndex, timeRange, onTimeRangeChange, onTaskSelect }: TasksViewProps) {
+  return (
+    <div className="tasks-view">
+      <div className="filters">
+        <TimeRangeSelect timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
+      </div>
+
+      {tasks.length === 0 ? (
         <div className="empty-state">
           <h2>No tasks tracked yet</h2>
           <p>Tasks appear when API traffic includes task identifiers.</p>
         </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="tasks-view">
+      ) : (
       <table className="data-table" aria-label="Task list">
         <thead>
           <tr>
@@ -64,6 +66,7 @@ export function TasksView({ tasks, selectedIndex, onTaskSelect }: TasksViewProps
           ))}
         </tbody>
       </table>
+      )}
     </div>
   )
 }

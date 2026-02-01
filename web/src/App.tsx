@@ -38,7 +38,7 @@ function App() {
   const [hostFilter, setHostFilter] = useState('')
   const [taskFilter, setTaskFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'error'>('all')
-  const [toolsTimeRange, setToolsTimeRange] = useState<number | null>(30)
+  const [timeRange, setTimeRange] = useState<number | null>(30)
 
   const api = useApi()
 
@@ -73,28 +73,31 @@ function App() {
 
   // Initial load
   useEffect(() => {
-    api.fetchFlows().then(({ data, error }) => { if (data) setFlows(prev => mergeFlows(prev, data)); if (error) setViewError(error); setInitialLoading(false); connect() })
-    api.fetchStats().then(({ data }) => { if (data) setStats(data) })
+    api.fetchFlows(timeRange ?? undefined).then(({ data, error }) => { if (data) setFlows(prev => mergeFlows(prev, data)); if (error) setViewError(error); setInitialLoading(false); connect() })
+    api.fetchStats(timeRange ?? undefined).then(({ data }) => { if (data) setStats(data) })
     return cleanup
-  }, [api.fetchFlows, api.fetchStats, connect, cleanup])
+  }, [api.fetchFlows, api.fetchStats, connect, cleanup, timeRange])
 
   // View-specific data
   useEffect(() => {
     setViewError(null)
+    const days = timeRange ?? undefined
     const showError = (error: string | null) => { if (error) setViewError(error) }
-    if (view === 'analytics') {
-      api.fetchStats().then(({ data, error }) => { if (data) setStats(data); showError(error) })
-      api.fetchDailyCosts().then(({ data, error }) => { if (data) setDailyCosts(data); showError(error) })
+    if (view === 'flows') {
+      api.fetchFlows(days).then(({ data, error }) => { if (data) setFlows(prev => mergeFlows(prev, data)); showError(error) })
+    } else if (view === 'analytics') {
+      api.fetchStats(days).then(({ data, error }) => { if (data) setStats(data); showError(error) })
+      api.fetchDailyCosts(days).then(({ data, error }) => { if (data) setDailyCosts(data); showError(error) })
     } else if (view === 'tasks') {
-      api.fetchTasks().then(({ data, error }) => { if (data) setTasks(data); showError(error) })
+      api.fetchTasks(days).then(({ data, error }) => { if (data) setTasks(data); showError(error) })
     } else if (view === 'tools') {
-      api.fetchTools(toolsTimeRange ?? undefined).then(({ data, error }) => { if (data) setTools(data); showError(error) })
+      api.fetchTools(days).then(({ data, error }) => { if (data) setTools(data); showError(error) })
     } else if (view === 'anomalies') {
-      api.fetchAnomalies().then(({ data, error }) => { if (data) setAnomalies(data); showError(error) })
+      api.fetchAnomalies(days).then(({ data, error }) => { if (data) setAnomalies(data); showError(error) })
     } else if (view === 'settings') {
       api.fetchSettings().then(({ data, error }) => { if (data) setSettings(data); showError(error) })
     }
-  }, [view, toolsTimeRange, api.fetchStats, api.fetchDailyCosts, api.fetchTasks, api.fetchTools, api.fetchAnomalies, api.fetchSettings])
+  }, [view, timeRange, api.fetchFlows, api.fetchStats, api.fetchDailyCosts, api.fetchTasks, api.fetchTools, api.fetchAnomalies, api.fetchSettings])
 
   // Theme
   useEffect(() => {
@@ -105,18 +108,19 @@ function App() {
   // Reset selection on data change
   useEffect(() => { setSelectedIndex(0) }, [view, filteredFlows.length, tasks.length, tools.length, anomalies.length])
 
-  const handleFlowSelect = useCallback((id: string) => {
-    api.fetchFlowDetail(id).then(({ data }) => { if (data) setSelectedFlow(data) })
+  const handleFlowSelect = useCallback(async (id: string) => {
+    const { data } = await api.fetchFlowDetail(id)
+    if (data) setSelectedFlow(data)
   }, [api.fetchFlowDetail])
 
-  const handleKeyboardEnter = useCallback((item: unknown) => {
+  const handleKeyboardEnter = useCallback(async (item: unknown) => {
     const rec = item as Record<string, unknown>
     if (view === 'flows' && rec.id) {
       handleFlowSelect(rec.id as string)
     } else if (view === 'tasks' && rec.task_id) {
       setTaskFilter(rec.task_id as string); navigateTo('flows')
     } else if (view === 'anomalies' && rec.flow_id) {
-      handleFlowSelect(rec.flow_id as string); navigateTo('flows')
+      await handleFlowSelect(rec.flow_id as string); navigateTo('flows')
     }
   }, [view, handleFlowSelect, navigateTo])
 
@@ -184,14 +188,17 @@ function App() {
         <div className="main-content">
           <div className="content-area">
             {viewError && <div className="error-banner" role="alert">{viewError}</div>}
-            {view === 'flows' && <FlowListView flows={flows} filteredFlows={filteredFlows} totalFlows={stats?.total_flows} initialLoading={initialLoading} selectedFlowId={selectedFlow?.id ?? null} selectedIndex={selectedIndex} hostFilter={hostFilter} taskFilter={taskFilter} statusFilter={statusFilter} onHostFilterChange={setHostFilter} onTaskFilterChange={setTaskFilter} onStatusFilterChange={setStatusFilter} onFlowSelect={handleFlowSelect} onStartExport={handleStartExport} />}
-            {view === 'analytics' && <AnalyticsView stats={stats} dailyCosts={dailyCosts} />}
-            {view === 'tasks' && <TasksView tasks={tasks} selectedIndex={selectedIndex} onTaskSelect={(id) => { setTaskFilter(id); navigateTo('flows') }} />}
-            {view === 'tools' && <ToolsView tools={tools} selectedIndex={selectedIndex} timeRange={toolsTimeRange} onTimeRangeChange={setToolsTimeRange} />}
-            {view === 'anomalies' && <AnomaliesView anomalies={anomalies} selectedIndex={selectedIndex} onViewFlow={(id) => { handleFlowSelect(id); navigateTo('flows') }} />}
+            {view === 'flows' && <FlowListView flows={flows} filteredFlows={filteredFlows} totalFlows={stats?.total_flows} initialLoading={initialLoading} selectedFlowId={selectedFlow?.id ?? null} selectedIndex={selectedIndex} hostFilter={hostFilter} taskFilter={taskFilter} statusFilter={statusFilter} timeRange={timeRange} onHostFilterChange={setHostFilter} onTaskFilterChange={setTaskFilter} onStatusFilterChange={setStatusFilter} onTimeRangeChange={setTimeRange} onFlowSelect={handleFlowSelect} onStartExport={handleStartExport} />}
+            {view === 'analytics' && <AnalyticsView stats={stats} dailyCosts={dailyCosts} timeRange={timeRange} onTimeRangeChange={setTimeRange} />}
+            {view === 'tasks' && <TasksView tasks={tasks} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={setTimeRange} onTaskSelect={(id) => { setTaskFilter(id); navigateTo('flows') }} />}
+            {view === 'tools' && <ToolsView tools={tools} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={setTimeRange} />}
+            {view === 'anomalies' && <AnomaliesView anomalies={anomalies} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={setTimeRange} onViewFlow={async (id) => { await handleFlowSelect(id); navigateTo('flows') }} />}
             {view === 'settings' && <SettingsView settings={settings} onSave={handleSaveSettings} />}
           </div>
-          {selectedFlow && view === 'flows' && <FlowDetail flow={selectedFlow} onClose={() => setSelectedFlow(null)} />}
+          {selectedFlow && view === 'flows' && <>
+            <div className="detail-overlay" onClick={() => setSelectedFlow(null)} />
+            <FlowDetail flow={selectedFlow} onClose={() => setSelectedFlow(null)} />
+          </>}
         </div>
       </div>
 
