@@ -1,19 +1,20 @@
 import { useCallback } from 'react'
-import type { Settings } from '../types'
+import type { Anomaly, ApiResult, CostPeriod, Flow, Settings, Stats, TaskSummary, ToolStats } from '../types'
 
 export function useApi() {
-  const apiFetch = useCallback(async (path: string) => {
+  const apiFetch = useCallback(async <T,>(path: string): Promise<ApiResult<T>> => {
     try {
       const res = await fetch(path, { credentials: 'include' })
-      if (res.ok) return res.json()
-      return null
-    } catch {
-      return null
+      if (res.ok) return { data: await res.json(), error: null }
+      const text = await res.text().catch(() => '')
+      return { data: null, error: text || `HTTP ${res.status}` }
+    } catch (err) {
+      return { data: null, error: err instanceof Error ? err.message : 'Network error' }
     }
   }, [])
 
   const fetchFlows = useCallback(async () => {
-    return apiFetch('/api/flows?limit=50')
+    return apiFetch<Flow[]>('/api/flows?limit=50')
   }, [apiFetch])
 
   const fetchStats = useCallback(async () => {
@@ -23,19 +24,19 @@ export function useApi() {
       start: start.toISOString(),
       end: end.toISOString()
     })
-    return apiFetch(`/api/stats?${params}`)
+    return apiFetch<Stats>(`/api/stats?${params}`)
   }, [apiFetch])
 
   const fetchTasks = useCallback(async () => {
-    return apiFetch('/api/analytics/tasks')
+    return apiFetch<TaskSummary[]>('/api/analytics/tasks')
   }, [apiFetch])
 
   const fetchTools = useCallback(async () => {
-    return apiFetch('/api/analytics/tools')
+    return apiFetch<ToolStats[]>('/api/analytics/tools')
   }, [apiFetch])
 
   const fetchAnomalies = useCallback(async () => {
-    return apiFetch('/api/analytics/anomalies')
+    return apiFetch<Anomaly[]>('/api/analytics/anomalies')
   }, [apiFetch])
 
   const fetchDailyCosts = useCallback(async () => {
@@ -45,14 +46,14 @@ export function useApi() {
       start: start.toISOString(),
       end: end.toISOString()
     })
-    return apiFetch(`/api/analytics/cost/daily?${params}`)
+    return apiFetch<CostPeriod[]>(`/api/analytics/cost/daily?${params}`)
   }, [apiFetch])
 
   const fetchSettings = useCallback(async () => {
-    return apiFetch('/api/settings')
+    return apiFetch<Settings>('/api/settings')
   }, [apiFetch])
 
-  const updateSettings = useCallback(async (newSettings: Partial<Settings>): Promise<Settings | null> => {
+  const updateSettings = useCallback(async (newSettings: Partial<Settings>): Promise<ApiResult<Settings>> => {
     try {
       const res = await fetch('/api/settings', {
         method: 'PUT',
@@ -60,19 +61,20 @@ export function useApi() {
         credentials: 'include',
         body: JSON.stringify(newSettings)
       })
-      if (res.ok) return res.json()
-      return null
-    } catch {
-      return null
+      if (res.ok) return { data: await res.json(), error: null }
+      const text = await res.text().catch(() => '')
+      return { data: null, error: text || `HTTP ${res.status}` }
+    } catch (err) {
+      return { data: null, error: err instanceof Error ? err.message : 'Network error' }
     }
   }, [])
 
   const fetchFlowDetail = useCallback(async (id: string) => {
-    return apiFetch(`/api/flows/${id}`)
+    return apiFetch<Flow>(`/api/flows/${id}`)
   }, [apiFetch])
 
   const fetchFlowCount = useCallback(async (params: URLSearchParams) => {
-    return apiFetch(`/api/flows/count?${params.toString()}`)
+    return apiFetch<{ count: number }>(`/api/flows/count?${params.toString()}`)
   }, [apiFetch])
 
   return {

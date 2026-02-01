@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { Flow, Stats, TaskSummary, ToolStats, Anomaly, CostPeriod, Settings } from './types'
+import type { Flow, Stats, TaskSummary, ToolStats, Anomaly, CostPeriod, Settings, ApiResult } from './types'
 import { getInitialTheme } from './utils'
 import { useHashRoute } from './hooks/useHashRoute'
 import { useApi } from './hooks/useApi'
@@ -23,6 +23,7 @@ function App() {
   const [connected, setConnected] = useState(false)
   const [initialLoading, setInitialLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [viewError, setViewError] = useState<string | null>(null)
   const [view, navigateTo] = useHashRoute()
   const [stats, setStats] = useState<Stats | null>(null)
   const [tasks, setTasks] = useState<TaskSummary[]>([])
@@ -63,24 +64,26 @@ function App() {
 
   // Initial load
   useEffect(() => {
-    api.fetchFlows().then(data => { if (data) setFlows(data); setInitialLoading(false); connect() })
-    api.fetchStats().then(data => { if (data) setStats(data) })
+    api.fetchFlows().then(({ data, error }) => { if (data) setFlows(data); if (error) setViewError(error); setInitialLoading(false); connect() })
+    api.fetchStats().then(({ data }) => { if (data) setStats(data) })
     return cleanup
   }, [api.fetchFlows, api.fetchStats, connect, cleanup])
 
   // View-specific data
   useEffect(() => {
+    setViewError(null)
+    const showError = (error: string | null) => { if (error) setViewError(error) }
     if (view === 'analytics') {
-      api.fetchStats().then(data => { if (data) setStats(data) })
-      api.fetchDailyCosts().then(data => { if (data) setDailyCosts(data) })
+      api.fetchStats().then(({ data, error }) => { if (data) setStats(data); showError(error) })
+      api.fetchDailyCosts().then(({ data, error }) => { if (data) setDailyCosts(data); showError(error) })
     } else if (view === 'tasks') {
-      api.fetchTasks().then(data => { if (data) setTasks(data) })
+      api.fetchTasks().then(({ data, error }) => { if (data) setTasks(data); showError(error) })
     } else if (view === 'tools') {
-      api.fetchTools().then(data => { if (data) setTools(data) })
+      api.fetchTools().then(({ data, error }) => { if (data) setTools(data); showError(error) })
     } else if (view === 'anomalies') {
-      api.fetchAnomalies().then(data => { if (data) setAnomalies(data) })
+      api.fetchAnomalies().then(({ data, error }) => { if (data) setAnomalies(data); showError(error) })
     } else if (view === 'settings') {
-      api.fetchSettings().then(data => { if (data) setSettings(data) })
+      api.fetchSettings().then(({ data, error }) => { if (data) setSettings(data); showError(error) })
     }
   }, [view, api.fetchStats, api.fetchDailyCosts, api.fetchTasks, api.fetchTools, api.fetchAnomalies, api.fetchSettings])
 
@@ -94,7 +97,7 @@ function App() {
   useEffect(() => { setSelectedIndex(0) }, [view, filteredFlows.length, tasks.length, tools.length, anomalies.length])
 
   const handleFlowSelect = useCallback((id: string) => {
-    api.fetchFlowDetail(id).then(data => { if (data) setSelectedFlow(data) })
+    api.fetchFlowDetail(id).then(({ data }) => { if (data) setSelectedFlow(data) })
   }, [api.fetchFlowDetail])
 
   const handleKeyboardEnter = useCallback((item: unknown) => {
@@ -120,7 +123,7 @@ function App() {
     const params = new URLSearchParams()
     if (hostFilter) params.set('host', hostFilter)
     if (taskFilter) params.set('task_id', taskFilter)
-    const countData = await api.fetchFlowCount(params)
+    const { data: countData } = await api.fetchFlowCount(params)
     setExportConfig({ format, rowCount: countData?.count ?? filteredFlows.length })
   }, [api.fetchFlowCount, hostFilter, taskFilter, filteredFlows.length])
 
@@ -142,9 +145,9 @@ function App() {
     finally { setExportConfig(null) }
   }, [exportConfig, hostFilter, taskFilter])
 
-  const handleSaveSettings = useCallback(async (s: Partial<Settings>) => {
+  const handleSaveSettings = useCallback(async (s: Partial<Settings>): Promise<ApiResult<Settings>> => {
     const result = await api.updateSettings(s)
-    if (result) setSettings(result)
+    if (result.data) setSettings(result.data)
     return result
   }, [api.updateSettings])
 
@@ -171,6 +174,7 @@ function App() {
         {error && <div className="error-banner">{error}</div>}
         <div className="main-content">
           <div className="content-area">
+            {viewError && <div className="error-banner" role="alert">{viewError}</div>}
             {view === 'flows' && <FlowListView flows={flows} filteredFlows={filteredFlows} totalFlows={stats?.total_flows} initialLoading={initialLoading} selectedFlowId={selectedFlow?.id ?? null} selectedIndex={selectedIndex} hostFilter={hostFilter} taskFilter={taskFilter} statusFilter={statusFilter} onHostFilterChange={setHostFilter} onTaskFilterChange={setTaskFilter} onStatusFilterChange={setStatusFilter} onFlowSelect={handleFlowSelect} onStartExport={handleStartExport} />}
             {view === 'analytics' && <AnalyticsView stats={stats} dailyCosts={dailyCosts} />}
             {view === 'tasks' && <TasksView tasks={tasks} selectedIndex={selectedIndex} onTaskSelect={(id) => { setTaskFilter(id); navigateTo('flows') }} />}

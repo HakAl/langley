@@ -89,4 +89,9 @@ export interface Settings {
   idle_gap_minutes: number
 }
 
+export interface ApiResult<T> {
+  data: T | null
+  error: string | null
+}
+
 export type View = 'flows' | 'analytics' | 'tasks' | 'tools' | 'anomalies' | 'settings'

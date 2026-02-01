@@ -1,15 +1,16 @@
 import { useState, useEffect } from 'react'
-import type { Settings } from '../types'
+import type { ApiResult, Settings } from '../types'
 
 interface SettingsViewProps {
   settings: Settings | null
-  onSave: (settings: Partial<Settings>) => Promise<Settings | null>
+  onSave: (settings: Partial<Settings>) => Promise<ApiResult<Settings>>
 }
 
 export function SettingsView({ settings, onSave }: SettingsViewProps) {
   const [idleGapInput, setIdleGapInput] = useState(5)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     if (settings) setIdleGapInput(settings.idle_gap_minutes)
@@ -20,12 +21,14 @@ export function SettingsView({ settings, onSave }: SettingsViewProps) {
 
   const handleSave = async () => {
     setSaving(true)
-    const result = await onSave({ idle_gap_minutes: idleGapInput })
+    setSaveError(null)
+    const { data, error } = await onSave({ idle_gap_minutes: idleGapInput })
     setSaving(false)
-    if (result) {
+    if (data) {
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     }
+    if (error) setSaveError(error)
   }
 
   return (
@@ -68,6 +71,7 @@ export function SettingsView({ settings, onSave }: SettingsViewProps) {
           {saving ? 'Saving...' : 'Save Settings'}
         </button>
         {saved && <span className="settings-saved" role="status">Settings saved</span>}
+        {saveError && <span className="setting-error" role="alert">{saveError}</span>}
         {isDirty && (
           <button
             className="secondary-btn"
