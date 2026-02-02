@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"encoding/json"
+
 	"github.com/HakAl/langley/internal/analytics"
 	"github.com/HakAl/langley/internal/config"
 	"github.com/HakAl/langley/internal/parser"
@@ -761,8 +763,13 @@ func (p *MITMProxy) correlateToolResults(reqBody []byte) {
 
 	now := time.Now()
 	for _, result := range results {
+		// errorMsg is only set when the tool reported an error
+		var errorMsg *string
+		if result.IsError {
+			errorMsg = result.Content
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		if err := p.store.UpdateToolResult(ctx, result.ToolUseID, !result.IsError, result.Content, now); err != nil {
+		if err := p.store.UpdateToolResult(ctx, result.ToolUseID, !result.IsError, errorMsg, result.Content, now); err != nil {
 			p.logger.Error("failed to update tool result", "tool_use_id", result.ToolUseID, "error", err)
 		} else {
 			p.logger.Debug("correlated tool result", "tool_use_id", result.ToolUseID, "success", !result.IsError)
@@ -916,6 +923,14 @@ func (p *MITMProxy) streamSSEWithParser(flowID string, taskID *string, reader io
 				ToolUseID: &toolUseID,
 				ToolName:  tool.Name,
 				Timestamp: time.Now(),
+			}
+
+			// Serialize tool input to JSON for storage
+			if len(tool.Input) > 0 {
+				if inputJSON, err := json.Marshal(tool.Input); err == nil {
+					s := string(inputJSON)
+					inv.ToolInput = &s
+				}
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

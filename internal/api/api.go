@@ -97,6 +97,8 @@ func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger, o
 	s.mux.HandleFunc("GET /api/analytics/tasks", s.authMiddleware(s.getTaskAnalytics))
 	s.mux.HandleFunc("GET /api/analytics/tasks/{id}", s.authMiddleware(s.getTaskSummary))
 	s.mux.HandleFunc("GET /api/analytics/tools", s.authMiddleware(s.getToolAnalytics))
+	s.mux.HandleFunc("GET /api/analytics/tool-invocations/{id}", s.authMiddleware(s.getToolInvocation))
+	s.mux.HandleFunc("GET /api/analytics/tools/{name}/invocations", s.authMiddleware(s.listToolInvocations))
 	s.mux.HandleFunc("GET /api/analytics/cost/daily", s.authMiddleware(s.getCostByDay))
 	s.mux.HandleFunc("GET /api/analytics/cost/model", s.authMiddleware(s.getCostByModel))
 	s.mux.HandleFunc("GET /api/analytics/anomalies", s.authMiddleware(s.getAnomalies))
@@ -644,6 +646,71 @@ func (s *Server) getToolAnalytics(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, response)
 }
 
+// listToolInvocations returns individual tool invocations for a specific tool.
+func (s *Server) listToolInvocations(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "Missing tool name", http.StatusBadRequest)
+		return
+	}
+
+	start, end := s.parseTimeRange(r)
+
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	offset := 0
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	invocations, total, err := s.store.ListToolInvocations(ctx, name, start, end, limit, offset)
+	if err != nil {
+		s.logger.Error("failed to list tool invocations", "tool", name, "error", err)
+		http.Error(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	items := make([]ToolInvocationResponse, len(invocations))
+	for i, inv := range invocations {
+		items[i] = toToolInvocationResponse(inv)
+	}
+
+	s.writeJSON(w, ToolInvocationListResponse{
+		Items: items,
+		Total: total,
+	})
+}
+
+// getToolInvocation returns a single tool invocation by ID.
+func (s *Server) getToolInvocation(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "Missing invocation ID", http.StatusBadRequest)
+		return
+	}
+
+	inv, err := s.store.GetToolInvocation(ctx, id)
+	if err != nil {
+		s.logger.Error("failed to get tool invocation", "id", id, "error", err)
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	s.writeJSON(w, toToolInvocationResponse(inv))
+}
+
 // getCostByDay returns daily cost breakdown.
 func (s *Server) getCostByDay(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -1148,6 +1215,27 @@ type ToolStatsResponse struct {
 	TotalTokensOut  int     `json:"total_tokens_out"`
 }
 
+// ToolInvocationResponse is the API response for a single tool invocation.
+type ToolInvocationResponse struct {
+	ID           string    `json:"id"`
+	FlowID       string    `json:"flow_id"`
+	TaskID       *string   `json:"task_id,omitempty"`
+	ToolUseID    *string   `json:"tool_use_id,omitempty"`
+	ToolName     string    `json:"tool_name"`
+	Timestamp    time.Time `json:"timestamp"`
+	DurationMs   *int64    `json:"duration_ms,omitempty"`
+	Success      *bool     `json:"success,omitempty"`
+	ErrorMessage *string   `json:"error_message,omitempty"`
+	ToolInput    *string   `json:"tool_input,omitempty"`
+	ToolResult   *string   `json:"tool_result,omitempty"`
+}
+
+// ToolInvocationListResponse wraps a list of invocations with total count.
+type ToolInvocationListResponse struct {
+	Items []ToolInvocationResponse `json:"items"`
+	Total int                      `json:"total"`
+}
+
 // CostPeriodResponse is the API response for cost breakdowns.
 type CostPeriodResponse struct {
 	Period         string  `json:"period"`
@@ -1275,6 +1363,22 @@ func toExportFlowSummary(f *store.Flow) ExportFlowSummary {
 		OutputTokens:  f.OutputTokens,
 		TotalCost:     f.TotalCost,
 		FlowIntegrity: f.FlowIntegrity,
+	}
+}
+
+func toToolInvocationResponse(inv *store.ToolInvocation) ToolInvocationResponse {
+	return ToolInvocationResponse{
+		ID:           inv.ID,
+		FlowID:       inv.FlowID,
+		TaskID:       inv.TaskID,
+		ToolUseID:    inv.ToolUseID,
+		ToolName:     inv.ToolName,
+		Timestamp:    inv.Timestamp,
+		DurationMs:   inv.DurationMs,
+		Success:      inv.Success,
+		ErrorMessage: inv.ErrorMessage,
+		ToolInput:    inv.ToolInput,
+		ToolResult:   inv.ToolResult,
 	}
 }
 

@@ -68,6 +68,8 @@ type ToolInvocation struct {
 	DurationMs   *int64
 	Success      *bool
 	ErrorMessage *string
+	ToolInput    *string // JSON of tool input parameters
+	ToolResult   *string // JSON of tool result content
 	InputTokens  *int
 	OutputTokens *int
 	Cost         *float64
@@ -116,7 +118,9 @@ type Store interface {
 	// Tool Invocations
 	SaveToolInvocation(ctx context.Context, inv *ToolInvocation) error
 	GetToolInvocationsByFlow(ctx context.Context, flowID string) ([]*ToolInvocation, error)
-	UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultTime time.Time) error
+	GetToolInvocation(ctx context.Context, id string) (*ToolInvocation, error)
+	ListToolInvocations(ctx context.Context, toolName string, start, end time.Time, limit, offset int) ([]*ToolInvocation, int, error)
+	UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultContent *string, resultTime time.Time) error
 
 	// Drop Log
 	LogDrop(ctx context.Context, entry *DropLogEntry) error

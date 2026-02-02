@@ -55,7 +55,13 @@ func (m *mockStore) SaveToolInvocation(ctx context.Context, inv *store.ToolInvoc
 func (m *mockStore) GetToolInvocationsByFlow(ctx context.Context, flowID string) ([]*store.ToolInvocation, error) {
 	return []*store.ToolInvocation{}, nil
 }
-func (m *mockStore) UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultTime time.Time) error {
+func (m *mockStore) GetToolInvocation(ctx context.Context, id string) (*store.ToolInvocation, error) {
+	return &store.ToolInvocation{ID: id, ToolName: "test_tool"}, nil
+}
+func (m *mockStore) ListToolInvocations(ctx context.Context, toolName string, start, end time.Time, limit, offset int) ([]*store.ToolInvocation, int, error) {
+	return []*store.ToolInvocation{}, 0, nil
+}
+func (m *mockStore) UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultContent *string, resultTime time.Time) error {
 	return nil
 }
 func (m *mockStore) LogDrop(ctx context.Context, entry *store.DropLogEntry) error { return nil }

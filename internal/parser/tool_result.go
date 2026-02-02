@@ -50,11 +50,16 @@ func ExtractToolResults(body []byte) []*ToolResult {
 				IsError:   block.IsError,
 			}
 
-			// Extract error content if present
-			if block.IsError && len(block.Content) > 0 {
+			// Extract content (result text for all invocations, not just errors)
+			if len(block.Content) > 0 {
+				// Try as plain string first
 				var text string
 				if err := json.Unmarshal(block.Content, &text); err == nil && text != "" {
 					result.Content = &text
+				} else {
+					// Store raw JSON for array/object content
+					raw := string(block.Content)
+					result.Content = &raw
 				}
 			}
 

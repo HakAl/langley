@@ -1004,6 +1004,39 @@ header h1 {
 .data-table .warning { color: var(--warning); }
 .data-table .error { color: var(--error); }
 
+/* Tool drill-down */
+.drill-down-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.drill-down-title {
+  font-family: monospace;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.tool-use-id {
+  font-family: monospace;
+  font-size: 0.85em;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: monospace;
+  font-size: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.link-btn:hover {
+  color: var(--accent-hover);
+}
+
 /* Anomalies */
 .anomaly-list {
   display: flex;

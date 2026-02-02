@@ -1,6 +1,6 @@
 # Langley
 
-An intercepting proxy that captures LLM API traffic, tracks costs, and surfaces anomalies. Supports Anthropic, OpenAI, AWS Bedrock, and Google Gemini.
+A transparent proxy that records every LLM API call — full request/response bodies, token counts, costs, tool use, and anomalies — in a real-time dashboard. Supports Anthropic, OpenAI, AWS Bedrock, and Google Gemini.
 
 ## What It Does
 
@@ -14,7 +14,7 @@ Your App  --HTTPS-->  Langley Proxy  --HTTPS-->  LLM API
                    WebSocket --> Dashboard
 ```
 
-**Why this exists:** LLM agents make opaque, expensive API calls. Langley makes them visible. You see what your agent sends, what it gets back, what it costs, and where it wastes tokens.
+**Why this exists:** LLM agents make opaque, expensive API calls. Langley makes them visible — every message, tool call, token, and dollar. You see exactly what your agent sends, what it gets back, and where it wastes money.
 
 ## Quick Start
 
@@ -51,10 +51,10 @@ Six views, all fed by real-time WebSocket updates:
 
 | View | What you see |
 |------|-------------|
-| **Flows** | Every request/response with method, host, path, status, tokens, cost. Click to inspect headers and bodies. Filter by host, task, or status. |
+| **Flows** | Every request/response with method, host, path, status, tokens, cost. Click any flow to inspect full request/response headers and bodies — including decompressed content, with a tabbed viewer. Filter by host, task, or status. Export to NDJSON, JSON, or CSV. |
 | **Analytics** | Total cost, token counts, daily cost chart. The numbers that answer "how much did that session cost?" |
 | **Tasks** | Flows grouped by task. See token usage and cost per logical unit of work, not just per request. |
-| **Tools** | Tool invocation stats: call counts, success rates, average duration. Find the tools that fail or drag. |
+| **Tools** | Tool invocation stats: call counts, success rates, average duration. Click any tool to drill into individual invocations — see the exact input JSON sent to each tool and the result returned, with duration and parent flow context. |
 | **Anomalies** | Flagged events: large contexts (>100k tokens), slow responses (>30s), rapid retries, high-cost requests (>$1), tool failures. |
 | **Settings** | Configure task idle gap. |
 
@@ -183,6 +183,8 @@ All endpoints require `Authorization: Bearer <token>`. Rate limited to 20 req/se
 | `GET /api/analytics/tasks` | Per-task summaries |
 | `GET /api/analytics/tasks/{id}` | Single task detail |
 | `GET /api/analytics/tools` | Tool invocation stats |
+| `GET /api/analytics/tools/{name}/invocations` | Individual invocations for a tool. Params: `start`, `end`, `limit`, `offset` |
+| `GET /api/analytics/tool-invocations/{id}` | Single tool invocation detail (input, result, duration) |
 | `GET /api/analytics/cost/daily` | Daily cost breakdown |
 | `GET /api/analytics/cost/model` | Cost by model |
 | `GET /api/analytics/anomalies` | Recent anomalies |

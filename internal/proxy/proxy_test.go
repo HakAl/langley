@@ -277,7 +277,15 @@ func (m *mockStore) GetToolInvocationsByFlow(ctx context.Context, flowID string)
 	return nil, nil
 }
 
-func (m *mockStore) UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultTime time.Time) error {
+func (m *mockStore) GetToolInvocation(ctx context.Context, id string) (*store.ToolInvocation, error) {
+	return nil, nil
+}
+
+func (m *mockStore) ListToolInvocations(ctx context.Context, toolName string, start, end time.Time, limit, offset int) ([]*store.ToolInvocation, int, error) {
+	return nil, 0, nil
+}
+
+func (m *mockStore) UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultContent *string, resultTime time.Time) error {
 	return nil
 }
 

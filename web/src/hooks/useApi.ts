@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import type { Anomaly, ApiResult, CostPeriod, Flow, Settings, Stats, TaskSummary, ToolStats } from '../types'
+import type { Anomaly, ApiResult, CostPeriod, Flow, Settings, Stats, TaskSummary, ToolInvocation, ToolStats } from '../types'
 
 export function useApi() {
   const apiFetch = useCallback(async <T,>(path: string): Promise<ApiResult<T>> => {
@@ -76,6 +76,16 @@ export function useApi() {
     }
   }, [])
 
+  const fetchToolInvocations = useCallback(async (toolName: string, days?: number) => {
+    const params = timeParams(days)
+    params.set('limit', '50')
+    return apiFetch<{ items: ToolInvocation[]; total: number }>(`/api/analytics/tools/${encodeURIComponent(toolName)}/invocations?${params}`)
+  }, [apiFetch, timeParams])
+
+  const fetchToolInvocationDetail = useCallback(async (id: string) => {
+    return apiFetch<ToolInvocation>(`/api/analytics/tool-invocations/${encodeURIComponent(id)}`)
+  }, [apiFetch])
+
   const fetchFlowDetail = useCallback(async (id: string) => {
     return apiFetch<Flow>(`/api/flows/${id}`)
   }, [apiFetch])
@@ -90,6 +100,8 @@ export function useApi() {
     fetchStats,
     fetchTasks,
     fetchTools,
+    fetchToolInvocations,
+    fetchToolInvocationDetail,
     fetchAnomalies,
     fetchDailyCosts,
     fetchSettings,

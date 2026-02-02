@@ -581,7 +581,7 @@ func TestUpdateToolResult(t *testing.T) {
 
 	t.Run("successful result", func(t *testing.T) {
 		resultTime := time.Now()
-		err := store.UpdateToolResult(ctx, "toolu_abc123", true, nil, resultTime)
+		err := store.UpdateToolResult(ctx, "toolu_abc123", true, nil, nil, resultTime)
 		if err != nil {
 			t.Fatalf("UpdateToolResult failed: %v", err)
 		}
@@ -629,7 +629,8 @@ func TestUpdateToolResult(t *testing.T) {
 
 		errMsg := "permission denied"
 		resultTime := time.Now()
-		err := store.UpdateToolResult(ctx, "toolu_err789", false, &errMsg, resultTime)
+		resultContent := "permission denied"
+		err := store.UpdateToolResult(ctx, "toolu_err789", false, &errMsg, &resultContent, resultTime)
 		if err != nil {
 			t.Fatalf("UpdateToolResult failed: %v", err)
 		}
@@ -661,7 +662,7 @@ func TestUpdateToolResult(t *testing.T) {
 
 	t.Run("nonexistent tool_use_id", func(t *testing.T) {
 		// Should not error, just update 0 rows
-		err := store.UpdateToolResult(ctx, "toolu_nonexistent", true, nil, time.Now())
+		err := store.UpdateToolResult(ctx, "toolu_nonexistent", true, nil, nil, time.Now())
 		if err != nil {
 			t.Errorf("UpdateToolResult with nonexistent ID should not error, got: %v", err)
 		}

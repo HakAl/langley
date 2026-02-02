@@ -117,6 +117,7 @@ func (s *SQLiteStore) migrate() error {
 	migrations := []string{
 		migrationV1, // Initial schema
 		migrationV2, // Add tool_use_id to tool_invocations
+		migrationV3, // Add tool_input and tool_result to tool_invocations
 	}
 
 	for i := version; i < len(migrations); i++ {
@@ -258,6 +259,12 @@ const migrationV2 = `
 -- Add tool_use_id column for correlating tool_use with tool_result
 ALTER TABLE tool_invocations ADD COLUMN tool_use_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_tool_invocations_tool_use_id ON tool_invocations(tool_use_id);
+`
+
+const migrationV3 = `
+-- Add tool_input and tool_result columns for drill-down detail view
+ALTER TABLE tool_invocations ADD COLUMN tool_input TEXT;
+ALTER TABLE tool_invocations ADD COLUMN tool_result TEXT;
 `
 
 // SaveFlow inserts a new flow.
@@ -538,20 +545,87 @@ func (s *SQLiteStore) GetEventsByFlow(ctx context.Context, flowID string) ([]*Ev
 // SaveToolInvocation inserts a tool invocation.
 func (s *SQLiteStore) SaveToolInvocation(ctx context.Context, inv *ToolInvocation) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO tool_invocations (id, flow_id, task_id, tool_use_id, tool_name, tool_type, timestamp, duration_ms, success, error_message, input_tokens, output_tokens, cost, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO tool_invocations (id, flow_id, task_id, tool_use_id, tool_name, tool_type, timestamp, duration_ms, success, error_message, tool_input, tool_result, input_tokens, output_tokens, cost, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		inv.ID, inv.FlowID, inv.TaskID, inv.ToolUseID, inv.ToolName, inv.ToolType,
 		inv.Timestamp.Format(time.RFC3339Nano), inv.DurationMs, inv.Success, inv.ErrorMessage,
+		inv.ToolInput, inv.ToolResult,
 		inv.InputTokens, inv.OutputTokens, inv.Cost, formatNullableTime(inv.ExpiresAt),
 	)
 	return err
 }
 
+// toolInvocationColumns is the SELECT column list for tool invocations.
+const toolInvocationColumns = `id, flow_id, task_id, tool_use_id, tool_name, tool_type, timestamp, duration_ms, success, error_message, tool_input, tool_result, input_tokens, output_tokens, cost, created_at, expires_at`
+
+// scanToolInvocation scans a tool invocation from a row scanner (sql.Row or sql.Rows).
+func scanToolInvocation(scanner interface{ Scan(dest ...interface{}) error }) (*ToolInvocation, error) {
+	var inv ToolInvocation
+	var ts, createdAt string
+	var expiresAt, taskID, toolUseID, toolType, errorMsg, toolInput, toolResult sql.NullString
+	var durationMs, inputTokens, outputTokens sql.NullInt64
+	var success sql.NullBool
+	var cost sql.NullFloat64
+
+	err := scanner.Scan(
+		&inv.ID, &inv.FlowID, &taskID, &toolUseID, &inv.ToolName, &toolType,
+		&ts, &durationMs, &success, &errorMsg, &toolInput, &toolResult,
+		&inputTokens, &outputTokens, &cost, &createdAt, &expiresAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	inv.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
+	inv.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+	if taskID.Valid {
+		inv.TaskID = &taskID.String
+	}
+	if toolUseID.Valid {
+		inv.ToolUseID = &toolUseID.String
+	}
+	if toolType.Valid {
+		inv.ToolType = &toolType.String
+	}
+	if errorMsg.Valid {
+		inv.ErrorMessage = &errorMsg.String
+	}
+	if toolInput.Valid {
+		inv.ToolInput = &toolInput.String
+	}
+	if toolResult.Valid {
+		inv.ToolResult = &toolResult.String
+	}
+	if durationMs.Valid {
+		inv.DurationMs = &durationMs.Int64
+	}
+	if success.Valid {
+		inv.Success = &success.Bool
+	}
+	if inputTokens.Valid {
+		i := int(inputTokens.Int64)
+		inv.InputTokens = &i
+	}
+	if outputTokens.Valid {
+		o := int(outputTokens.Int64)
+		inv.OutputTokens = &o
+	}
+	if cost.Valid {
+		inv.Cost = &cost.Float64
+	}
+	if expiresAt.Valid {
+		t, _ := time.Parse(time.RFC3339Nano, expiresAt.String)
+		inv.ExpiresAt = &t
+	}
+
+	return &inv, nil
+}
+
 // GetToolInvocationsByFlow returns tool invocations for a flow.
 func (s *SQLiteStore) GetToolInvocationsByFlow(ctx context.Context, flowID string) ([]*ToolInvocation, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, flow_id, task_id, tool_use_id, tool_name, tool_type, timestamp, duration_ms, success, error_message, input_tokens, output_tokens, cost, created_at, expires_at
+		SELECT `+toolInvocationColumns+`
 		FROM tool_invocations WHERE flow_id = ? ORDER BY timestamp
 	`, flowID)
 	if err != nil {
@@ -561,74 +635,74 @@ func (s *SQLiteStore) GetToolInvocationsByFlow(ctx context.Context, flowID strin
 
 	var invocations []*ToolInvocation
 	for rows.Next() {
-		var inv ToolInvocation
-		var ts, createdAt string
-		var expiresAt, taskID, toolUseID, toolType, errorMsg sql.NullString
-		var durationMs, inputTokens, outputTokens sql.NullInt64
-		var success sql.NullBool
-		var cost sql.NullFloat64
-
-		err := rows.Scan(
-			&inv.ID, &inv.FlowID, &taskID, &toolUseID, &inv.ToolName, &toolType,
-			&ts, &durationMs, &success, &errorMsg,
-			&inputTokens, &outputTokens, &cost, &createdAt, &expiresAt,
-		)
+		inv, err := scanToolInvocation(rows)
 		if err != nil {
 			return nil, err
 		}
-
-		inv.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
-		inv.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-		if taskID.Valid {
-			inv.TaskID = &taskID.String
-		}
-		if toolUseID.Valid {
-			inv.ToolUseID = &toolUseID.String
-		}
-		if toolType.Valid {
-			inv.ToolType = &toolType.String
-		}
-		if errorMsg.Valid {
-			inv.ErrorMessage = &errorMsg.String
-		}
-		if durationMs.Valid {
-			inv.DurationMs = &durationMs.Int64
-		}
-		if success.Valid {
-			inv.Success = &success.Bool
-		}
-		if inputTokens.Valid {
-			i := int(inputTokens.Int64)
-			inv.InputTokens = &i
-		}
-		if outputTokens.Valid {
-			o := int(outputTokens.Int64)
-			inv.OutputTokens = &o
-		}
-		if cost.Valid {
-			inv.Cost = &cost.Float64
-		}
-		if expiresAt.Valid {
-			t, _ := time.Parse(time.RFC3339Nano, expiresAt.String)
-			inv.ExpiresAt = &t
-		}
-
-		invocations = append(invocations, &inv)
+		invocations = append(invocations, inv)
 	}
 
 	return invocations, rows.Err()
 }
 
+// GetToolInvocation retrieves a single tool invocation by ID.
+func (s *SQLiteStore) GetToolInvocation(ctx context.Context, id string) (*ToolInvocation, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT `+toolInvocationColumns+`
+		FROM tool_invocations WHERE id = ?
+	`, id)
+	return scanToolInvocation(row)
+}
+
+// ListToolInvocations returns tool invocations filtered by tool name and time range, with pagination.
+// Returns the matching invocations and the total count.
+func (s *SQLiteStore) ListToolInvocations(ctx context.Context, toolName string, start, end time.Time, limit, offset int) ([]*ToolInvocation, int, error) {
+	// Get total count
+	var total int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM tool_invocations
+		WHERE tool_name = ? AND timestamp >= ? AND timestamp <= ?
+	`, toolName, start.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano)).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Get paginated results
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+toolInvocationColumns+`
+		FROM tool_invocations
+		WHERE tool_name = ? AND timestamp >= ? AND timestamp <= ?
+		ORDER BY timestamp DESC
+		LIMIT ? OFFSET ?
+	`, toolName, start.Format(time.RFC3339Nano), end.Format(time.RFC3339Nano), limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var invocations []*ToolInvocation
+	for rows.Next() {
+		inv, err := scanToolInvocation(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		invocations = append(invocations, inv)
+	}
+
+	return invocations, total, rows.Err()
+}
+
 // UpdateToolResult updates a tool invocation with its result, matched by tool_use_id.
 // Duration is calculated as the difference between resultTime and the stored timestamp.
-func (s *SQLiteStore) UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultTime time.Time) error {
+func (s *SQLiteStore) UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultContent *string, resultTime time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE tool_invocations
 		SET success = ?,
 		    error_message = ?,
+		    tool_result = ?,
 		    duration_ms = CAST((julianday(?) - julianday(timestamp)) * 86400000 AS INTEGER)
 		WHERE tool_use_id = ?
-	`, success, errorMsg, resultTime.Format(time.RFC3339Nano), toolUseID)
+	`, success, errorMsg, resultContent, resultTime.Format(time.RFC3339Nano), toolUseID)
 	return err
 }
 

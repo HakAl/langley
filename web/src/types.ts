@@ -67,6 +67,20 @@ export interface ToolStats {
   avg_duration_ms: number
 }
 
+export interface ToolInvocation {
+  id: string
+  flow_id: string
+  task_id?: string
+  tool_use_id?: string
+  tool_name: string
+  timestamp: string
+  duration_ms?: number
+  success?: boolean
+  error_message?: string
+  tool_input?: string
+  tool_result?: string
+}
+
 export interface Anomaly {
   type: string
   flow_id: string
