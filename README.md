@@ -4,6 +4,8 @@ A transparent proxy that records every LLM API call — full request/response bo
 
 ## What It Does
 
+![Langley dashboard populating in real-time as an agent runs](docs/demo.gif)
+
 Langley sits between your application and LLM provider APIs. Every request and response passes through, gets stored in SQLite, and appears in a real-time dashboard. Nothing reaches your agent that didn't come through the provider, and nothing leaves without being recorded.
 
 ```
@@ -85,60 +87,6 @@ Langley flags unusual patterns automatically:
 
 All thresholds are configurable in `langley.yaml`.
 
-## Configuration
-
-YAML config with environment variable overrides. Config file locations:
-
-- **Unix**: `~/.config/langley/langley.yaml`
-- **Windows**: `%APPDATA%\langley\langley.yaml`
-
-```yaml
-proxy:
-  listen: "localhost:9090"
-
-auth:
-  token: "your-secret-token"  # Auto-generated if not set
-
-persistence:
-  body_max_bytes: 1048576     # 1MB max body storage per flow
-
-redaction:
-  always_redact_headers:
-    - authorization
-    - x-api-key
-    - cookie
-    - set-cookie
-  pattern_redact_headers:
-    - "^x-.*-token$"
-    - "^x-.*-key$"
-  redact_api_keys: true       # Masks sk-*, AKIA*, AIza* patterns
-  redact_base64_images: true  # Replaces images with placeholders
-  disable_body_storage: false  # Set to true to stop storing bodies
-
-retention:
-  flows_ttl_days: 30
-  events_ttl_days: 7
-  drop_log_ttl_days: 1
-
-analytics:
-  anomaly_context_tokens: 100000
-  anomaly_tool_delay_ms: 30000
-  anomaly_rapid_calls_window_s: 10
-  anomaly_rapid_calls_threshold: 5
-```
-
-See `langley.example.yaml` for the full annotated config.
-
-### Environment Variables
-
-| Variable | Overrides |
-|----------|-----------|
-| `LANGLEY_LISTEN` | `proxy.listen` |
-| `LANGLEY_AUTH_TOKEN` | `auth.token` |
-| `LANGLEY_DB_PATH` | `persistence.db_path` |
-
-Relative paths in `LANGLEY_DB_PATH` resolve from the working directory. Use absolute paths when running as a service.
-
 ## CLI Reference
 
 ```
@@ -159,46 +107,6 @@ OPTIONS:
   -show-ca            Show CA certificate path and trust instructions
   -help               Show help
 ```
-
-## API
-
-All endpoints require `Authorization: Bearer <token>`. Rate limited to 20 req/sec sustained, 100 burst.
-
-### Flows
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/flows` | List flows. Params: `limit`, `host`, `task_id`, `model` |
-| `GET /api/flows/{id}` | Single flow with full detail |
-| `GET /api/flows/{id}/events` | SSE events for a streaming flow |
-| `GET /api/flows/{id}/anomalies` | Anomalies linked to a flow |
-| `GET /api/flows/export` | Export. Params: `format` (ndjson/json/csv), `max_rows`, `include_bodies` |
-| `GET /api/flows/count` | Count flows matching filters |
-
-### Analytics
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/stats` | Overall statistics |
-| `GET /api/analytics/tasks` | Per-task summaries |
-| `GET /api/analytics/tasks/{id}` | Single task detail |
-| `GET /api/analytics/tools` | Tool invocation stats |
-| `GET /api/analytics/tools/{name}/invocations` | Individual invocations for a tool. Params: `start`, `end`, `limit`, `offset` |
-| `GET /api/analytics/tool-invocations/{id}` | Single tool invocation detail (input, result, duration) |
-| `GET /api/analytics/cost/daily` | Daily cost breakdown |
-| `GET /api/analytics/cost/model` | Cost by model |
-| `GET /api/analytics/anomalies` | Recent anomalies |
-
-### System
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/health` | Health check (no auth required) |
-| `GET /api/settings` | Current settings |
-| `PUT /api/settings` | Update settings |
-| `WS /ws` | Real-time flow updates. Auth via `token` query param. |
-
-Full API spec in `openapi.yaml`.
 
 ## Security
 
@@ -235,10 +143,6 @@ make build          # Production binary + frontend bundle
 make stop           # Kill orphaned dev processes (Windows Ctrl+C workaround)
 ```
 
-Dashboard at `http://localhost:5173` during development. Proxy at `localhost:9090`.
+Dashboard at `http://localhost:3000` during development. Proxy at `localhost:9090`.
 
 Frontend tests use Playwright. Backend tests use Go's race detector.
-
-## License
-
-MIT
