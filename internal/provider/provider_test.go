@@ -58,6 +58,12 @@ func TestRegistry_ShouldIntercept(t *testing.T) {
 		{"registry.npmjs.org", false},
 		{"misanthropic.io", false},
 		{"example.com", false},
+
+		// Crafted hosts that MUST NOT match (domain boundary safety)
+		{"generativelanguage.googleapis.com.evil.com", false},
+		{"bedrock-runtime.evil-amazonaws.com", false},
+		{"bedrock-runtime.us-east-1.amazonaws.com.evil.com", false},
+		{"fakegenerativelanguage.googleapis.com", false},
 	}
 
 	for _, tt := range tests {

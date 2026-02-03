@@ -15,7 +15,7 @@ func (g *Gemini) Name() string {
 
 // DetectHost returns true for Google Gemini API hosts.
 func (g *Gemini) DetectHost(host string) bool {
-	return strings.Contains(host, "generativelanguage.googleapis.com")
+	return MatchDomainSuffix(host, "generativelanguage.googleapis.com")
 }
 
 // ParseUsage extracts token usage from Gemini responses.

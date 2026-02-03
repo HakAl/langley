@@ -1296,6 +1296,115 @@ func TestMITMProxy_Passthrough_DialFailure(t *testing.T) {
 	// (Go's HTTP client turns the proxy's 502 into a transport error)
 }
 
+// TestMITMProxy_InterceptHosts_CapturesFlow verifies that a host in
+// intercept_hosts config is MITM'd and produces a captured flow with provider
+// "other" (since it's not a built-in provider).
+func TestMITMProxy_InterceptHosts_CapturesFlow(t *testing.T) {
+	t.Parallel()
+
+	// Stand up an HTTPS server pretending to be a custom LLM endpoint
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hello"}}]}`))
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	// Add upstream host to intercept_hosts
+	_, proxyAddr, capture, cleanup := setupMITMProxy(t, func(cfg *config.Config) {
+		cfg.Proxy.InterceptHosts = []string{upstreamURL.Hostname()}
+	})
+	defer cleanup()
+
+	// Client trusts the proxy CA (MITM path), NOT the upstream's own cert
+	tmpDir := t.TempDir()
+	ca, _ := langleytls.LoadOrCreateCA(tmpDir)
+	// We need the CA from the proxy — get it from setupMITMProxy instead.
+	// Since setupMITMProxy creates its own CA, we need to extract it.
+	// For this test, use a fresh setup with the CA available.
+	_ = ca
+	_ = proxyAddr
+	_ = capture
+	cleanup()
+
+	// Re-setup with CA accessible for client trust
+	cfg := testConfig()
+	cfg.Proxy.InterceptHosts = []string{upstreamURL.Hostname()}
+
+	tmpDir2 := t.TempDir()
+	ca2, err := langleytls.LoadOrCreateCA(tmpDir2)
+	if err != nil {
+		t.Fatalf("failed to create CA: %v", err)
+	}
+	certCache := langleytls.NewCertCache(ca2, 100)
+	redactor, _ := redact.New(&config.RedactionConfig{})
+	ms := newMockStore()
+
+	capture2 := &flowCapture{}
+	proxy, err := NewMITMProxy(MITMProxyConfig{
+		Config:                     cfg,
+		Logger:                     testLogger(),
+		CA:                         ca2,
+		CertCache:                  certCache,
+		Redactor:                   redactor,
+		Store:                      ms,
+		OnFlow:                     capture2.OnFlow,
+		OnUpdate:                   capture2.OnUpdate,
+		InsecureSkipVerifyUpstream: true,
+	})
+	if err != nil {
+		t.Fatalf("NewMITMProxy: %v", err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listener: %v", err)
+	}
+	defer ln.Close()
+	go func() { _ = http.Serve(ln, proxy) }()
+
+	proxyURL, _ := url.Parse("http://" + ln.Addr().String())
+	certPool := x509.NewCertPool()
+	certPool.AppendCertsFromPEM(ca2.CertPEM())
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{
+				RootCAs: certPool,
+			},
+		},
+	}
+
+	resp, err := client.Get(upstream.URL + "/v1/chat/completions")
+	if err != nil {
+		t.Fatalf("request through CONNECT failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "hello") {
+		t.Errorf("response body = %q, want to contain 'hello'", body)
+	}
+
+	// Flow MUST be captured — this is the critical assertion
+	capturedFlow := capture2.WaitForFlow(2 * time.Second)
+	if capturedFlow == nil {
+		t.Fatal("expected captured flow for intercept_hosts entry, got nil")
+	}
+	if capturedFlow.Host != upstreamURL.Host {
+		t.Errorf("captured Host = %q, want %q", capturedFlow.Host, upstreamURL.Host)
+	}
+	// Custom host should be provider "other" since no built-in provider matches
+	if capturedFlow.Provider != "other" {
+		t.Errorf("captured Provider = %q, want %q", capturedFlow.Provider, "other")
+	}
+	if capturedFlow.Path != "/v1/chat/completions" {
+		t.Errorf("captured Path = %q, want %q", capturedFlow.Path, "/v1/chat/completions")
+	}
+}
+
 // TestMITMProxy_ShouldIntercept_Unit tests the shouldIntercept routing logic directly.
 func TestMITMProxy_ShouldIntercept_Unit(t *testing.T) {
 	t.Parallel()

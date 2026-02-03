@@ -16,7 +16,13 @@ func (b *Bedrock) Name() string {
 // DetectHost returns true for AWS Bedrock runtime hosts.
 // Bedrock uses regional endpoints: bedrock-runtime.{region}.amazonaws.com
 func (b *Bedrock) DetectHost(host string) bool {
-	return strings.Contains(host, "bedrock-runtime") && strings.Contains(host, "amazonaws.com")
+	// Strip port for prefix check (MatchDomainSuffix strips port internally)
+	h := host
+	if i := strings.LastIndex(h, ":"); i != -1 {
+		h = h[:i]
+	}
+	h = strings.ToLower(h)
+	return strings.HasPrefix(h, "bedrock-runtime.") && MatchDomainSuffix(host, "amazonaws.com")
 }
 
 // ParseUsage extracts token usage from Bedrock responses.

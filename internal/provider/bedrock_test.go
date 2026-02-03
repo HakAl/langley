@@ -18,10 +18,22 @@ func TestBedrock_DetectHost(t *testing.T) {
 		host string
 		want bool
 	}{
+		// Valid Bedrock endpoints
 		{"bedrock-runtime.us-east-1.amazonaws.com", true},
 		{"bedrock-runtime.us-west-2.amazonaws.com", true},
 		{"bedrock-runtime.eu-west-1.amazonaws.com", true},
-		{"bedrock.us-east-1.amazonaws.com", false}, // Not runtime endpoint
+		{"bedrock-runtime.us-east-1.amazonaws.com:443", true},
+
+		// Not runtime endpoint
+		{"bedrock.us-east-1.amazonaws.com", false},
+
+		// False positives that MUST NOT match (domain boundary safety)
+		{"bedrock-runtime.evil-amazonaws.com", false},
+		{"bedrock-runtime.us-east-1.notamazonaws.com", false},
+		{"fake-bedrock-runtime.us-east-1.amazonaws.com", false},
+		{"bedrock-runtime.us-east-1.amazonaws.com.evil.com", false},
+
+		// Unrelated hosts
 		{"api.anthropic.com", false},
 		{"api.openai.com", false},
 		{"example.com", false},

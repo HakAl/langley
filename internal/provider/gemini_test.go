@@ -18,8 +18,16 @@ func TestGemini_DetectHost(t *testing.T) {
 		host string
 		want bool
 	}{
+		// Valid Gemini endpoints
 		{"generativelanguage.googleapis.com", true},
-		{"us-generativelanguage.googleapis.com", true},
+		{"generativelanguage.googleapis.com:443", true},
+
+		// False positives that MUST NOT match (domain boundary safety)
+		{"generativelanguage.googleapis.com.evil.com", false},
+		{"fakegenerativelanguage.googleapis.com", false},
+		{"notgoogleapis.com", false},
+
+		// Unrelated hosts
 		{"api.anthropic.com", false},
 		{"api.openai.com", false},
 		{"example.com", false},
