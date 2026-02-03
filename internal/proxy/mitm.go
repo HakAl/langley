@@ -48,6 +48,11 @@ type MITMProxy struct {
 	onUpdate func(*store.Flow)
 	onEvent  func(*store.Event)
 
+	// Graceful shutdown: track hijacked passthrough tunnels (langley-ga3l)
+	tunnelMu    sync.Mutex
+	tunnelConns map[net.Conn]struct{}
+	tunnelWg    sync.WaitGroup
+
 	// insecureSkipVerifyUpstream is for testing only
 	insecureSkipVerifyUpstream bool
 }
@@ -127,6 +132,7 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 		onFlow:                     cfg.OnFlow,
 		onUpdate:                   cfg.OnUpdate,
 		onEvent:                    cfg.OnEvent,
+		tunnelConns:                make(map[net.Conn]struct{}),
 		insecureSkipVerifyUpstream: cfg.InsecureSkipVerifyUpstream,
 	}
 
@@ -176,6 +182,10 @@ func (p *MITMProxy) ServeListener(ctx context.Context, ln net.Listener) error {
 	if err := p.server.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("serve: %w", err)
 	}
+
+	// Drain hijacked passthrough tunnels (langley-ga3l)
+	p.closeTunnels()
+	p.tunnelWg.Wait()
 
 	return nil
 }
@@ -396,6 +406,29 @@ func matchConfigHosts(host string, interceptHosts []string) bool {
 	return false
 }
 
+// trackConn registers a hijacked connection for graceful shutdown (langley-ga3l).
+func (p *MITMProxy) trackConn(c net.Conn) {
+	p.tunnelMu.Lock()
+	p.tunnelConns[c] = struct{}{}
+	p.tunnelMu.Unlock()
+}
+
+// untrackConn removes a hijacked connection from tracking (langley-ga3l).
+func (p *MITMProxy) untrackConn(c net.Conn) {
+	p.tunnelMu.Lock()
+	delete(p.tunnelConns, c)
+	p.tunnelMu.Unlock()
+}
+
+// closeTunnels closes all tracked passthrough tunnel connections (langley-ga3l).
+func (p *MITMProxy) closeTunnels() {
+	p.tunnelMu.Lock()
+	for c := range p.tunnelConns {
+		c.Close()
+	}
+	p.tunnelMu.Unlock()
+}
+
 // handleConnectPassthrough tunnels the connection transparently without MITM.
 // The client sees the upstream server's real TLS certificate.
 func (p *MITMProxy) handleConnectPassthrough(w http.ResponseWriter, r *http.Request) {
@@ -437,8 +470,16 @@ func (p *MITMProxy) handleConnectPassthrough(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Hand off to bidirectional tunnel with idle timeout
-	go tunnel(clientConn, upstreamConn, p.logger, r.Host)
+	// Hand off to bidirectional tunnel with idle timeout (langley-ga3l)
+	p.trackConn(clientConn)
+	p.trackConn(upstreamConn)
+	p.tunnelWg.Add(1)
+	go func() {
+		defer p.tunnelWg.Done()
+		defer p.untrackConn(clientConn)
+		defer p.untrackConn(upstreamConn)
+		tunnel(clientConn, upstreamConn, p.logger, r.Host)
+	}()
 }
 
 // handleConnectMITM handles HTTPS CONNECT requests with TLS interception.
