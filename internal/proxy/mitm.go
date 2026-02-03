@@ -349,6 +349,12 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Extract tool invocations from non-streaming JSON responses (langley-ahgo)
+	if !flow.IsSSE && respBody.Len() > 0 {
+		tools := parser.ExtractToolUsesFromJSON(respBody.Bytes())
+		p.saveToolInvocations(flowID, flow.TaskID, tools)
+	}
+
 	// Save flow
 	p.saveFlow(flow)
 
@@ -733,6 +739,12 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 		}
 	}
 
+	// Extract tool invocations from non-streaming JSON responses (langley-ahgo)
+	if !flow.IsSSE && respBody.Len() > 0 {
+		tools := parser.ExtractToolUsesFromJSON(respBody.Bytes())
+		p.saveToolInvocations(flowID, flow.TaskID, tools)
+	}
+
 	// Save flow
 	p.saveFlow(flow)
 
@@ -794,6 +806,41 @@ func (p *MITMProxy) saveFlow(flow *store.Flow) {
 	// Use UpdateFlow since flow was already saved at request start (langley-2fa)
 	if err := p.store.UpdateFlow(ctx, flow); err != nil {
 		p.logger.Error("failed to update flow", "flow_id", flow.ID, "error", err)
+	}
+}
+
+// saveToolInvocations persists extracted tool uses to the store.
+func (p *MITMProxy) saveToolInvocations(flowID string, taskID *string, tools []*parser.ToolUse) {
+	if p.store == nil || len(tools) == 0 {
+		return
+	}
+
+	for _, tool := range tools {
+		toolUseID := tool.ID
+		inv := &store.ToolInvocation{
+			ID:        uuid.New().String(),
+			FlowID:    flowID,
+			TaskID:    taskID,
+			ToolUseID: &toolUseID,
+			ToolName:  tool.Name,
+			Timestamp: time.Now(),
+		}
+
+		// Serialize tool input to JSON for storage
+		if len(tool.Input) > 0 {
+			if inputJSON, err := json.Marshal(tool.Input); err == nil {
+				s := string(inputJSON)
+				inv.ToolInput = &s
+			}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if saveErr := p.store.SaveToolInvocation(ctx, inv); saveErr != nil {
+			p.logger.Error("failed to save tool invocation", "flow_id", flowID, "tool", tool.Name, "error", saveErr)
+		} else {
+			p.logger.Debug("saved tool invocation", "flow_id", flowID, "tool", tool.Name, "tool_use_id", toolUseID)
+		}
+		cancel()
 	}
 }
 
@@ -912,35 +959,9 @@ func (p *MITMProxy) streamSSEWithParser(flowID string, taskID *string, reader io
 	eventWg.Wait()
 
 	// Extract and save tool invocations (io4-1)
-	if p.store != nil && len(collectedEvents) > 0 {
+	if len(collectedEvents) > 0 {
 		tools := parser.ExtractToolUses(collectedEvents)
-		for _, tool := range tools {
-			toolUseID := tool.ID
-			inv := &store.ToolInvocation{
-				ID:        uuid.New().String(),
-				FlowID:    flowID,
-				TaskID:    taskID,
-				ToolUseID: &toolUseID,
-				ToolName:  tool.Name,
-				Timestamp: time.Now(),
-			}
-
-			// Serialize tool input to JSON for storage
-			if len(tool.Input) > 0 {
-				if inputJSON, err := json.Marshal(tool.Input); err == nil {
-					s := string(inputJSON)
-					inv.ToolInput = &s
-				}
-			}
-
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			if saveErr := p.store.SaveToolInvocation(ctx, inv); saveErr != nil {
-				p.logger.Error("failed to save tool invocation", "flow_id", flowID, "tool", tool.Name, "error", saveErr)
-			} else {
-				p.logger.Debug("saved tool invocation", "flow_id", flowID, "tool", tool.Name, "tool_use_id", toolUseID)
-			}
-			cancel()
-		}
+		p.saveToolInvocations(flowID, taskID, tools)
 	}
 
 	if err != nil {

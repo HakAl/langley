@@ -461,6 +461,266 @@ func TestE2E_TaskAssignment(t *testing.T) {
 	t.Log("E2E TaskAssignment test passed")
 }
 
+// TestE2E_NonStreamingToolUse_Anthropic verifies that tool invocations are
+// extracted and saved from non-streaming Anthropic-format JSON responses.
+func TestE2E_NonStreamingToolUse_Anthropic(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "langley-e2e-tools-anthropic-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Mock upstream returns a non-streaming response with tool_use blocks
+	mockClaude := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":    "msg_tools_01",
+			"type":  "message",
+			"role":  "assistant",
+			"model": "claude-sonnet-4-20250514",
+			"content": []map[string]interface{}{
+				{"type": "text", "text": "Let me check the weather for you."},
+				{
+					"type": "tool_use",
+					"id":   "toolu_01A",
+					"name": "get_weather",
+					"input": map[string]interface{}{
+						"city": "London",
+					},
+				},
+				{
+					"type": "tool_use",
+					"id":   "toolu_01B",
+					"name": "get_time",
+					"input": map[string]interface{}{
+						"timezone": "Europe/London",
+					},
+				},
+			},
+			"stop_reason": "tool_use",
+			"usage": map[string]interface{}{
+				"input_tokens":  25,
+				"output_tokens": 40,
+			},
+		})
+	}))
+	defer mockClaude.Close()
+
+	dbPath := filepath.Join(tempDir, "langley.db")
+	s, err := store.NewSQLiteStore(dbPath, &config.RetentionConfig{FlowsTTLDays: 7, EventsTTLDays: 7})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer s.Close()
+
+	certDir := filepath.Join(tempDir, "certs")
+	_ = os.MkdirAll(certDir, 0755)
+	ca, _ := langleytls.LoadOrCreateCA(certDir)
+	certCache := langleytls.NewCertCache(ca, 100)
+
+	cfg := &config.Config{
+		Persistence: config.PersistenceConfig{BodyMaxBytes: 1024 * 1024},
+		Redaction:   config.RedactionConfig{RedactAPIKeys: true},
+	}
+	redactor, _ := redact.New(&cfg.Redaction)
+
+	mitmProxy, err := proxy.NewMITMProxy(proxy.MITMProxyConfig{
+		Config:       cfg,
+		CA:           ca,
+		CertCache:    certCache,
+		Store:        s,
+		Redactor:     redactor,
+		TaskAssigner: task.NewAssigner(task.AssignerConfig{IdleGapMinutes: 5}),
+	})
+	if err != nil {
+		t.Fatalf("failed to create proxy: %v", err)
+	}
+
+	mockURL, _ := url.Parse(mockClaude.URL)
+	reqBody := `{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"Weather in London?"}],"tools":[{"name":"get_weather"}],"max_tokens":200}`
+
+	req := httptest.NewRequest("POST", mockClaude.URL+"/v1/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer sk-ant-api-test")
+	req.Host = mockURL.Host
+	req.URL.Host = mockURL.Host
+	req.URL.Scheme = mockURL.Scheme
+
+	recorder := httptest.NewRecorder()
+	mitmProxy.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		body, _ := io.ReadAll(recorder.Result().Body)
+		t.Fatalf("unexpected status %d: %s", recorder.Code, body)
+	}
+
+	// Verify tool invocations were saved
+	ctx := context.Background()
+	flows, _ := s.ListFlows(ctx, store.FlowFilter{Limit: 10})
+	if len(flows) == 0 {
+		t.Fatal("no flows saved")
+	}
+
+	tools, err := s.GetToolInvocationsByFlow(ctx, flows[0].ID)
+	if err != nil {
+		t.Fatalf("failed to get tool invocations: %v", err)
+	}
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tool invocations, got %d", len(tools))
+	}
+
+	// Verify first tool
+	if tools[0].ToolName != "get_weather" && tools[1].ToolName != "get_weather" {
+		t.Errorf("expected get_weather tool, got %s and %s", tools[0].ToolName, tools[1].ToolName)
+	}
+	// Verify second tool
+	if tools[0].ToolName != "get_time" && tools[1].ToolName != "get_time" {
+		t.Errorf("expected get_time tool, got %s and %s", tools[0].ToolName, tools[1].ToolName)
+	}
+
+	// Verify tool_use_ids were captured
+	for _, tool := range tools {
+		if tool.ToolUseID == nil || *tool.ToolUseID == "" {
+			t.Errorf("tool %s missing tool_use_id", tool.ToolName)
+		}
+		if tool.FlowID != flows[0].ID {
+			t.Errorf("tool %s has wrong flow_id: %s", tool.ToolName, tool.FlowID)
+		}
+	}
+
+	// Verify tool input was stored
+	for _, tool := range tools {
+		if tool.ToolInput == nil {
+			t.Errorf("tool %s missing input", tool.ToolName)
+		}
+	}
+
+	t.Logf("E2E NonStreamingToolUse_Anthropic passed: %d tools saved for flow %s", len(tools), flows[0].ID)
+}
+
+// TestE2E_NonStreamingToolUse_OpenAI verifies that tool invocations are
+// extracted and saved from non-streaming OpenAI-format JSON responses.
+func TestE2E_NonStreamingToolUse_OpenAI(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "langley-e2e-tools-openai-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Mock upstream returns OpenAI-format response with tool_calls
+	mockOpenAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":      "chatcmpl-abc123",
+			"object":  "chat.completion",
+			"model":   "gpt-4o-mini",
+			"choices": []map[string]interface{}{
+				{
+					"index": 0,
+					"message": map[string]interface{}{
+						"role": "assistant",
+						"tool_calls": []map[string]interface{}{
+							{
+								"id":   "call_weather_1",
+								"type": "function",
+								"function": map[string]interface{}{
+									"name":      "get_weather",
+									"arguments": `{"city":"Tokyo"}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+			"usage": map[string]interface{}{
+				"prompt_tokens":     30,
+				"completion_tokens": 20,
+				"total_tokens":      50,
+			},
+		})
+	}))
+	defer mockOpenAI.Close()
+
+	dbPath := filepath.Join(tempDir, "langley.db")
+	s, err := store.NewSQLiteStore(dbPath, &config.RetentionConfig{FlowsTTLDays: 7, EventsTTLDays: 7})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer s.Close()
+
+	certDir := filepath.Join(tempDir, "certs")
+	_ = os.MkdirAll(certDir, 0755)
+	ca, _ := langleytls.LoadOrCreateCA(certDir)
+	certCache := langleytls.NewCertCache(ca, 100)
+
+	cfg := &config.Config{
+		Persistence: config.PersistenceConfig{BodyMaxBytes: 1024 * 1024},
+		Redaction:   config.RedactionConfig{RedactAPIKeys: true},
+	}
+	redactor, _ := redact.New(&cfg.Redaction)
+
+	mitmProxy, err := proxy.NewMITMProxy(proxy.MITMProxyConfig{
+		Config:       cfg,
+		CA:           ca,
+		CertCache:    certCache,
+		Store:        s,
+		Redactor:     redactor,
+		TaskAssigner: task.NewAssigner(task.AssignerConfig{IdleGapMinutes: 5}),
+	})
+	if err != nil {
+		t.Fatalf("failed to create proxy: %v", err)
+	}
+
+	mockURL, _ := url.Parse(mockOpenAI.URL)
+	reqBody := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Weather in Tokyo?"}],"tools":[{"type":"function","function":{"name":"get_weather"}}]}`
+
+	req := httptest.NewRequest("POST", mockOpenAI.URL+"/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer sk-test-openai")
+	req.Host = mockURL.Host
+	req.URL.Host = mockURL.Host
+	req.URL.Scheme = mockURL.Scheme
+
+	recorder := httptest.NewRecorder()
+	mitmProxy.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		body, _ := io.ReadAll(recorder.Result().Body)
+		t.Fatalf("unexpected status %d: %s", recorder.Code, body)
+	}
+
+	// Verify tool invocation was saved
+	ctx := context.Background()
+	flows, _ := s.ListFlows(ctx, store.FlowFilter{Limit: 10})
+	if len(flows) == 0 {
+		t.Fatal("no flows saved")
+	}
+
+	tools, err := s.GetToolInvocationsByFlow(ctx, flows[0].ID)
+	if err != nil {
+		t.Fatalf("failed to get tool invocations: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool invocation, got %d", len(tools))
+	}
+
+	tool := tools[0]
+	if tool.ToolName != "get_weather" {
+		t.Errorf("expected tool name get_weather, got %s", tool.ToolName)
+	}
+	if tool.ToolUseID == nil || *tool.ToolUseID != "call_weather_1" {
+		t.Errorf("expected tool_use_id call_weather_1, got %v", tool.ToolUseID)
+	}
+	if tool.ToolInput == nil || !strings.Contains(*tool.ToolInput, "Tokyo") {
+		t.Errorf("expected tool input containing Tokyo, got %v", tool.ToolInput)
+	}
+
+	t.Logf("E2E NonStreamingToolUse_OpenAI passed: tool %s saved for flow %s", tool.ToolName, flows[0].ID)
+}
+
 // TestE2E_ErrorHandling tests proxy behavior with upstream errors.
 func TestE2E_ErrorHandling(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "langley-e2e-error-*")
