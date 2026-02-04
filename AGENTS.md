@@ -121,16 +121,16 @@ make test-cover && open coverage.html
 
 ## Issue Tracking
 
-**bd (beads)** is a lightweight, git-integrated issue tracker. Run `bd onboard` to get started.
+**br (beads_rust)** is a lightweight, git-integrated issue tracker. Run `br help` to get started.
 
 ## Quick Reference
 
 ```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --status in_progress  # Claim work
-bd close <id>         # Complete work
-bd sync               # Sync with git
+br ready              # Find available work
+br show <id>          # View issue details
+br update <id> --status in_progress  # Claim work
+br close <id>         # Complete work
+br sync               # Sync with git
 ```
 
 ## Doc Hygiene
@@ -141,7 +141,7 @@ Keep README, CLI help, and config schema in sync. If a setting name or env var c
 - **Backend:** Go
 - **Frontend:** React (Vite dev server)
 - **E2E Testing:** Playwright (via MCP server)
-- **Issue Tracking:** bd (beads) - lightweight git-integrated issue tracker
+- **Issue Tracking:** br (beads_rust) - lightweight git-integrated issue tracker
 
 ---
 
