@@ -3,7 +3,7 @@ name: ux-audit
 description: >
   Systematic UX audit of the Langley dashboard via Playwright.
   Evaluates experience quality across navigation, feedback, accessibility, view-specific issues, and responsiveness.
-  Files findings as bd issues.
+  Files findings as br issues.
 invoke: user
 ---
 
@@ -63,8 +63,8 @@ Store these values for all phases:
 
 Before auditing, check what issues already exist from prior runs:
 ```bash
-bd list --label ux-audit --status open
-bd list --label ux-audit --status closed
+br list --label ux-audit --status open
+br list --label ux-audit --status closed
 ```
 
 Record both lists. Open issues tell you what to re-evaluate (was it fixed? was the fix good?). Closed issues tell you what was already addressed (don't re-file, but do re-evaluate quality).
@@ -291,13 +291,13 @@ For each open issue from a prior audit (Phase 0.5):
 ## Phase 4 — File Issues
 
 **Present findings to the user first.** Use AskUserQuestion:
-- Question: "The audit found {N} new issues. File them as bd issues?"
+- Question: "The audit found {N} new issues. File them as br issues?"
 - Options: "Yes, file all" / "Let me pick which to file" / "No, just the report"
 
 If filing:
 
 ```bash
-bd create "UX: {short title}" --label ux-audit --label {category} --priority {1|2|3} --type {bug|task}
+br create "UX: {short title}" --label ux-audit --label {category} --priority {1|2|3} --type {bug|task}
 ```
 
 Where:
@@ -308,15 +308,15 @@ Where:
 
 **Add detail comment** with the full finding (observed, expected, evidence):
 ```bash
-bd comment {issue-id} "{observed behavior}. Expected: {what good UX looks like}. Evidence: {screenshot ref}. Affects: {views/components}."
+br comment {issue-id} "{observed behavior}. Expected: {what good UX looks like}. Evidence: {screenshot ref}. Affects: {views/components}."
 ```
 
 **Close verified fixes:**
 ```bash
-bd close {issue-id} --reason "Verified fixed in UX audit {date}"
+br close {issue-id} --reason "Verified fixed in UX audit {date}"
 ```
 
-**Prerequisite**: The `bd` tool must be available. If not found, print findings and instruct the user to file manually.
+**Prerequisite**: The `br` tool must be available. If not found, print findings and instruct the user to file manually.
 
 After filing, print:
 ```
@@ -364,4 +364,4 @@ If the skill did NOT start the server, skip this phase entirely.
 - **Keyboard shortcuts**: `?` help, `j`/`k` nav, `1-6` views, `/` search, `Escape` close, `Enter` select.
 - **Settings range**: `idle_gap_minutes` accepts 1-60.
 - **Flow list cap**: 50 most recent on initial load, 100 max via WebSocket.
-- **`bd` tool**: Local issue tracker. If unavailable, report findings as text and skip auto-filing.
+- **`br` tool**: Local issue tracker. If unavailable, report findings as text and skip auto-filing.

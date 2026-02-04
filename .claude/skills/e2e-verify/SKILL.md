@@ -2,14 +2,14 @@
 name: e2e-verify
 description: >
   General-purpose E2E verification skill that reads acceptance criteria from work artifacts
-  (bd issues, .docs/ plans, git diff), converts each criterion into an executable assertion,
+  (br issues, .docs/ plans, git diff), converts each criterion into an executable assertion,
   runs them against a live Langley instance, and reports pass/fail with observed values.
 invoke: user
 ---
 
 # E2E Verify
 
-Reads acceptance criteria from the current work context (bd issues, plan files, git diff), classifies each into an executable assertion type, runs them against a live Langley instance, and reports pass/fail with observed values.
+Reads acceptance criteria from the current work context (br issues, plan files, git diff), classifies each into an executable assertion type, runs them against a live Langley instance, and reports pass/fail with observed values.
 
 **How this differs from other skills**:
 - `e2e-smoke` checks *rendering* ("did the page load?").
@@ -66,12 +66,12 @@ git branch --show-current
 git log --oneline -5
 ```
 
-Record `BRANCH_NAME` and recent commit subjects. These are used for matching bd issues and plan files.
+Record `BRANCH_NAME` and recent commit subjects. These are used for matching br issues and plan files.
 
-### Step 2: Check bd issues
+### Step 2: Check br issues
 
 ```bash
-bd list --status open
+br list --status open
 ```
 
 Look for:
@@ -84,7 +84,7 @@ For each matching issue, extract AC from:
 - `description` field — look for lines starting with `- [ ]`, `- [x]`, or bullet points under "Acceptance" / "Acceptance Criteria" headers
 - Comments (if the issue has notes)
 
-If bd is not available or no matching issues found, proceed to Step 3.
+If br is not available or no matching issues found, proceed to Step 3.
 
 ### Step 3: Check plan files
 
@@ -95,7 +95,7 @@ ls .docs/plans/
 Look for:
 1. Plan files whose name matches the branch name (e.g., branch `feat/langley-run-command` matches `feat-langley-run-command.md`), OR
 2. Files ending in `_wip.md` (most recent), OR
-3. If Step 2 found a bd issue referencing a plan file, use that file.
+3. If Step 2 found a br issue referencing a plan file, use that file.
 
 In the matched plan file, extract AC from sections titled:
 - `## Acceptance Criteria`
@@ -116,7 +116,7 @@ git diff main...HEAD
 
 The diff is NOT a source of AC — it cannot invent acceptance criteria. It serves two purposes:
 1. **Scoping**: If Steps 2-3 found AC, the diff helps determine which AC are relevant to the current changes (skip AC about unchanged areas).
-2. **Fallback context**: If no bd issue or plan file matched, present the diff summary to the user and ask them to provide AC manually.
+2. **Fallback context**: If no br issue or plan file matched, present the diff summary to the user and ask them to provide AC manually.
 
 ### Step 5: Present gathered AC
 
@@ -125,7 +125,7 @@ Print all gathered AC to the user:
 ```
 ## Gathered Acceptance Criteria
 
-Source: {bd issue ID / plan file path / user-provided}
+Source: {br issue ID / plan file path / user-provided}
 Branch: {BRANCH_NAME}
 
 Found {N} acceptance criteria:
@@ -175,7 +175,7 @@ Each AC line becomes a verification item:
 
 ```
 V{N}: [{type}] {criterion}
-  Source: {bd issue ID / plan file:line}
+  Source: {br issue ID / plan file:line}
   Assertion: {the exact command or check}
   Expected: {value or condition}
 ```
@@ -296,7 +296,7 @@ Print the verification report in this exact format:
 ## E2E Verification Report
 
 Branch: {BRANCH_NAME}
-Source: {bd issue ID / plan file / user-provided}
+Source: {br issue ID / plan file / user-provided}
 Date: {YYYY-MM-DD}
 
 ### Verification Items
@@ -320,19 +320,19 @@ Format rules:
 - The `[type]` tag at the end of each line shows the assertion type.
 - The `### Failures` section expands each failure with full detail (command run, observed output, expected output).
 - If ALL assertions passed, still include the `### Failures` section with "None." Do not omit it.
-- If no AC were found (Phase 1 returned nothing), report: "No acceptance criteria found. Provide AC manually or ensure a bd issue or plan file exists for this branch."
+- If no AC were found (Phase 1 returned nothing), report: "No acceptance criteria found. Provide AC manually or ensure a br issue or plan file exists for this branch."
 
 ### Review failures
 
 If any assertions failed, present the failure list to the user and ask whether to file issues.
 
 Use AskUserQuestion:
-- Question: "The following assertions failed: {list}. File bd issues for these failures?"
+- Question: "The following assertions failed: {list}. File br issues for these failures?"
 - Options: "Yes, file issues" / "No, just the report"
 
 If yes:
 ```bash
-bd create --title "E2E-verify: {short description}" --label e2e --label bug
+br create --title "E2E-verify: {short description}" --label e2e --label bug
 ```
 
 Issue body should include:
@@ -344,7 +344,7 @@ Issue body should include:
 
 Group related failures into a single issue (e.g., if V1 and V2 both fail because of the same endpoint, file one issue).
 
-If `bd` is not available, print failure details and instruct the user to file issues manually.
+If `br` is not available, print failure details and instruct the user to file issues manually.
 
 If all assertions passed, skip issue filing.
 
@@ -369,7 +369,7 @@ If the skill did NOT start the server, skip this phase entirely.
 - **WebSocket**: `ws://{api_addr}/ws` — dashboard connects automatically for live flow updates.
 - **Rate limit**: API has 20 req/s sustained, 100 burst — not a concern for this test.
 - **Settings API**: `GET /api/settings` returns current values. `PUT /api/settings` accepts `{"idle_gap_minutes": N}` where N is 1-60.
-- **`bd` tool**: Local issue tracker. `bd list --status open` shows open issues. `bd show {id}` shows detail. If unavailable, report failures as text.
+- **`br` tool**: Local issue tracker. `br list --status open` shows open issues. `br show {id}` shows detail. If unavailable, report failures as text.
 - **DOM selectors**: Use `browser_evaluate` for programmatic extraction. If a selector returns null, that is a FAIL — do not fall back to regex on `document.body.innerText`.
 - **Polling pattern**: Poll every 500ms, timeout after 10s. Replace all fixed sleeps.
 - **Beads issue fields**: Issues may have `acceptance_criteria` (string), `description` (with bullet AC), and `notes`. Check all three.

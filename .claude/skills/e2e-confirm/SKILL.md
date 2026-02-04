@@ -847,10 +847,10 @@ Use AskUserQuestion:
 - Question: "The following assertions failed: {list}. File issues for these failures?"
 - Options: "Yes, file issues" / "No, just the report"
 
-If the user chooses yes, create a `bd` issue for each distinct failure. Group related assertion failures into a single issue (e.g. if S4.1 and S4.4 both fail because of the same stats endpoint problem, file one issue).
+If the user chooses yes, create a `br` issue for each distinct failure. Group related assertion failures into a single issue (e.g. if S4.1 and S4.4 both fail because of the same stats endpoint problem, file one issue).
 
 ```bash
-bd create --title "E2E: {short description}" --label e2e --label bug
+br create --title "E2E: {short description}" --label e2e --label bug
 ```
 
 The issue body should include:
@@ -859,7 +859,7 @@ The issue body should include:
 - The API call or UI step that produced the failure
 - No interpretation — just the facts
 
-**Prerequisite**: The `bd` tool must be available. If `bd` is not found, print the failure details and instruct the user to file issues manually.
+**Prerequisite**: The `br` tool must be available. If `br` is not found, print the failure details and instruct the user to file issues manually.
 
 If all assertions passed, skip this phase — do not create issues for passing tests.
 
@@ -886,7 +886,7 @@ If the skill did NOT start the server, skip this phase entirely.
 - **Export formats**: `ndjson` (default), `json`, `csv`. This skill uses `json` format for easier assertion on structure.
 - **Task idle gap**: Default 5 minutes. Rapid requests within the gap share a task_id.
 - **Settings API**: `GET /api/settings` returns current values. `PUT /api/settings` accepts `{"idle_gap_minutes": N}` where N is 1-60.
-- **`bd` tool**: Local issue tracker used in Phase 2.5. If unavailable, report failures as text and skip auto-filing.
+- **`br` tool**: Local issue tracker used in Phase 2.5. If unavailable, report failures as text and skip auto-filing.
 - **RUN_ID tagging**: All test traffic includes `_e2e={RUN_ID}` query param. The API does **not** support filtering by this param — it exists only in the stored `path` field for post-hoc human inspection. Assertions rely on delta-based counting and host filtering, not RUN_ID filtering. Do not assume RUN_ID can scope API queries.
 - **DOM selectors**: All `browser_evaluate` calls use `SEL_*` variables discovered in Phase 0.5. If a selector returns null during an assertion, that is a FAIL — do not fall back to regex on `document.body.innerText`. A null return means the DOM structure has changed since discovery, which is a real finding worth reporting.
 - **Style guide**: `docs/style-guide.md` is the source of truth for Scenario 9. Read it before running style assertions to confirm expected token names, contrast thresholds, and component rules. The WCAG contrast formula in Scenario 9 is self-contained — no external libraries needed.
