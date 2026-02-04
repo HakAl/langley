@@ -10,11 +10,7 @@ invoke: user
 
 Scenario-driven behavioral tests that confirm Langley features work correctly. Each scenario sends known data through the proxy and asserts on exact values in the API and dashboard UI.
 
-**How this differs from `e2e-smoke`**: The smoke test checks *rendering* (did the page load?). This skill checks *behavior* (did the correct data appear after I sent known traffic?).
-
 ## Phase 0 - Server Bootstrap & Baseline
-
-Identical to e2e-smoke Phase 1. Reuse the same steps:
 
 1. **Read state file** to discover addresses:
    - Windows: `%APPDATA%\langley\state.json`

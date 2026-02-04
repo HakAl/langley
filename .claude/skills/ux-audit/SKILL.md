@@ -11,16 +11,13 @@ invoke: user
 
 Principle-based evaluation of the Langley dashboard user experience via Playwright MCP browser tools. Each run evaluates the current state of the experience against UX principles — not a fixed checklist.
 
-**How this differs from `e2e-smoke` and `e2e-confirm`:**
-- Smoke checks: "Did the page render?"
+**How this differs from `e2e-confirm`:**
 - Confirm checks: "Did the correct data appear?"
 - UX audit: "Is the experience good? What's the worst thing about it right now?"
 
 **Why open-ended, not a checklist:** A fixed list of 33 known issues becomes a rubber stamp after the issues are fixed. This skill works like a human auditor — it evaluates against principles, surfaces new issues each run, and re-evaluates past fixes to judge whether they're actually good. Different runs should produce different findings as the dashboard evolves.
 
 ## Phase 0 — Server Bootstrap
-
-Identical to e2e-smoke Phase 1. Reuse the same steps:
 
 1. **Read state file** to discover addresses:
    - Windows: `%APPDATA%\langley\state.json`

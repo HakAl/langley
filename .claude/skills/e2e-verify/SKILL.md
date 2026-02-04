@@ -12,7 +12,6 @@ invoke: user
 Reads acceptance criteria from the current work context (br issues, plan files, git diff), classifies each into an executable assertion type, runs them against a live Langley instance, and reports pass/fail with observed values.
 
 **How this differs from other skills**:
-- `e2e-smoke` checks *rendering* ("did the page load?").
 - `e2e-confirm` checks *behavior* across a fixed set of 8 scenarios.
 - `ux-audit` checks *experience quality* against UX principles.
 - `e2e-verify` checks *whatever the current ticket says* — the AC come from the work artifact, not the skill.
