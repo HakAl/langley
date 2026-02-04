@@ -1,9 +1,141 @@
-## ARCHITECTURAL PRINCIPLES (READ THIS FIRST)
+# Agent Instructions
 
-**Boy scout rule: always leave code better than you found it.**
+## Project Structure
 
-> For general coding principles (SOLID, DI philosophy, testing mindset), see `~/.claude/CLAUDE.md`.
-> This document covers **project-specific** conventions for langley.
+```
+langley/
+├── cmd/langley/         # Main entry point
+├── internal/
+│   ├── api/             # REST API handlers, export logic
+│   ├── config/          # Configuration loading
+│   ├── parser/          # SSE/JSON response parsing
+│   ├── provider/        # LLM provider detection (anthropic, openai, etc.)
+│   ├── proxy/           # HTTPS CONNECT proxy, request interception
+│   ├── redact/          # Sensitive data masking
+│   ├── store/           # SQLite persistence (flows, events, tools)
+│   ├── task/            # Task ID extraction
+│   ├── tls/             # Certificate generation
+│   └── ws/              # WebSocket for live updates
+├── web/                 # React frontend (Vite)
+│   ├── src/App.tsx      # Main dashboard component
+│   └── tests/           # Playwright E2E tests
+├── test/e2e/            # Go E2E tests
+└── Makefile             # Build/dev commands
+```
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `internal/store/store.go` | Store interface (add methods here first) |
+| `internal/store/sqlite.go` | SQLite implementation + schema |
+| `internal/api/api.go` | API route registration + handlers |
+| `internal/proxy/proxy.go` | HTTPS proxy core logic |
+| `web/src/App.tsx` | React dashboard (single-file app) |
+| `web/src/index.css` | All CSS — uses design tokens, no hardcoded colors |
+| `docs/style-guide.md` | **UI style guide** — source of truth for tokens, a11y, components |
+| `config.yaml` | Runtime configuration |
+
+## Building & Running
+
+Use `make` (via Git Bash on Windows). Install make if needed: `choco install make` or use MinGW.
+
+```bash
+# Core commands
+make help          # Show all targets
+make install-deps  # Install Go + npm dependencies
+make dev           # Run dev servers (backend + frontend hot reload)
+make build         # Build production binary
+make test          # Run all tests (with -race flag)
+make check         # Lint + format + test (quality gate)
+make clean         # Remove build artifacts
+
+# Development helpers
+make dev-debug     # Backend with debug logging (run dev-frontend separately)
+make stop          # Kill orphaned dev processes (Windows Ctrl+C workaround)
+make stop-frontend # Kill vite only
+make stop-backend  # Kill langley only
+make test-cover    # Generate coverage report
+```
+
+**Development workflow:**
+```bash
+make install-deps  # First time only
+make dev           # Starts backend + Vite dev server
+# Dashboard: http://localhost:5173
+# Proxy: localhost:9090
+```
+
+**Before committing:**
+```bash
+make check         # Must pass (includes lint + format + test)
+```
+
+**After tests pass, verify against the ticket:**
+```bash
+/e2e-verify <bead-id>   # Reads AC from the bead, runs executable assertions
+```
+Run this when finishing work on a feature, bug fix, or any bead with acceptance criteria. The skill extracts AC from the issue, classifies each into an executable check (API, UI, CLI, unit-test), runs them against a live instance, and reports pass/fail with observed values. Do not close a bead until `e2e-verify` passes or remaining failures are acknowledged by the user.
+
+## API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/flows` | List flows (paginated, filterable) |
+| `GET /api/flows/count` | Count flows matching filters |
+| `GET /api/flows/export` | Export flows (ndjson/json/csv) |
+| `GET /api/flows/{id}` | Get single flow detail |
+| `GET /api/flows/{id}/events` | Get SSE events for flow |
+| `GET /api/stats` | Dashboard stats |
+| `GET /api/analytics/*` | Task/tool/cost analytics |
+| `GET /api/health` | Health check |
+| `WS /ws` | Live flow updates |
+
+## Configuration
+
+Environment variables override `config.yaml`:
+- `LANGLEY_AUTH_TOKEN` - API auth token
+- `LANGLEY_PROXY_PORT` - Proxy listen port (default: 9090)
+- `LANGLEY_API_PORT` - Dashboard API port (default: 8080)
+- `LANGLEY_DB_PATH` - SQLite database path
+
+## Debugging Tips
+
+```bash
+# Run backend with verbose logging
+make dev-debug
+
+# Check if ports are in use
+netstat -an | grep 9090
+netstat -an | grep 5173
+
+# Kill stuck processes on Windows
+make stop
+
+# Run specific Go test
+go test -v -run TestName ./internal/store/...
+
+# Check test coverage
+make test-cover && open coverage.html
+```
+
+## Issue Tracking
+
+**bd (beads)** is a lightweight, git-integrated issue tracker. Run `bd onboard` to get started.
+
+## Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --status in_progress  # Claim work
+bd close <id>         # Complete work
+bd sync               # Sync with git
+```
+
+## Doc Hygiene
+
+Keep README, CLI help, and config schema in sync. If a setting name or env var changes, update all three.
 
 ### Project Stack
 - **Backend:** Go
@@ -11,14 +143,9 @@
 - **E2E Testing:** Playwright (via MCP server)
 - **Issue Tracking:** bd (beads) - lightweight git-integrated issue tracker
 
-### You Are an Architect, Not a Code Monkey
+---
 
-Before writing ANY code, you must:
-1. **Design the interface** - What contract is needed?
-2. **Consider SOLID principles** - Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, Dependency Inversion
-3. **Plan dependency injection** - How will this be tested? What needs to be injected?
-4. **Think about edge cases** - What can go wrong? What are the boundaries?
-5. **Design before coding** - No coding until the design is clear
+## Code Style
 
 ### MANDATORY: Interface-First Design
 
@@ -331,174 +458,60 @@ Unit tests use Vitest for component logic.
 
 ---
 
-# Agent Instructions
+## Philosophy
 
-## Project Structure
+## Rule #1: Work Is Not Done Until User Confirms
 
-```
-langley/
-├── cmd/langley/         # Main entry point
-├── internal/
-│   ├── api/             # REST API handlers, export logic
-│   ├── config/          # Configuration loading
-│   ├── parser/          # SSE/JSON response parsing
-│   ├── provider/        # LLM provider detection (anthropic, openai, etc.)
-│   ├── proxy/           # HTTPS CONNECT proxy, request interception
-│   ├── redact/          # Sensitive data masking
-│   ├── store/           # SQLite persistence (flows, events, tools)
-│   ├── task/            # Task ID extraction
-│   ├── tls/             # Certificate generation
-│   └── ws/              # WebSocket for live updates
-├── web/                 # React frontend (Vite)
-│   ├── src/App.tsx      # Main dashboard component
-│   └── tests/           # Playwright E2E tests
-├── test/e2e/            # Go E2E tests
-└── Makefile             # Build/dev commands
-```
+**NEVER claim work is complete, fixed, or working until the user has tested and confirmed.**
 
-## Key Files
+- Don't say "Fixed!" or "Done!" after making changes
+- Don't assume code works because it compiles/passes tests
+- Always ask the user to verify before moving on
+- If the user reports a problem, the fix isn't done yet
 
-| File | Purpose |
-|------|---------|
-| `internal/store/store.go` | Store interface (add methods here first) |
-| `internal/store/sqlite.go` | SQLite implementation + schema |
-| `internal/api/api.go` | API route registration + handlers |
-| `internal/proxy/proxy.go` | HTTPS proxy core logic |
-| `web/src/App.tsx` | React dashboard (single-file app) |
-| `web/src/index.css` | All CSS — uses design tokens, no hardcoded colors |
-| `docs/style-guide.md` | **UI style guide** — source of truth for tokens, a11y, components |
-| `config.yaml` | Runtime configuration |
+## Boy Scout Rule
 
-## Building & Running
+Always leave code better than you found it. Every touch should improve:
+- Clarity
+- Simplicity
+- Correctness
 
-Use `make` (via Git Bash on Windows). Install make if needed: `choco install make` or use MinGW.
+If you can't make it better, at least don't make it worse.
 
-```bash
-# Core commands
-make help          # Show all targets
-make install-deps  # Install Go + npm dependencies
-make dev           # Run dev servers (backend + frontend hot reload)
-make build         # Build production binary
-make test          # Run all tests (with -race flag)
-make check         # Lint + format + test (quality gate)
-make clean         # Remove build artifacts
+## Think Like an Architect
 
-# Development helpers
-make dev-debug     # Backend with debug logging (run dev-frontend separately)
-make stop          # Kill orphaned dev processes (Windows Ctrl+C workaround)
-make stop-frontend # Kill vite only
-make stop-backend  # Kill langley only
-make test-cover    # Generate coverage report
-```
+Before writing ANY code:
+1. Design interfaces first - what's the contract?
+2. Consider dependencies - what does this need? What needs this?
+3. Plan for testing - how will this be verified?
+4. Follow SOLID - single responsibility, open/closed, etc.
+5. Write tests that prove it works - behavior, not implementation
+6. THEN implement
 
-**Development workflow:**
-```bash
-make install-deps  # First time only
-make dev           # Starts backend + Vite dev server
-# Dashboard: http://localhost:5173
-# Proxy: localhost:9090
-```
+## Never Be a Lazy Coder
 
-**Before committing:**
-```bash
-make check         # Must pass (includes lint + format + test)
-```
+- Don't mock everything - test real behavior
+- Don't write tests that prove nothing - "it returns something" is useless
+- Don't create god classes - split responsibilities
+- Don't hard-code dependencies - inject them
+- Don't skip edge cases - they're where bugs live
+- Don't write code without designing first - thinking is not optional
 
-**After tests pass, verify against the ticket:**
-```bash
-/e2e-verify <bead-id>   # Reads AC from the bead, runs executable assertions
-```
-Run this when finishing work on a feature, bug fix, or any bead with acceptance criteria. The skill extracts AC from the issue, classifies each into an executable check (API, UI, CLI, unit-test), runs them against a live instance, and reports pass/fail with observed values. Do not close a bead until `e2e-verify` passes or remaining failures are acknowledged by the user.
+## SOLID Principles
 
-## API Endpoints
+**Single Responsibility**: Each class/function does ONE thing. If you're writing "and" in the description, split it.
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/flows` | List flows (paginated, filterable) |
-| `GET /api/flows/count` | Count flows matching filters |
-| `GET /api/flows/export` | Export flows (ndjson/json/csv) |
-| `GET /api/flows/{id}` | Get single flow detail |
-| `GET /api/flows/{id}/events` | Get SSE events for flow |
-| `GET /api/stats` | Dashboard stats |
-| `GET /api/analytics/*` | Task/tool/cost analytics |
-| `GET /api/health` | Health check |
-| `WS /ws` | Live flow updates |
+**Open/Closed**: Open for extension, closed for modification. Use strategies/plugins, not if/else chains.
 
-## Configuration
+**Liskov Substitution**: Subtypes must honor the base contract completely. No surprises.
 
-Environment variables override `config.yaml`:
-- `LANGLEY_AUTH_TOKEN` - API auth token
-- `LANGLEY_PROXY_PORT` - Proxy listen port (default: 9090)
-- `LANGLEY_API_PORT` - Dashboard API port (default: 8080)
-- `LANGLEY_DB_PATH` - SQLite database path
+**Interface Segregation**: Don't force clients to depend on methods they don't use. Small, focused interfaces.
 
-## Debugging Tips
+**Dependency Inversion**: Depend on abstractions, not concretions. Inject dependencies, don't instantiate them.
 
-```bash
-# Run backend with verbose logging
-make dev-debug
+## Core Principle: Delete More Than You Add
 
-# Check if ports are in use
-netstat -an | grep 9090
-netstat -an | grep 5173
-
-# Kill stuck processes on Windows
-make stop
-
-# Run specific Go test
-go test -v -run TestName ./internal/store/...
-
-# Check test coverage
-make test-cover && open coverage.html
-```
-
-## Branch Strategy
-
-**Trunk-based development on `main`.**
-- Small, frequent commits directly to main
-- Feature flags for incomplete work (not long-lived branches)
-- `make check` must pass before any push
-
-## Issue Tracking
-
-**bd (beads)** is a lightweight, git-integrated issue tracker. Run `bd onboard` to get started.
-
-## Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --status in_progress  # Claim work
-bd close <id>         # Complete work
-bd sync               # Sync with git
-```
-
-## Landing the Plane (Session Completion)
-
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - `make check` must pass
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   bd sync
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
-
-## Doc Hygiene
-
-Keep README, CLI help, and config schema in sync. If a setting name or env var changes, update all three.
+Before writing ANY fix, ask:
+1. Why does this problem exist?
+2. Is there code that should be deleted instead of code to add?
+3. Am I fixing a symptom or the root cause?
