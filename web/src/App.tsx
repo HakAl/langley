@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import type { Flow, Stats, TaskSummary, ToolStats, ToolInvocation, Anomaly, CostPeriod, Settings, ApiResult } from './types'
 import { mergeFlows } from './mergeFlows'
 import { getInitialTheme } from './utils'
@@ -49,6 +49,7 @@ function App() {
   const [toolInvocationsLoading, setToolInvocationsLoading] = useState(false)
   const [selectedToolInvocation, setSelectedToolInvocation] = useState<ToolInvocation | null>(null)
   const [invocationSelectedIndex, setInvocationSelectedIndex] = useState(0)
+  const hostFilterRef = useRef<HTMLInputElement>(null)
 
   const api = useApi()
 
@@ -212,6 +213,7 @@ function App() {
       }
     },
     navigateTo, onEnter: handleKeyboardEnter,
+    focusSearch: () => hostFilterRef.current?.focus(),
   })
 
   const handleStartExport = useCallback(async (format: string) => {
@@ -281,7 +283,7 @@ function App() {
                 <button className="error-banner-dismiss" onClick={() => setViewError(null)} aria-label="Dismiss error">&times;</button>
               </div>
             )}
-            {view === 'flows' && <FlowListView flows={flows} filteredFlows={filteredFlows} totalFlows={stats?.total_flows} initialLoading={initialLoading} selectedFlowId={selectedFlow?.id ?? null} selectedIndex={selectedIndex} hostFilter={hostFilter} taskFilter={taskFilter} statusFilter={statusFilter} timeRange={timeRange} onHostFilterChange={setHostFilter} onTaskFilterChange={setTaskFilter} onStatusFilterChange={setStatusFilter} onTimeRangeChange={setTimeRange} onFlowSelect={handleFlowSelect} onStartExport={handleStartExport} />}
+            {view === 'flows' && <FlowListView flows={flows} filteredFlows={filteredFlows} totalFlows={stats?.total_flows} initialLoading={initialLoading} selectedFlowId={selectedFlow?.id ?? null} selectedIndex={selectedIndex} hostFilter={hostFilter} taskFilter={taskFilter} statusFilter={statusFilter} timeRange={timeRange} onHostFilterChange={setHostFilter} onTaskFilterChange={setTaskFilter} onStatusFilterChange={setStatusFilter} onTimeRangeChange={setTimeRange} onFlowSelect={handleFlowSelect} onStartExport={handleStartExport} hostFilterRef={hostFilterRef} />}
             {view === 'analytics' && <AnalyticsView stats={stats} dailyCosts={dailyCosts} timeRange={timeRange} onTimeRangeChange={setTimeRange} loading={viewLoading} />}
             {view === 'tasks' && <TasksView tasks={tasks} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={setTimeRange} onTaskSelect={(id) => { setTaskFilter(id); navigateTo('flows') }} loading={viewLoading} />}
             {view === 'tools' && <ToolsView tools={tools} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={setTimeRange} onToolSelect={handleToolSelect} loading={viewLoading} selectedTool={selectedTool} invocations={toolInvocations} invocationsTotal={toolInvocationsTotal} invocationsLoading={toolInvocationsLoading} invocationSelectedIndex={invocationSelectedIndex} onBack={handleToolBack} onInvocationSelect={handleInvocationSelect} />}

@@ -1,16 +1,22 @@
 import { test, expect } from '@playwright/test';
 import { setupMocks, authenticate, mockStats, mockTasks } from './fixtures';
 
+// Helper: mock WS + basic non-flow routes for tests that override specific endpoints
+async function mockBaseRoutes(page: import('@playwright/test').Page) {
+  await page.routeWebSocket('**/ws', (ws) => { ws.onMessage(() => {}); });
+  await page.route('**/api/stats**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mockStats) });
+  });
+  await page.route('**/api/settings', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
+}
+
 test.describe('Error States', () => {
   test('500 response shows error banner', async ({ page }) => {
+    await mockBaseRoutes(page);
     await page.route('**/api/flows?*', async (route) => {
       await route.fulfill({ status: 500, body: 'Internal Server Error' });
-    });
-    await page.route('**/api/stats**', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mockStats) });
-    });
-    await page.route('**/api/settings', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     });
 
     await page.goto('/');
@@ -22,14 +28,9 @@ test.describe('Error States', () => {
   });
 
   test('empty 500 body shows "HTTP 500" fallback', async ({ page }) => {
+    await mockBaseRoutes(page);
     await page.route('**/api/flows?*', async (route) => {
       await route.fulfill({ status: 500, body: '' });
-    });
-    await page.route('**/api/stats**', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mockStats) });
-    });
-    await page.route('**/api/settings', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     });
 
     await page.goto('/');
@@ -41,14 +42,9 @@ test.describe('Error States', () => {
   });
 
   test('503 with body shows response text', async ({ page }) => {
+    await mockBaseRoutes(page);
     await page.route('**/api/flows?*', async (route) => {
       await route.fulfill({ status: 503, body: 'Service Unavailable' });
-    });
-    await page.route('**/api/stats**', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mockStats) });
-    });
-    await page.route('**/api/settings', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     });
 
     await page.goto('/');
@@ -92,14 +88,9 @@ test.describe('Error States', () => {
   });
 
   test('network failure shows error', async ({ page }) => {
+    await mockBaseRoutes(page);
     await page.route('**/api/flows?*', async (route) => {
       await route.abort('failed');
-    });
-    await page.route('**/api/stats**', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mockStats) });
-    });
-    await page.route('**/api/settings', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     });
 
     await page.goto('/');
@@ -110,14 +101,9 @@ test.describe('Error States', () => {
   });
 
   test('dismiss button removes error banner', async ({ page }) => {
+    await mockBaseRoutes(page);
     await page.route('**/api/flows?*', async (route) => {
       await route.fulfill({ status: 500, body: 'Server error' });
-    });
-    await page.route('**/api/stats**', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(mockStats) });
-    });
-    await page.route('**/api/settings', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     });
 
     await page.goto('/');

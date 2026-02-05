@@ -19,6 +19,7 @@ interface UseKeyboardNavOptions {
   clearSelectedFlow: () => void
   navigateTo: (v: View) => void
   onEnter: (item: unknown) => void
+  focusSearch?: () => void
 }
 
 export function useKeyboardNav({
@@ -32,6 +33,7 @@ export function useKeyboardNav({
   clearSelectedFlow,
   navigateTo,
   onEnter,
+  focusSearch,
 }: UseKeyboardNavOptions) {
   useEffect(() => {
     const getItems = (): unknown[] => {
@@ -63,7 +65,10 @@ export function useKeyboardNav({
           if (list.length > 0 && selectedIndex < list.length) onEnter(list[selectedIndex])
           break
         case '/':
-          if (view === 'flows') e.preventDefault()
+          if (view === 'flows') {
+            e.preventDefault()
+            focusSearch?.()
+          }
           break
         case 'Escape':
           if (showHelp) setShowHelp(() => false)
@@ -83,5 +88,5 @@ export function useKeyboardNav({
 
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [view, selectedIndex, selectedFlow, showHelp, items, setSelectedIndex, setShowHelp, clearSelectedFlow, navigateTo, onEnter])
+  }, [view, selectedIndex, selectedFlow, showHelp, items, setSelectedIndex, setShowHelp, clearSelectedFlow, navigateTo, onEnter, focusSearch])
 }

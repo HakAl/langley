@@ -155,10 +155,9 @@ test.describe('WebSocket Real-time Updates', () => {
   });
 
   test('shows error banner after max reconnect failures', async ({ page }) => {
-    let closeCount = 0;
+    test.setTimeout(90000); // Exponential backoff: 1s+2s+4s+8s+16s = 31s minimum
 
     await page.routeWebSocket('**/ws', (ws) => {
-      closeCount++;
       // Close immediately each time to trigger reconnect
       ws.close();
     });
@@ -168,7 +167,6 @@ test.describe('WebSocket Real-time Updates', () => {
 
     // The hook uses exponential backoff: 1s, 2s, 4s, 8s, 16s
     // After 5 closes, MAX_RECONNECT_ATTEMPTS is reached
-    // Use page.waitForFunction to poll for the error message
     await expect(page.getByText('Connection lost. Refresh to reconnect.')).toBeVisible({ timeout: 60000 });
   });
 

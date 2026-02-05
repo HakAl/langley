@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react'
+import { useCallback } from 'react'
 import type { Flow } from '../types'
 import { formatTime, formatCost, getStatusClass } from '../utils'
 import { TimeRangeSelect } from '../components/TimeRangeSelect'
@@ -20,6 +20,7 @@ interface FlowListViewProps {
   onTimeRangeChange: (days: number | null) => void
   onFlowSelect: (id: string) => void
   onStartExport: (format: string) => void
+  hostFilterRef?: React.RefObject<HTMLInputElement | null>
 }
 
 export function FlowListView({
@@ -38,8 +39,8 @@ export function FlowListView({
   onFlowSelect,
   onStartExport,
   timeRange,
+  hostFilterRef,
 }: FlowListViewProps) {
-  const hostFilterRef = useRef<HTMLInputElement>(null)
 
   const handleExportChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     if (e.target.value) {

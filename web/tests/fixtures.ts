@@ -202,6 +202,11 @@ export interface SetupMocksOptions {
 export async function setupMocks(page: Page, options: SetupMocksOptions = {}) {
   const flowData = options.flows ?? (options.emptyFlows ? [] : mockFlows);
 
+  // Default WS mock — prevents "WebSocket connection failed" error banner
+  await page.routeWebSocket('**/ws', (ws) => {
+    ws.onMessage(() => {});
+  });
+
   await page.route('**/api/flows?*', async (route) => {
     await route.fulfill({
       status: 200,

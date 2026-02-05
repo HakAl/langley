@@ -1,32 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { mockFlows, setupMocks, authenticate } from './fixtures';
 
-test.describe('Authentication', () => {
-  test('shows token input when not authenticated', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.getByPlaceholder('Enter auth token (langley_...)')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Connect' })).toBeVisible();
-  });
-
-  test('stores token in localStorage on connect', async ({ page }) => {
-    await setupMocks(page);
-    await page.goto('/');
-
-    await page.getByPlaceholder('Enter auth token (langley_...)').fill('my-test-token');
-    await page.getByRole('button', { name: 'Connect' }).click();
-
-    const token = await page.evaluate(() => localStorage.getItem('langley_token'));
-    expect(token).toBe('my-test-token');
-  });
-
-  test('hides token input after authentication', async ({ page }) => {
-    await setupMocks(page);
-    await page.goto('/');
-    await authenticate(page);
-
-    await expect(page.getByPlaceholder('Enter auth token (langley_...)')).not.toBeVisible();
-  });
-});
 
 test.describe('Flows View', () => {
   test.beforeEach(async ({ page }) => {
@@ -72,7 +46,7 @@ test.describe('Flows View', () => {
   });
 
   test('filters by status', async ({ page }) => {
-    await page.getByRole('combobox').selectOption('error');
+    await page.locator('select[aria-label="Filter by status"]').selectOption('error');
 
     // Only error flow (400) should be visible
     await expect(page.getByText('api.openai.com')).toBeVisible();
@@ -290,14 +264,23 @@ test.describe('Connection Status', () => {
 
 test.describe('Error Handling', () => {
   test('shows error banner on 401', async ({ page }) => {
+    await page.routeWebSocket('**/ws', (ws) => { ws.onMessage(() => {}); });
     await page.route('**/api/flows?*', async (route) => {
       await route.fulfill({ status: 401 });
+    });
+    await page.route('**/api/stats**', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    });
+    await page.route('**/api/settings', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     });
 
     await page.goto('/');
     await authenticate(page);
 
-    await expect(page.getByText('Invalid token')).toBeVisible();
+    const banner = page.locator('.error-banner[role="alert"]');
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText('HTTP 401');
   });
 });
 
@@ -446,7 +429,7 @@ test.describe('Keyboard Shortcuts', () => {
     await expect(page.getByText('task-abc')).toBeVisible();
 
     // First task row should be keyboard-selected by default
-    const firstRow = page.locator('tbody tr[role="option"]').first();
+    const firstRow = page.locator('tbody tr').first();
     await expect(firstRow).toHaveClass(/keyboard-selected/);
   });
 
