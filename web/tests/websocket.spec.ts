@@ -210,6 +210,6 @@ test.describe('WebSocket Real-time Updates', () => {
     await expect(page.getByText('Connected')).toBeVisible({ timeout: 10000 });
 
     // After reconnect, flows should have been refetched
-    expect(flowsFetchCount).toBeGreaterThan(initialFetches);
+    await expect.poll(() => flowsFetchCount, { timeout: 5000 }).toBeGreaterThan(initialFetches);
   });
 });

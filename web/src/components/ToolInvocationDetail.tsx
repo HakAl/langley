@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import type { ToolInvocation } from '../types'
 import { formatTime, formatDate, formatDuration } from '../utils'
 
@@ -90,6 +90,9 @@ function JsonViewer({ input, result }: { input?: string | null; result?: string 
 }
 
 export function ToolInvocationDetail({ invocation, onClose, onViewFlow }: ToolInvocationDetailProps) {
+  const closeRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => { closeRef.current?.focus() }, [])
+
   const statusLabel = invocation.success == null ? 'Pending' : invocation.success ? 'Success' : 'Failed'
   const statusClass = invocation.success == null ? '' : invocation.success ? 'success' : 'error'
 
@@ -97,7 +100,7 @@ export function ToolInvocationDetail({ invocation, onClose, onViewFlow }: ToolIn
     <div className="flow-detail">
       <div className="detail-header">
         <h2>{invocation.tool_name}</h2>
-        <button className="close-btn" onClick={onClose} aria-label="Close invocation detail">&times;</button>
+        <button ref={closeRef} className="close-btn" onClick={onClose} aria-label="Close invocation detail">&times;</button>
       </div>
 
       <div className="detail-grid">

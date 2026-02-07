@@ -61,6 +61,7 @@ export function ToolsView({
                 return (
                   <tr
                     key={inv.id}
+                    role="row"
                     className={index === invocationSelectedIndex ? 'keyboard-selected' : ''}
                     tabIndex={index === invocationSelectedIndex ? 0 : -1}
                     aria-selected={index === invocationSelectedIndex}
@@ -114,6 +115,7 @@ export function ToolsView({
             {tools.map((tool, index) => (
               <tr
                 key={tool.tool_name}
+                role="row"
                 className={index === selectedIndex ? 'keyboard-selected' : ''}
                 tabIndex={index === selectedIndex ? 0 : -1}
                 aria-selected={index === selectedIndex}

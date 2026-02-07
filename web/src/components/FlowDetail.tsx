@@ -1,3 +1,4 @@
+import { useRef, useEffect } from 'react'
 import type { Flow } from '../types'
 import { formatTime, formatDate, formatCost, formatDuration, getStatusClass } from '../utils'
 import { BodyViewer } from './BodyViewer'
@@ -8,11 +9,14 @@ interface FlowDetailProps {
 }
 
 export function FlowDetail({ flow, onClose }: FlowDetailProps) {
+  const closeRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => { closeRef.current?.focus() }, [])
+
   return (
     <div className="flow-detail">
       <div className="detail-header">
         <h2>{flow.method} {flow.path}</h2>
-        <button className="close-btn" onClick={onClose} aria-label="Close flow detail">×</button>
+        <button ref={closeRef} className="close-btn" onClick={onClose} aria-label="Close flow detail">×</button>
       </div>
 
       <div className="detail-grid">

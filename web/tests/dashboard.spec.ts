@@ -416,6 +416,9 @@ test.describe('Keyboard Shortcuts', () => {
     // Flow detail should not be visible
     await expect(page.locator('.flow-detail')).not.toBeVisible();
 
+    // Click to ensure page has focus (not on an input)
+    await page.locator('.flow-list').click();
+
     // Press Enter to select first flow
     await page.keyboard.press('Enter');
     await expect(page.locator('.flow-detail')).toBeVisible();

@@ -13,8 +13,8 @@ export function Nav({ view, anomalyCount, onNavigate }: NavProps) {
       <button className={view === 'analytics' ? 'active' : ''} aria-current={view === 'analytics' ? 'page' : undefined} onClick={() => onNavigate('analytics')}>Analytics</button>
       <button className={view === 'tasks' ? 'active' : ''} aria-current={view === 'tasks' ? 'page' : undefined} onClick={() => onNavigate('tasks')}>Tasks</button>
       <button className={view === 'tools' ? 'active' : ''} aria-current={view === 'tools' ? 'page' : undefined} onClick={() => onNavigate('tools')}>Tools</button>
-      <button className={view === 'anomalies' ? 'active' : ''} aria-current={view === 'anomalies' ? 'page' : undefined} onClick={() => onNavigate('anomalies')}>
-        Anomalies {anomalyCount > 0 && <span className="badge error">{anomalyCount}</span>}
+      <button className={view === 'anomalies' ? 'active' : ''} aria-current={view === 'anomalies' ? 'page' : undefined} aria-label={anomalyCount > 0 ? `Anomalies, ${anomalyCount} active` : 'Anomalies'} onClick={() => onNavigate('anomalies')}>
+        Anomalies {anomalyCount > 0 && <span className="badge error" aria-hidden="true">{anomalyCount}</span>}
       </button>
       <button className={view === 'settings' ? 'active' : ''} aria-current={view === 'settings' ? 'page' : undefined} onClick={() => onNavigate('settings')}>
         Settings

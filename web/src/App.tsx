@@ -258,7 +258,7 @@ function App() {
         </div>
         <Nav view={view} anomalyCount={anomalies.length} onNavigate={navigateTo} />
         <div className="header-right">
-          <button className="theme-toggle" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
+          <button className="theme-toggle" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
             {theme === 'dark' ? '☀' : '☽'}
           </button>
           <div className="status">

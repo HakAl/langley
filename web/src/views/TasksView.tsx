@@ -42,6 +42,7 @@ export function TasksView({ tasks, selectedIndex, timeRange, onTimeRangeChange, 
           {tasks.map((task, index) => (
             <tr
               key={task.task_id}
+              role="row"
               className={index === selectedIndex ? 'keyboard-selected' : ''}
               tabIndex={index === selectedIndex ? 0 : -1}
               aria-selected={index === selectedIndex}
