@@ -1,0 +1,18 @@
+{
+  "id": "flow-anthropic-stream-001",
+  "host": "api.anthropic.com",
+  "method": "POST",
+  "path": "/v1/messages",
+  "url": "https://api.anthropic.com/v1/messages",
+  "provider": "anthropic",
+  "status_code": 200,
+  "status_text": "OK",
+  "is_sse": true,
+  "flow_integrity": "complete",
+  "input_tokens": 150,
+  "output_tokens": 75,
+  "cache_creation_tokens": 20,
+  "cache_read_tokens": 10,
+  "model": "claude-sonnet-4-20250514",
+  "duration_ms": 2500
+}

@@ -1,0 +1,20 @@
+{
+  "output": {
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "text": "Hello! I can help with that."
+        }
+      ]
+    }
+  },
+  "stopReason": "end_turn",
+  "usage": {
+    "inputTokens": 100,
+    "outputTokens": 50
+  },
+  "metrics": {
+    "latencyMs": 180
+  }
+}

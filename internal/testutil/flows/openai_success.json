@@ -1,0 +1,16 @@
+{
+  "id": "flow-openai-001",
+  "host": "api.openai.com",
+  "method": "POST",
+  "path": "/v1/chat/completions",
+  "url": "https://api.openai.com/v1/chat/completions",
+  "provider": "openai",
+  "status_code": 200,
+  "status_text": "OK",
+  "is_sse": false,
+  "flow_integrity": "complete",
+  "input_tokens": 100,
+  "output_tokens": 50,
+  "model": "gpt-4o",
+  "duration_ms": 200
+}

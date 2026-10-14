@@ -1,0 +1,7 @@
+data: {"candidates":[{"content":{"parts":[{"text":"Hello"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro-001"}
+
+data: {"candidates":[{"content":{"parts":[{"text":"! I can"}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro-001"}
+
+data: {"candidates":[{"content":{"parts":[{"text":" help with that."}],"role":"model"},"index":0}],"modelVersion":"gemini-1.5-pro-001"}
+
+data: {"candidates":[{"content":{"parts":[{"text":""}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":60,"totalTokenCount":180},"modelVersion":"gemini-1.5-pro-001"}
