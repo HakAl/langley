@@ -33,9 +33,9 @@ func TestFlowBuilder_Defaults(t *testing.T) {
 
 func TestFlowBuilder_WithProvider(t *testing.T) {
 	tests := []struct {
-		provider   string
-		wantHost   string
-		wantPath   string
+		provider string
+		wantHost string
+		wantPath string
 	}{
 		{"anthropic", "api.anthropic.com", "/v1/messages"},
 		{"openai", "api.openai.com", "/v1/chat/completions"},

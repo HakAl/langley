@@ -118,16 +118,16 @@ func (e *Engine) CalculateCost(ctx context.Context, provider, model string, inpu
 
 // TaskSummary represents aggregated statistics for a task.
 type TaskSummary struct {
-	TaskID        string
-	FlowCount     int
-	TotalTokensIn int
+	TaskID         string
+	FlowCount      int
+	TotalTokensIn  int
 	TotalTokensOut int
-	TotalCost     float64
-	FirstSeen     time.Time
-	LastSeen      time.Time
-	DurationMs    int64 // Wall clock time from first to last
-	Models        []string
-	ToolsUsed     []string
+	TotalCost      float64
+	FirstSeen      time.Time
+	LastSeen       time.Time
+	DurationMs     int64 // Wall clock time from first to last
+	Models         []string
+	ToolsUsed      []string
 }
 
 // GetTaskSummary returns aggregated metrics for a task.
@@ -246,15 +246,15 @@ func (e *Engine) ListTaskSummaries(ctx context.Context, start, end time.Time, li
 
 // ToolStats represents statistics for a tool.
 type ToolStats struct {
-	ToolName       string
+	ToolName        string
 	InvocationCount int
-	SuccessCount   int
-	FailureCount   int
-	SuccessRate    float64
-	TotalCost      float64
-	AvgDurationMs  float64
-	TotalTokensIn  int
-	TotalTokensOut int
+	SuccessCount    int
+	FailureCount    int
+	SuccessRate     float64
+	TotalCost       float64
+	AvgDurationMs   float64
+	TotalTokensIn   int
+	TotalTokensOut  int
 }
 
 // GetToolStats returns aggregated statistics for tools.
@@ -308,10 +308,10 @@ func (e *Engine) GetToolStats(ctx context.Context, start, end time.Time) ([]*Too
 
 // CostByPeriod represents cost aggregated by time period.
 type CostByPeriod struct {
-	Period        string // ISO date or hour
-	FlowCount     int
-	TotalCost     float64
-	TotalTokensIn int
+	Period         string // ISO date or hour
+	FlowCount      int
+	TotalCost      float64
+	TotalTokensIn  int
 	TotalTokensOut int
 }
 
@@ -381,13 +381,13 @@ func (e *Engine) GetCostByModel(ctx context.Context, start, end time.Time) ([]*C
 
 // OverallStats represents summary statistics.
 type OverallStats struct {
-	TotalFlows      int
-	TotalCost       float64
-	TotalTokensIn   int
-	TotalTokensOut  int
-	TotalTasks      int
-	TotalToolCalls  int
-	AvgCostPerFlow  float64
+	TotalFlows       int
+	TotalCost        float64
+	TotalTokensIn    int
+	TotalTokensOut   int
+	TotalTasks       int
+	TotalToolCalls   int
+	AvgCostPerFlow   float64
 	AvgTokensPerFlow float64
 }
 

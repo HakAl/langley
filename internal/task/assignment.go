@@ -35,11 +35,11 @@ type Assignment struct {
 
 // Assigner assigns tasks to flows.
 type Assigner struct {
-	mu            sync.Mutex
-	lastActivity  map[string]time.Time // host -> last activity time
-	lastTaskID    map[string]string    // host -> last task ID
-	idleGap       time.Duration
-	taskCounter   int
+	mu           sync.Mutex
+	lastActivity map[string]time.Time // host -> last activity time
+	lastTaskID   map[string]string    // host -> last task ID
+	idleGap      time.Duration
+	taskCounter  int
 }
 
 // AssignerConfig configures the task assigner.
@@ -127,7 +127,27 @@ func extractMetadataTaskID(body []byte) string {
 		return ""
 	}
 
-	return request.Metadata.UserID
+	return normalizeMetadataUserID(request.Metadata.UserID)
+}
+
+// normalizeMetadataUserID extracts a concise session/device task identifier when
+// metadata.user_id is a serialized JSON object (e.g., Claude Code v2.1+).
+func normalizeMetadataUserID(userID string) string {
+	if len(userID) > 1 && userID[0] == '{' {
+		var meta struct {
+			SessionID string `json:"session_id"`
+			DeviceID  string `json:"device_id"`
+		}
+		if err := json.Unmarshal([]byte(userID), &meta); err == nil {
+			if meta.SessionID != "" {
+				return "session-" + meta.SessionID
+			}
+			if meta.DeviceID != "" {
+				return "device-" + meta.DeviceID
+			}
+		}
+	}
+	return userID
 }
 
 // generateTaskID generates a task ID for heuristic assignment.
@@ -200,8 +220,8 @@ func (a *Assigner) Reset() {
 
 // Stats returns statistics about task assignment.
 type Stats struct {
-	ActiveHosts  int
-	TotalTasks   int
+	ActiveHosts int
+	TotalTasks  int
 }
 
 // GetStats returns current statistics.

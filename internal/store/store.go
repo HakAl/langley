@@ -3,6 +3,8 @@ package store
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -92,12 +94,35 @@ type FlowFilter struct {
 	Host       *string
 	TaskID     *string
 	TaskSource *string
-	Model      *string
+	Model      string  // case-insensitive substring match on model
+	Method     string  // case-insensitive exact match on HTTP method
+	Path       string  // case-insensitive substring match on path
 	Status     *string // "success" (status_code < 400) or "error" (status_code >= 400)
 	StartTime  *time.Time
 	EndTime    *time.Time
+	SortBy     string // see FlowSortColumns; empty means timestamp
+	SortDir    string // "asc" or "desc" (default "desc")
 	Limit      int
 	Offset     int
+}
+
+// FlowSortColumns lists the accepted FlowFilter.SortBy values.
+var FlowSortColumns = []string{
+	"timestamp", "cost", "total_cost", "tokens", "total_tokens",
+	"input_tokens", "output_tokens", "duration", "duration_ms",
+}
+
+// IsValidFlowSort reports whether sortBy and sortDir are accepted values.
+// Empty values are valid and select the defaults.
+func IsValidFlowSort(sortBy, sortDir string) bool {
+	if sortBy != "" && !slices.Contains(FlowSortColumns, sortBy) {
+		return false
+	}
+	switch strings.ToLower(sortDir) {
+	case "", "asc", "desc":
+		return true
+	}
+	return false
 }
 
 // Store defines the interface for data persistence.

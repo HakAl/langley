@@ -19,8 +19,8 @@ type mockStore struct {
 	flows []*store.Flow
 }
 
-func (m *mockStore) SaveFlow(ctx context.Context, flow *store.Flow) error      { return nil }
-func (m *mockStore) UpdateFlow(ctx context.Context, flow *store.Flow) error    { return nil }
+func (m *mockStore) SaveFlow(ctx context.Context, flow *store.Flow) error   { return nil }
+func (m *mockStore) UpdateFlow(ctx context.Context, flow *store.Flow) error { return nil }
 func (m *mockStore) GetFlow(ctx context.Context, id string) (*store.Flow, error) {
 	return &store.Flow{ID: id, Host: "api.anthropic.com", Method: "POST", Path: "/v1/messages"}, nil
 }
@@ -46,12 +46,14 @@ func (m *mockStore) CountFlows(ctx context.Context, filter store.FlowFilter) (in
 	}
 	return len(m.flows), nil
 }
-func (m *mockStore) SaveEvent(ctx context.Context, event *store.Event) error                   { return nil }
-func (m *mockStore) SaveEvents(ctx context.Context, events []*store.Event) error               { return nil }
+func (m *mockStore) SaveEvent(ctx context.Context, event *store.Event) error     { return nil }
+func (m *mockStore) SaveEvents(ctx context.Context, events []*store.Event) error { return nil }
 func (m *mockStore) GetEventsByFlow(ctx context.Context, flowID string) ([]*store.Event, error) {
 	return []*store.Event{}, nil
 }
-func (m *mockStore) SaveToolInvocation(ctx context.Context, inv *store.ToolInvocation) error { return nil }
+func (m *mockStore) SaveToolInvocation(ctx context.Context, inv *store.ToolInvocation) error {
+	return nil
+}
 func (m *mockStore) GetToolInvocationsByFlow(ctx context.Context, flowID string) ([]*store.ToolInvocation, error) {
 	return []*store.ToolInvocation{}, nil
 }
@@ -176,10 +178,10 @@ func TestAuthMiddleware_ConstantTimeComparison(t *testing.T) {
 
 	// Test that similar-length wrong tokens are rejected
 	wrongTokens := []string{
-		"secure-token-abc124", // Off by one char
-		"secure-token-abc12",  // Missing char
+		"secure-token-abc124",  // Off by one char
+		"secure-token-abc12",   // Missing char
 		"secure-token-abc1234", // Extra char
-		"SECURE-TOKEN-ABC123", // Wrong case
+		"SECURE-TOKEN-ABC123",  // Wrong case
 	}
 
 	for _, wrongToken := range wrongTokens {
@@ -455,4 +457,105 @@ func indexOf(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+// filterRecordingStore records the filters passed to ListFlows/CountFlows.
+type filterRecordingStore struct {
+	mockStore
+	listFilters  []store.FlowFilter
+	countFilters []store.FlowFilter
+}
+
+func (m *filterRecordingStore) ListFlows(ctx context.Context, filter store.FlowFilter) ([]*store.Flow, error) {
+	m.listFilters = append(m.listFilters, filter)
+	return m.mockStore.ListFlows(ctx, filter)
+}
+
+func (m *filterRecordingStore) CountFlows(ctx context.Context, filter store.FlowFilter) (int, error) {
+	m.countFilters = append(m.countFilters, filter)
+	return m.mockStore.CountFlows(ctx, filter)
+}
+
+func TestFlowEndpoints_FilterAndSortParams(t *testing.T) {
+	const query = "method=post&path=chat_completions&model=Sonnet&sort_by=tokens&sort_dir=ASC"
+
+	for _, endpoint := range []string{"/api/flows", "/api/flows/count", "/api/flows/export"} {
+		t.Run(endpoint, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Auth.Token = "test-token"
+			ms := &filterRecordingStore{}
+			handler := NewServer(cfg, ms, nil).Handler()
+
+			req := httptest.NewRequest("GET", endpoint+"?"+query, nil)
+			req.Header.Set("Authorization", "Bearer test-token")
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200, body: %s", rr.Code, rr.Body.String())
+			}
+
+			filters := append(ms.listFilters, ms.countFilters...)
+			if len(filters) == 0 {
+				t.Fatal("store was not queried")
+			}
+			for _, f := range filters {
+				if f.Method != "post" || f.Path != "chat_completions" || f.Model != "Sonnet" {
+					t.Errorf("filter = method %q path %q model %q", f.Method, f.Path, f.Model)
+				}
+				if f.SortBy != "tokens" || f.SortDir != "asc" {
+					t.Errorf("sort = %q %q, want tokens asc", f.SortBy, f.SortDir)
+				}
+			}
+		})
+	}
+}
+
+func TestFlowEndpoints_RejectInvalidSort(t *testing.T) {
+	cases := []string{
+		"sort_by=status_code",
+		"sort_by=timestamp%3BDROP%20TABLE%20flows",
+		"sort_by=cost&sort_dir=sideways",
+		"sort_dir=up",
+	}
+	for _, endpoint := range []string{"/api/flows", "/api/flows/count", "/api/flows/export"} {
+		for _, q := range cases {
+			t.Run(endpoint+"?"+q, func(t *testing.T) {
+				cfg := config.DefaultConfig()
+				cfg.Auth.Token = "test-token"
+				ms := &filterRecordingStore{}
+				handler := NewServer(cfg, ms, nil).Handler()
+
+				req := httptest.NewRequest("GET", endpoint+"?"+q, nil)
+				req.Header.Set("Authorization", "Bearer test-token")
+				rr := httptest.NewRecorder()
+				handler.ServeHTTP(rr, req)
+
+				if rr.Code != http.StatusBadRequest {
+					t.Fatalf("status = %d, want 400", rr.Code)
+				}
+				if len(ms.listFilters)+len(ms.countFilters) != 0 {
+					t.Error("store queried despite invalid sort")
+				}
+			})
+		}
+	}
+}
+
+func TestFlowEndpoints_AcceptAllSortColumns(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Token = "test-token"
+	handler := NewServer(cfg, &filterRecordingStore{}, nil).Handler()
+
+	for _, col := range store.FlowSortColumns {
+		for _, dir := range []string{"", "asc", "desc", "DESC"} {
+			req := httptest.NewRequest("GET", "/api/flows?sort_by="+col+"&sort_dir="+dir, nil)
+			req.Header.Set("Authorization", "Bearer test-token")
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Errorf("sort_by=%s sort_dir=%s: status = %d, want 200", col, dir, rr.Code)
+			}
+		}
+	}
 }

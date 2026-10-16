@@ -86,6 +86,34 @@ test.describe('Combined Filters', () => {
     // The in-progress flow should NOT be present
     await expect(page.locator('.flow-item .status-code').filter({ hasText: '...' })).not.toBeVisible();
   });
+
+  test('filters by path, model, and HTTP method', async ({ page }) => {
+    await page.getByPlaceholder('Filter by path...').fill('/v1/generate');
+    await expect(page.locator('.flow-item')).toHaveCount(1);
+    await expect(page.getByText('api.cohere.com')).toBeVisible();
+
+    // Clear path filter and filter by model
+    await page.getByRole('button', { name: 'Clear path filter' }).click();
+    await expect(page.locator('.flow-item')).toHaveCount(4);
+
+    await page.getByPlaceholder('Filter by model...').fill('gpt-4');
+    await expect(page.locator('.flow-item')).toHaveCount(1);
+    await expect(page.getByText('api.openai.com')).toBeVisible();
+
+    // Filter by HTTP method with no GET flows
+    await page.locator('select[aria-label="HTTP method"]').selectOption('GET');
+    await expect(page.locator('.flow-item')).toHaveCount(0);
+  });
+
+  test('sorts flows by cost and duration', async ({ page }) => {
+    // Sort by cost ascending -> $0 flows first, $0.0225 last
+    await page.locator('select[aria-label="Sort flows"]').selectOption('cost:asc');
+    await expect(page.locator('.flow-item').last()).toContainText('$0.0225');
+
+    // Sort by duration descending -> 1.50s flow (flow-ext-1) first
+    await page.locator('select[aria-label="Sort flows"]').selectOption('duration:desc');
+    await expect(page.locator('.flow-item').first()).toContainText('1.50s');
+  });
 });
 
 test.describe('Export Modal', () => {

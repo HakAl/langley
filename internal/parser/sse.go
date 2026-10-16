@@ -32,18 +32,18 @@ var EventPriority = map[string]string{
 
 // SSE parser limits to prevent resource exhaustion
 const (
-	maxLineSize       = 1024 * 1024       // 1MB max per line
-	maxEventDataSize  = 2 * 1024 * 1024   // 2MB max accumulated data per event
-	maxEventsPerFlow  = 10000             // 10K events per flow
+	maxLineSize      = 1024 * 1024     // 1MB max per line
+	maxEventDataSize = 2 * 1024 * 1024 // 2MB max accumulated data per event
+	maxEventsPerFlow = 10000           // 10K events per flow
 )
 
 // SSEParser parses Server-Sent Events streams.
 type SSEParser struct {
-	flowID       string
-	sequence     int
-	eventsCh     chan *store.Event
-	doneCh       chan struct{}
-	logger       Logger
+	flowID   string
+	sequence int
+	eventsCh chan *store.Event
+	doneCh   chan struct{}
+	logger   Logger
 }
 
 // Logger interface for SSE parser (allows injection for testing)

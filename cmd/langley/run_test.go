@@ -3135,3 +3135,219 @@ func TestFileShellHookManager_OlderManagerAfterFreshRepair(t *testing.T) {
 		})
 	}
 }
+
+func TestLangleyEnvLiveness(t *testing.T) {
+	for _, tc := range []struct {
+		name, marker string
+		state        *ServerState
+		err          error
+		want         bool
+	}{
+		{name: "missing marker", state: &ServerState{PID: os.Getpid()}},
+		{name: "live", marker: "1", state: &ServerState{PID: os.Getpid()}, want: true},
+		{name: "missing state", marker: "1", err: ErrServerNotRunning},
+		{name: "invalid pid", marker: "1", state: &ServerState{}},
+		{name: "dead pid", marker: "1", state: &ServerState{PID: 2147483647}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LANGLEY_ACTIVE", tc.marker)
+			if got := isLangleyEnvActive(&mockStateReader{state: tc.state, err: tc.err}); got != tc.want {
+				t.Fatalf("active=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunningInstance(t *testing.T) {
+	state := &ServerState{PID: os.Getpid(), APIAddr: "localhost:9091"}
+	for _, tc := range []struct {
+		name  string
+		state *ServerState
+		err   error
+		want  bool
+	}{
+		{"live healthy", state, nil, true}, {"unhealthy", state, errors.New("offline"), false},
+		{"dead", &ServerState{PID: 2147483647}, nil, false}, {"missing", nil, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runningInstance(context.Background(), &mockStateReader{state: tc.state}, &mockHealthChecker{err: tc.err})
+			if (got != nil) != tc.want {
+				t.Fatalf("state=%v, want live=%v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestActiveEnvClearsDeadSessions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires POSIX shell")
+	}
+	dead := renderActiveEnv("dead:9090", "/dead", 2147483647)
+	live := renderActiveEnv("live:9090", "/live", os.Getpid())
+	for _, tc := range []struct {
+		name    string
+		content []byte
+		want    string
+	}{
+		{"single dead", dead, "unset"},
+		{"all dead", renderCombinedActiveEnv([][]byte{dead, dead}), "unset"},
+		{"fallback", renderCombinedActiveEnv([][]byte{dead, live}), "http://live:9090"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := "export LANGLEY_ACTIVE=1 HTTPS_PROXY=stale\n" + string(tc.content) + "printf '%s' \"${HTTPS_PROXY-unset}\""
+			out, err := exec.Command("bash", "-c", script).CombinedOutput()
+			if err != nil || string(out) != tc.want {
+				t.Fatalf("output=%q err=%v, want %q", out, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestPromptHookSync(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires bash")
+	}
+	path := filepath.Join(t.TempDir(), "active.env")
+	writeFile(t, path, string(renderActiveEnv("live:9090", "/ca", os.Getpid())), 0600)
+	hook := renderHookBlock(path)
+	script := "PROMPT_COMMAND='echo preserved'\n" + hook + hook + `[[ "$PROMPT_COMMAND" == '_langley_sync; echo preserved' ]] || exit 2
+[[ "$HTTPS_PROXY" == 'http://live:9090' ]] || exit 3
+rm -- ` + shellQuote(path) + `
+_langley_sync
+[[ -z "${LANGLEY_ACTIVE:-}" && -z "${HTTPS_PROXY:-}" ]] || exit 4
+`
+	out, err := exec.Command("bash", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook sync: %v: %s", err, out)
+	}
+}
+
+func TestAttachInstance(t *testing.T) {
+	state := &ServerState{PID: os.Getpid(), APIAddr: "localhost:9091", ProxyAddr: "localhost:9090", CAPath: "/ca"}
+	for _, tc := range []struct {
+		name, marker, proxy string
+		want                int
+		banner              string
+	}{
+		{"already proxied", "1", "http://localhost:9090", 0, "already active in this shell"},
+		{"older tab", "", "", 17, "attached to the running instance"},
+		{"other proxy", "1", "http://other:9090", 17, "attached to the running instance"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LANGLEY_ACTIVE", tc.marker)
+			t.Setenv("HTTPS_PROXY", tc.proxy)
+			var stderr bytes.Buffer
+			code := attachInstance(context.Background(), state, NewOSShellDetector(), &mockProcessRunner{exitCode: 17}, &ProxyEnvBuilder{}, nil, false, &stderr)
+			if code != tc.want || !strings.Contains(stderr.String(), tc.banner) {
+				t.Fatalf("exit=%d stderr=%q", code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestSurvivingInstanceDiscovery(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires POSIX sleep")
+	}
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	storeA := NewFileStateStoreWithPath(statePath)
+	storeB := NewFileStateStoreWithPath(statePath)
+
+	stateA := ServerState{
+		ProxyAddr: "localhost:9090",
+		APIAddr:   "localhost:9091",
+		CAPath:    "/certs/ca.crt",
+		PID:       os.Getpid(),
+		StartedAt: time.Now().Add(-time.Minute),
+	}
+	if err := storeA.Write(stateA); err != nil {
+		t.Fatalf("storeA.Write: %v", err)
+	}
+
+	child := exec.Command("sleep", "5")
+	if err := child.Start(); err != nil {
+		t.Fatalf("child.Start: %v", err)
+	}
+	stateB := ServerState{
+		ProxyAddr: "localhost:9093",
+		APIAddr:   "localhost:9092",
+		CAPath:    "/certs/ca.crt",
+		PID:       child.Process.Pid,
+		StartedAt: time.Now(),
+	}
+	if err := storeB.Write(stateB); err != nil {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+		t.Fatalf("storeB.Write: %v", err)
+	}
+
+	_ = child.Process.Kill()
+	_ = child.Wait()
+	if err := storeB.Delete(); err != nil {
+		t.Fatalf("storeB.Delete: %v", err)
+	}
+
+	reader := NewFileStateStoreWithPath(statePath)
+	got := runningInstance(context.Background(), reader, &mockHealthChecker{err: nil})
+	if got == nil {
+		t.Fatalf("runningInstance returned nil after B exited while A (PID %d) is still alive", stateA.PID)
+	}
+	if got.ProxyAddr != stateA.ProxyAddr || got.APIAddr != stateA.APIAddr {
+		t.Fatalf("runningInstance = %+v, want %+v", got, stateA)
+	}
+
+	t.Setenv("LANGLEY_ACTIVE", "1")
+	t.Setenv("HTTPS_PROXY", "http://localhost:9090")
+	if !isLangleyEnvActive(reader) {
+		t.Fatalf("isLangleyEnvActive returned false for live server A")
+	}
+
+	t.Setenv("HTTPS_PROXY", "http://localhost:9093")
+	if isLangleyEnvActive(reader) {
+		t.Fatalf("isLangleyEnvActive returned true for exited server B")
+	}
+}
+
+func TestShellEnvAdoptionAcrossSessions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires bash")
+	}
+	m, configDir, _ := newTestHookManager(t, "/bin/bash")
+	envPath := filepath.Join(configDir, "active.env")
+	snippet := renderShellEnv(envPath)
+
+	// 1. Activate session 1, verify snippet sets proxy; deactivate, verify _langley_sync unsets;
+	//    reactivate session 2, verify _langley_sync adopts new session without re-sourcing RC.
+	if err := m.Activate("localhost:19090", "/ca1", os.Getpid()); err != nil {
+		t.Fatalf("Activate 1: %v", err)
+	}
+	env1 := string(readFile(t, envPath))
+	if err := m.Deactivate(); err != nil {
+		t.Fatalf("Deactivate 1: %v", err)
+	}
+	if err := m.Activate("localhost:19092", "/ca2", os.Getpid()); err != nil {
+		t.Fatalf("Activate 2: %v", err)
+	}
+	env2 := string(readFile(t, envPath))
+	if err := m.Deactivate(); err != nil {
+		t.Fatalf("Deactivate 2: %v", err)
+	}
+
+	script := snippet + "\n" +
+		`[[ -z "${HTTPS_PROXY:-}" && -z "${LANGLEY_ACTIVE:-}" ]] || exit 10` + "\n" +
+		"cat << 'EOF' > " + shellQuote(envPath) + "\n" + env1 + "EOF\n" +
+		"_langley_sync\n" +
+		`[[ "$HTTPS_PROXY" == 'http://localhost:19090' && "$LANGLEY_ACTIVE" == '1' ]] || exit 11` + "\n" +
+		"rm -f -- " + shellQuote(envPath) + "\n" +
+		"_langley_sync\n" +
+		`[[ -z "${HTTPS_PROXY:-}" && -z "${LANGLEY_ACTIVE:-}" ]] || exit 12` + "\n" +
+		"cat << 'EOF' > " + shellQuote(envPath) + "\n" + env2 + "EOF\n" +
+		"_langley_sync\n" +
+		`[[ "$HTTPS_PROXY" == 'http://localhost:19092' && "$LANGLEY_ACTIVE" == '1' ]] || exit 13` + "\n"
+
+	out, err := exec.Command("bash", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("shell env adoption across sessions failed: %v: %s", err, out)
+	}
+}
+

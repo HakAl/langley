@@ -4,15 +4,17 @@ import {
   applyFlowUpdate,
   applyLiveDeltaToTotal,
   computeQuietRefreshDelay,
+  isCustomFlowSort,
   MAX_COUNT_REFRESH_ATTEMPTS,
   pruneExpiredFlows,
   reconcileFlowPage,
   runCountRefreshAttempts,
 } from './mergeFlows'
+import type { FlowFilterCriteria, FlowSortDir } from './mergeFlows'
 import { filterAnomalies, getAnomalyKey, loadDismissedAnomalyKeys, saveDismissedAnomalyKeys } from './anomalies'
 import { getInitialTheme } from './utils'
 import { useHashRoute } from './hooks/useHashRoute'
-import { useApi } from './hooks/useApi'
+import { setFlowQueryParams, useApi } from './hooks/useApi'
 import type { FlowFetchParams } from './hooks/useApi'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useKeyboardNav } from './hooks/useKeyboardNav'
@@ -38,6 +40,7 @@ function buildFlowCountSearchParams(params: FlowFetchParams): URLSearchParams {
   if (params.host) qs.set('host', params.host)
   if (params.taskId) qs.set('task_id', params.taskId)
   if (params.status && params.status !== 'all') qs.set('status', params.status)
+  setFlowQueryParams(qs, params)
   if (params.days != null) {
     const end = new Date()
     const start = new Date(end.getTime() - params.days * 24 * 60 * 60 * 1000)
@@ -78,6 +81,11 @@ function App() {
   const [taskFilter, setTaskFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'error'>('all')
   const [timeRange, setTimeRange] = useState<number | null>(1)
+  const [methodFilter, setMethodFilter] = useState('')
+  const [pathFilter, setPathFilter] = useState('')
+  const [modelFilter, setModelFilter] = useState('')
+  const [sortBy, setSortBy] = useState('timestamp')
+  const [sortDir, setSortDir] = useState<FlowSortDir>('desc')
   // Tool drill-down state
   const [selectedTool, setSelectedTool] = useState<string | null>(null)
   const [toolInvocations, setToolInvocations] = useState<ToolInvocation[]>([])
@@ -103,21 +111,51 @@ function App() {
     timerId: number
   } | null>(null)
   const knownFlowIdsRef = useRef<Set<string>>(new Set())
+  const restFlowIdsRef = useRef<Set<string>>(new Set())
   const activeFetchTrackersRef = useRef<Set<Map<string, number>>>(new Set())
   const flowPageRequestIdRef = useRef(0)
   const foregroundNavIdRef = useRef(0)
   const pollFailureCountRef = useRef(0)
   const viewRef = useRef(view)
   viewRef.current = view
-  const filterCriteriaRef = useRef({ host: hostFilter, taskId: taskFilter, status: statusFilter, days: timeRange })
-  filterCriteriaRef.current = { host: hostFilter, taskId: taskFilter, status: statusFilter, days: timeRange }
+  const filterCriteriaRef = useRef({
+    host: hostFilter, taskId: taskFilter, status: statusFilter, days: timeRange,
+    method: methodFilter, path: pathFilter, model: modelFilter, sortBy, sortDir,
+  })
+  filterCriteriaRef.current = {
+    host: hostFilter, taskId: taskFilter, status: statusFilter, days: timeRange,
+    method: methodFilter, path: pathFilter, model: modelFilter, sortBy, sortDir,
+  }
 
   const api = useApi()
+
+  // Live filter criteria for client-side matching, read from refs so WebSocket closures stay current
+  const currentFilterCriteria = useCallback((): FlowFilterCriteria => {
+    const { host, taskId, status, days, method, path, model, sortBy, sortDir } = filterCriteriaRef.current
+    return {
+      host: host || undefined,
+      taskId: taskId || undefined,
+      status,
+      days,
+      method: method || undefined,
+      path: path || undefined,
+      model: model || undefined,
+      sortBy,
+      sortDir,
+    }
+  }, [])
+
+  const pendingPageRefreshTimerRef = useRef<number | null>(null)
+  const flowRefreshErrorRef = useRef(false)
 
   const clearPendingQuietRefresh = useCallback(() => {
     if (pendingQuietRefreshRef.current !== null) {
       window.clearTimeout(pendingQuietRefreshRef.current.timerId)
       pendingQuietRefreshRef.current = null
+    }
+    if (pendingPageRefreshTimerRef.current !== null) {
+      window.clearTimeout(pendingPageRefreshTimerRef.current)
+      pendingPageRefreshTimerRef.current = null
     }
   }, [])
 
@@ -138,7 +176,8 @@ function App() {
 
   // Build fetch params from current filter/page refs so reconnect closures always use live filters
   const buildFetchParams = useCallback((pageOverride?: number): FlowFetchParams => {
-    const { host, taskId, status, days } = filterCriteriaRef.current
+    const { host, taskId, status, days, method, path, model, sortBy, sortDir } = filterCriteriaRef.current
+    const customSort = sortBy !== 'timestamp' || sortDir !== 'desc'
     return {
       days: days ?? undefined,
       limit: PAGE_SIZE,
@@ -146,6 +185,11 @@ function App() {
       host: host || undefined,
       taskId: taskId || undefined,
       status: status !== 'all' ? status : undefined,
+      method: method || undefined,
+      path: path || undefined,
+      model: model || undefined,
+      sortBy: customSort ? sortBy : undefined,
+      sortDir: customSort ? sortDir : undefined,
     }
   }, [])
 
@@ -261,7 +305,11 @@ function App() {
           preFetchTotal,
           merge: shouldMerge,
           knownIds: knownFlowIdsRef.current,
+          restIds: restFlowIdsRef.current,
           inFlightDeltas: tracker,
+          sortBy: params.sortBy,
+          sortDir: params.sortDir,
+          pageSize: PAGE_SIZE,
         })
         flowsRef.current = reconciled.flows
         hasAuthoritativeTotalRef.current = !reconciled.countInvalidated
@@ -291,19 +339,43 @@ function App() {
     }
   }, [api.fetchFlows, buildFetchParams, clampPageToTotal, clearPendingQuietRefresh, refreshAuthoritativeCount])
 
+  const schedulePageRefresh = useCallback((attempt = 0) => {
+    if (pendingPageRefreshTimerRef.current !== null) {
+      window.clearTimeout(pendingPageRefreshTimerRef.current)
+      pendingPageRefreshTimerRef.current = null
+    }
+    if (viewRef.current !== 'flows') return
+    const navIdAtStart = foregroundNavIdRef.current
+    void fetchFlowPage({ page: pageRef.current }).then(({ error, stale }) => {
+      if (stale || viewRef.current !== 'flows' || foregroundNavIdRef.current !== navIdAtStart) return
+      if (!error) {
+        if (flowRefreshErrorRef.current) {
+          flowRefreshErrorRef.current = false
+          setViewError(null)
+        }
+        return
+      }
+      if (attempt < 3) {
+        const delay = Math.min(200 * (2 ** attempt), 2000)
+        pendingPageRefreshTimerRef.current = window.setTimeout(() => {
+          pendingPageRefreshTimerRef.current = null
+          schedulePageRefresh(attempt + 1)
+        }, delay)
+      } else {
+        flowRefreshErrorRef.current = true
+        setViewError(error)
+      }
+    })
+  }, [fetchFlowPage])
+
   const handleFlowUpdate = useCallback((flow: Flow) => {
-    const { host, taskId, status, days } = filterCriteriaRef.current
     const result = applyFlowUpdate(
       flowsRef.current,
       flow,
       pageRef.current,
-      {
-        host: host || undefined,
-        taskId: taskId || undefined,
-        status,
-        days,
-      },
+      currentFilterCriteria(),
       knownFlowIdsRef.current,
+      PAGE_SIZE,
     )
     flowsRef.current = result.flows
     setFlows(result.flows)
@@ -312,7 +384,10 @@ function App() {
     } else {
       clampPageToTotal(totalFlowsRef.current)
     }
-  }, [applyDeltaToTotals, clampPageToTotal])
+    if (result.needsPageRefresh && viewRef.current === 'flows') {
+      schedulePageRefresh(0)
+    }
+  }, [applyDeltaToTotals, clampPageToTotal, currentFilterCriteria, schedulePageRefresh])
 
   const handleReconnect = useCallback(() => {
     fetchFlowPage({ merge: true })
@@ -326,38 +401,40 @@ function App() {
   })
 
   // Reset page to 0 on filter change; ignore no-op selections so viewLoading never gets stuck
-  const handleHostFilterChange = useCallback((v: string) => {
-    if (v === filterCriteriaRef.current.host && pageRef.current === 0) return
-    filterCriteriaRef.current = { ...filterCriteriaRef.current, host: v }
+  const changeFlowListFilter = useCallback(<K extends keyof typeof filterCriteriaRef.current>(
+    key: K,
+    value: (typeof filterCriteriaRef.current)[K],
+    setState: (v: (typeof filterCriteriaRef.current)[K]) => void,
+  ) => {
+    if (value === filterCriteriaRef.current[key] && pageRef.current === 0) return
+    filterCriteriaRef.current = { ...filterCriteriaRef.current, [key]: value }
     pageRef.current = 0
     if (viewRef.current === 'flows') {
       foregroundNavIdRef.current += 1
       setViewLoading(true)
     }
-    setHostFilter(v)
+    setState(value)
     setPage(0)
   }, [])
-  const handleTaskFilterChange = useCallback((v: string) => {
-    if (v === filterCriteriaRef.current.taskId && pageRef.current === 0) return
-    filterCriteriaRef.current = { ...filterCriteriaRef.current, taskId: v }
+  const handleHostFilterChange = useCallback((v: string) => changeFlowListFilter('host', v, setHostFilter), [changeFlowListFilter])
+  const handleTaskFilterChange = useCallback((v: string) => changeFlowListFilter('taskId', v, setTaskFilter), [changeFlowListFilter])
+  const handleStatusFilterChange = useCallback((v: 'all' | 'success' | 'error') => changeFlowListFilter('status', v, setStatusFilter), [changeFlowListFilter])
+  const handleMethodFilterChange = useCallback((v: string) => changeFlowListFilter('method', v, setMethodFilter), [changeFlowListFilter])
+  const handlePathFilterChange = useCallback((v: string) => changeFlowListFilter('path', v, setPathFilter), [changeFlowListFilter])
+  const handleModelFilterChange = useCallback((v: string) => changeFlowListFilter('model', v, setModelFilter), [changeFlowListFilter])
+  const handleSortChange = useCallback((nextSortBy: string, nextSortDir: FlowSortDir) => {
+    const cur = filterCriteriaRef.current
+    if (nextSortBy === cur.sortBy && nextSortDir === cur.sortDir && pageRef.current === 0) return
+    filterCriteriaRef.current = { ...cur, sortBy: nextSortBy, sortDir: nextSortDir }
     pageRef.current = 0
     if (viewRef.current === 'flows') {
       foregroundNavIdRef.current += 1
       setViewLoading(true)
     }
-    setTaskFilter(v)
+    setSortBy(nextSortBy)
+    setSortDir(nextSortDir)
     setPage(0)
-  }, [])
-  const handleStatusFilterChange = useCallback((v: 'all' | 'success' | 'error') => {
-    if (v === filterCriteriaRef.current.status && pageRef.current === 0) return
-    filterCriteriaRef.current = { ...filterCriteriaRef.current, status: v }
-    pageRef.current = 0
-    if (viewRef.current === 'flows') {
-      foregroundNavIdRef.current += 1
-      setViewLoading(true)
-    }
-    setStatusFilter(v)
-    setPage(0)
+    setSelectedIndex(0)
   }, [])
   const handleTimeRangeChange = useCallback((days: number | null) => {
     const daysChanged = days !== filterCriteriaRef.current.days
@@ -396,6 +473,7 @@ function App() {
   useEffect(() => {
     clearPendingQuietRefresh()
     knownFlowIdsRef.current.clear()
+    restFlowIdsRef.current.clear()
     hasAuthoritativeTotalRef.current = false
     authoritativeDerivedTotalRef.current = null
     totalFlowsRef.current = 0
@@ -403,22 +481,26 @@ function App() {
     for (const tracker of activeFetchTrackersRef.current) {
       tracker.clear()
     }
-  }, [hostFilter, taskFilter, statusFilter, timeRange, clearPendingQuietRefresh])
+  }, [hostFilter, taskFilter, statusFilter, timeRange, methodFilter, pathFilter, modelFilter, clearPendingQuietRefresh])
 
   // Re-fetch flows when filters or page change
   useEffect(() => {
     if (view !== 'flows') return
     const navId = ++foregroundNavIdRef.current
     pollFailureCountRef.current = 0
+    flowRefreshErrorRef.current = false
+    setViewError(null)
     setViewLoading(true)
     fetchFlowPage({ page }).then(({ error, stale }) => {
-      if (!stale && error) setViewError(error)
+      if (!stale && viewRef.current === 'flows' && foregroundNavIdRef.current === navId && error) {
+        setViewError(error)
+      }
     }).finally(() => {
       if (foregroundNavIdRef.current === navId && pageRef.current === page && viewRef.current === 'flows') {
         setViewLoading(false)
       }
     })
-  }, [page, hostFilter, taskFilter, statusFilter, timeRange, view]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [page, hostFilter, taskFilter, statusFilter, timeRange, methodFilter, pathFilter, modelFilter, sortBy, sortDir, view]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Expire displayed flows locally as the rolling time window advances
   useEffect(() => {
@@ -435,15 +517,9 @@ function App() {
 
     const delay = Math.min(MAX_TIMEOUT_MS, Math.max(0, nextExpiryMs - Date.now() + 10))
     const timerId = window.setTimeout(() => {
-      const { host, taskId, status, days } = filterCriteriaRef.current
       const pruned = pruneExpiredFlows(
         flowsRef.current,
-        {
-          host: host || undefined,
-          taskId: taskId || undefined,
-          status,
-          days,
-        },
+        currentFilterCriteria(),
         knownFlowIdsRef.current,
       )
       if (pruned.totalDelta !== 0) {
@@ -457,28 +533,23 @@ function App() {
       clampPageToTotal(totalFlowsRef.current)
     }, delay)
     return () => window.clearTimeout(timerId)
-  }, [view, initialLoading, viewLoading, timeRange, flows, expiryTick, applyDeltaToTotals, clampPageToTotal])
+  }, [view, initialLoading, viewLoading, timeRange, flows, expiryTick, applyDeltaToTotals, clampPageToTotal, currentFilterCriteria])
 
   // Reconcile off-page rolling-window totals and membership when older pages exist
   useEffect(() => {
     if (view !== 'flows' || initialLoading || viewLoading || timeRange == null) return
     const hasOffPageFlows =
       (totalFlows > page * PAGE_SIZE + flows.length && flows.length >= PAGE_SIZE) ||
-      (flows.length === 0 && totalFlows > page * PAGE_SIZE)
+      (flows.length === 0 && totalFlows > page * PAGE_SIZE) ||
+      (page > 0 && isCustomFlowSort(sortBy, sortDir))
     if (!hasOffPageFlows || pollFailureCountRef.current >= 3) return
 
     let cancelled = false
     const timerId = window.setTimeout(async () => {
       if (cancelled) return
-      const { host, taskId, status, days } = filterCriteriaRef.current
       const pruned = pruneExpiredFlows(
         flowsRef.current,
-        {
-          host: host || undefined,
-          taskId: taskId || undefined,
-          status,
-          days,
-        },
+        currentFilterCriteria(),
         knownFlowIdsRef.current,
       )
       if (pruned.totalDelta !== 0) {
@@ -495,7 +566,8 @@ function App() {
       const stillHasOffPage =
         (totalFlowsRef.current > currentPage * PAGE_SIZE + flowsRef.current.length &&
           flowsRef.current.length >= PAGE_SIZE) ||
-        (flowsRef.current.length === 0 && totalFlowsRef.current > currentPage * PAGE_SIZE)
+        (flowsRef.current.length === 0 && totalFlowsRef.current > currentPage * PAGE_SIZE) ||
+        (currentPage > 0 && isCustomFlowSort(filterCriteriaRef.current.sortBy, filterCriteriaRef.current.sortDir))
 
       if (
         !stillHasOffPage ||
@@ -527,14 +599,19 @@ function App() {
       cancelled = true
       window.clearTimeout(timerId)
     }
-  }, [view, initialLoading, viewLoading, timeRange, page, flows.length, totalFlows, offPagePollTick, applyDeltaToTotals, clampPageToTotal, fetchFlowPage])
+  }, [view, initialLoading, viewLoading, timeRange, page, flows.length, totalFlows, sortBy, sortDir, offPagePollTick, applyDeltaToTotals, clampPageToTotal, fetchFlowPage])
 
   // View-specific data (non-flow views)
   useEffect(() => {
+    flowRefreshErrorRef.current = false
     setViewError(null)
     if (view === 'flows') {
       // Handled by the filter/page effect above
       return
+    }
+    if (pendingPageRefreshTimerRef.current !== null) {
+      window.clearTimeout(pendingPageRefreshTimerRef.current)
+      pendingPageRefreshTimerRef.current = null
     }
     const navId = ++foregroundNavIdRef.current
     setViewLoading(true)
@@ -705,6 +782,8 @@ function App() {
   }, [view, selectedTool, handleFlowSelect, handleToolSelect, handleInvocationSelect, navigateTo])
 
   // When in tool drill-down, use invocations as the items list and invocationSelectedIndex
+  const [sortedTasks, setSortedTasks] = useState<TaskSummary[]>([])
+  const effectiveTasks = sortedTasks.length === tasks.length && sortedTasks.length > 0 ? sortedTasks : tasks
   const effectiveToolItems = selectedTool ? toolInvocations : tools
   const effectiveSelectedIndex = (view === 'tools' && selectedTool) ? invocationSelectedIndex : selectedIndex
   const effectiveSetSelectedIndex = (view === 'tools' && selectedTool)
@@ -716,7 +795,7 @@ function App() {
     selectedIndex: effectiveSelectedIndex,
     selectedFlow: selectedToolInvocation ? { id: 'tool-inv' } as Flow : selectedTool ? { id: 'tool-drill' } as Flow : selectedFlow,
     showHelp,
-    items: { flows, tasks, tools: effectiveToolItems, anomalies: visibleAnomalies },
+    items: { flows, tasks: effectiveTasks, tools: effectiveToolItems, anomalies: visibleAnomalies },
     setSelectedIndex: effectiveSetSelectedIndex,
     setShowHelp,
     clearSelectedFlow: () => {
@@ -739,9 +818,10 @@ function App() {
     if (hostFilter) params.set('host', hostFilter)
     if (taskFilter) params.set('task_id', taskFilter)
     if (statusFilter !== 'all') params.set('status', statusFilter)
+    setFlowQueryParams(params, { method: methodFilter, path: pathFilter, model: modelFilter })
     const { data: countData } = await api.fetchFlowCount(params)
     setExportConfig({ format, rowCount: countData?.count ?? flows.length })
-  }, [api.fetchFlowCount, hostFilter, taskFilter, statusFilter, flows.length])
+  }, [api.fetchFlowCount, hostFilter, taskFilter, statusFilter, methodFilter, pathFilter, modelFilter, flows.length])
 
   const handleConfirmExport = useCallback(async () => {
     if (!exportConfig) return
@@ -749,6 +829,7 @@ function App() {
     if (hostFilter) params.set('host', hostFilter)
     if (taskFilter) params.set('task_id', taskFilter)
     if (statusFilter !== 'all') params.set('status', statusFilter)
+    setFlowQueryParams(params, { method: methodFilter, path: pathFilter, model: modelFilter, sortBy, sortDir })
     try {
       const res = await fetch(`/api/flows/export?${params}`, { credentials: 'include' })
       if (!res.ok) throw new Error('Export failed')
@@ -763,7 +844,7 @@ function App() {
       exportTimeoutRef.current = window.setTimeout(() => setExportMessage(null), 3000)
     } catch (err) { console.error('Export failed:', err) }
     finally { setExportConfig(null) }
-  }, [exportConfig, hostFilter, taskFilter, statusFilter])
+  }, [exportConfig, hostFilter, taskFilter, statusFilter, methodFilter, pathFilter, modelFilter, sortBy, sortDir])
 
   const handleSaveSettings = useCallback(async (s: Partial<Settings>): Promise<ApiResult<Settings>> => {
     const result = await api.updateSettings(s)
@@ -806,9 +887,9 @@ function App() {
                 <button className="error-banner-dismiss" onClick={() => setViewError(null)} aria-label="Dismiss error">&times;</button>
               </div>
             )}
-            {view === 'flows' && <FlowListView flows={flows} totalFlows={totalFlows} initialLoading={initialLoading} selectedFlowId={selectedFlow?.id ?? null} selectedIndex={selectedIndex} hostFilter={hostFilter} taskFilter={taskFilter} statusFilter={statusFilter} timeRange={timeRange} page={page} totalPages={totalPages} onHostFilterChange={handleHostFilterChange} onTaskFilterChange={handleTaskFilterChange} onStatusFilterChange={handleStatusFilterChange} onTimeRangeChange={handleTimeRangeChange} onPageChange={handlePageChange} onFlowSelect={handleFlowSelect} onStartExport={handleStartExport} exportMessage={exportMessage} hostFilterRef={hostFilterRef} />}
+            {view === 'flows' && <FlowListView flows={flows} totalFlows={totalFlows} initialLoading={initialLoading} selectedFlowId={selectedFlow?.id ?? null} selectedIndex={selectedIndex} hostFilter={hostFilter} taskFilter={taskFilter} statusFilter={statusFilter} timeRange={timeRange} page={page} totalPages={totalPages} onHostFilterChange={handleHostFilterChange} onTaskFilterChange={handleTaskFilterChange} onStatusFilterChange={handleStatusFilterChange} methodFilter={methodFilter} pathFilter={pathFilter} modelFilter={modelFilter} sortBy={sortBy} sortDir={sortDir} onMethodFilterChange={handleMethodFilterChange} onPathFilterChange={handlePathFilterChange} onModelFilterChange={handleModelFilterChange} onSortChange={handleSortChange} onTimeRangeChange={handleTimeRangeChange} onPageChange={handlePageChange} onFlowSelect={handleFlowSelect} onStartExport={handleStartExport} exportMessage={exportMessage} hostFilterRef={hostFilterRef} />}
             {view === 'analytics' && <AnalyticsView stats={stats} dailyCosts={dailyCosts} timeRange={timeRange} onTimeRangeChange={handleTimeRangeChange} loading={viewLoading} />}
-            {view === 'tasks' && <TasksView tasks={tasks} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={handleTimeRangeChange} onTaskSelect={(id) => { setTaskFilter(id); setPage(0); navigateTo('flows') }} loading={viewLoading} />}
+            {view === 'tasks' && <TasksView tasks={tasks} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={handleTimeRangeChange} onTaskSelect={(id) => { setTaskFilter(id); setPage(0); navigateTo('flows') }} onSortedTasksChange={setSortedTasks} loading={viewLoading} />}
             {view === 'tools' && <ToolsView tools={tools} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={handleTimeRangeChange} onToolSelect={handleToolSelect} loading={viewLoading} selectedTool={selectedTool} invocations={toolInvocations} invocationsTotal={toolInvocationsTotal} invocationsLoading={toolInvocationsLoading} invocationSelectedIndex={invocationSelectedIndex} onBack={handleToolBack} onInvocationSelect={handleInvocationSelect} />}
             {view === 'anomalies' && <AnomaliesView anomalies={anomalies} selectedIndex={selectedIndex} timeRange={timeRange} onTimeRangeChange={handleTimeRangeChange} onViewFlow={async (id) => { await handleFlowSelect(id); navigateTo('flows') }} loading={viewLoading} dismissedKeys={dismissedAnomalyKeys} showDismissed={showDismissedAnomalies} onShowDismissedChange={setShowDismissedAnomalies} onDismiss={handleDismissAnomaly} onRestore={handleRestoreAnomaly} onRestoreAll={handleRestoreAllAnomalies} />}
             {view === 'settings' && <SettingsView settings={settings} onSave={handleSaveSettings} loading={viewLoading} draftIdleGap={draftIdleGap} onDraftChange={setDraftIdleGap} />}

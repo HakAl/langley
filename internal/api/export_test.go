@@ -17,11 +17,11 @@ func TestParseExportConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		query         string
-		wantFormat    ExportFormat
-		wantBodies    bool
-		wantMaxRows   int
+		name        string
+		query       string
+		wantFormat  ExportFormat
+		wantBodies  bool
+		wantMaxRows int
 	}{
 		{
 			name:        "defaults",

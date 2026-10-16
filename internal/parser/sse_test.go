@@ -250,7 +250,7 @@ func TestParseEventSizeLimit(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("event: large_event\n")
 	chunk := strings.Repeat("x", 100000) // 100KB per line
-	for i := 0; i < 25; i++ { // 25 * 100KB = 2.5MB > 2MB limit
+	for i := 0; i < 25; i++ {            // 25 * 100KB = 2.5MB > 2MB limit
 		sb.WriteString("data: " + chunk + "\n")
 	}
 	sb.WriteString("\n")
@@ -292,9 +292,9 @@ func TestExtractUsage(t *testing.T) {
 			EventData: map[string]interface{}{
 				"message": map[string]interface{}{
 					"usage": map[string]interface{}{
-						"input_tokens":              float64(100),
+						"input_tokens":                float64(100),
 						"cache_creation_input_tokens": float64(50),
-						"cache_read_input_tokens":    float64(25),
+						"cache_read_input_tokens":     float64(25),
 					},
 				},
 			},

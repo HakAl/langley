@@ -24,10 +24,25 @@ test.describe('Flows View', () => {
     await expect(page.getByText('$0.0225')).toBeVisible(); // cost
   });
 
-  test('opens flow detail on click', async ({ page }) => {
+  test('opens flow detail on click without duplicating HTTP status code', async ({ page }) => {
+    await page.route('**/api/flows/flow-1', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ...mockFlows[0],
+          status_code: 200,
+          status_text: '200 OK',
+          request_body: '{"messages":[]}',
+          response_body: '{"content":"Hello"}',
+        }),
+      });
+    });
     await page.locator('.flow-item').first().click();
     await expect(page.locator('.flow-detail')).toBeVisible();
     await expect(page.getByText('POST /v1/messages')).toBeVisible();
+    const statusDd = page.locator('.detail-summary-bar .summary-item').first().locator('dd');
+    await expect(statusDd).toHaveText('200 OK');
   });
 
   test('closes flow detail on X button', async ({ page }) => {
@@ -115,6 +130,53 @@ test.describe('Tasks View', () => {
     // Should switch to flows view with task filter applied
     await expect(page.getByRole('button', { name: 'Flows' })).toHaveClass(/active/);
     await expect(page.getByPlaceholder('Filter by task ID...')).toHaveValue('task-abc123');
+  });
+
+  test('sorts task columns and updates aria-sort', async ({ page }) => {
+    await page.route('**/api/analytics/tasks**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            task_id: 'task-low-cost',
+            flow_count: 2,
+            total_tokens_in: 500,
+            total_tokens_out: 200,
+            total_cost: 0.05,
+            first_seen: '2026-10-16T10:00:00Z',
+            last_seen: '2026-10-16T12:00:00Z',
+            duration_ms: 10000,
+          },
+          {
+            task_id: 'task-high-cost',
+            flow_count: 15,
+            total_tokens_in: 9000,
+            total_tokens_out: 4000,
+            total_cost: 1.25,
+            first_seen: '2026-10-16T09:00:00Z',
+            last_seen: '2026-10-16T11:00:00Z',
+            duration_ms: 90000,
+          },
+        ]),
+      });
+    });
+    await page.reload();
+    await page.getByRole('button', { name: 'Tasks' }).click();
+
+    // Default sort is Last Seen descending (task-low-cost is newer)
+    await expect(page.locator('tbody tr').first().locator('.task-id')).toHaveText('task-low-cost');
+
+    // Click Cost header -> sorts descending (task-high-cost first)
+    const costHeader = page.getByRole('columnheader', { name: 'Cost' });
+    await costHeader.getByRole('button', { name: 'Cost' }).click();
+    await expect(costHeader).toHaveAttribute('aria-sort', 'descending');
+    await expect(page.locator('tbody tr').first().locator('.task-id')).toHaveText('task-high-cost');
+
+    // Click Cost header again -> sorts ascending (task-low-cost first)
+    await costHeader.getByRole('button', { name: 'Cost' }).click();
+    await expect(costHeader).toHaveAttribute('aria-sort', 'ascending');
+    await expect(page.locator('tbody tr').first().locator('.task-id')).toHaveText('task-low-cost');
   });
 });
 

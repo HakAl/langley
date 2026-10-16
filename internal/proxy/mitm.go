@@ -40,8 +40,8 @@ type MITMProxy struct {
 	analytics    *analytics.Engine
 	taskAssigner *task.Assigner
 	providers    *provider.Registry
-	server *http.Server
-	client *http.Client
+	server       *http.Server
+	client       *http.Client
 
 	// Callbacks for real-time updates
 	onFlow   func(*store.Flow)
@@ -104,7 +104,7 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: false,              // Validate upstream (langley-vu5)
+			InsecureSkipVerify: false,                // Validate upstream (langley-vu5)
 			NextProtos:         []string{"http/1.1"}, // Force HTTP/1.1 (langley-a4m)
 		},
 		ForceAttemptHTTP2:     false, // Disable HTTP/2 (langley-a4m)
@@ -150,11 +150,11 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 	}
 
 	p.server = &http.Server{
-		Addr:        cfg.Config.Proxy.ListenAddr(),
-		Handler:     p,
-		ReadTimeout: 0,
+		Addr:         cfg.Config.Proxy.ListenAddr(),
+		Handler:      p,
+		ReadTimeout:  0,
 		WriteTimeout: 0,
-		IdleTimeout: 120 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	return p, nil

@@ -21,7 +21,7 @@ Your App  --HTTPS-->  Langley Proxy  --HTTPS-->  LLM API
 **Prerequisites:** Go 1.24+ and Node 20.19+ or 22.12+ (`^20.19.0 || >=22.12.0`).
 
 ```bash
-# 1. Build (installs frontend deps, builds the embedded dashboard, and compiles the binary)
+# 1. Build (or `make install` to install `langley` onto your PATH)
 make build
 # (Or manually: cd web && npm install && npm run build && cd .. && go build -o langley ./cmd/langley)
 
@@ -37,13 +37,14 @@ python script.py
 exit            # (or Ctrl+D) stops Langley
 ```
 
-`make build` produces `langley` on Unix (macOS/Linux) and `langley.exe` on Windows.
+`make build` produces `langley` on Unix (macOS/Linux) and `langley.exe` on Windows. Run `make install` to install `langley` into `/usr/local/bin` (falling back to `~/.local/bin` when `/usr/local/bin` is not writable) so you can run `langley` from any directory.
 
-In an interactive terminal, `./langley` is a single-terminal session:
+In an interactive terminal, `langley` is a single-terminal session:
 
 - Starts the proxy (`:9090`) and the embedded dashboard (`:9091`) in-process, and opens the dashboard in your browser. Enter the auth token shown in the startup banner (no separate web server is needed).
 - Drops you into your `$SHELL` with the proxy environment already set, plus `LANGLEY_ACTIVE=1`.
-- Installs a temporary hook in `~/.zshrc` / `~/.bashrc` (between `# >>> langley hook >>>` markers) that sources `~/.config/langley/active.env`, so new terminal tabs opened while Langley runs are proxied too. The env file only applies while the Langley process is alive, and both are removed on exit.
+- Installs a temporary hook in `~/.zshrc` / `~/.bashrc` (between `# >>> langley hook >>>` markers) that sources `~/.config/langley/active.env` and registers a prompt hook (`_langley_sync`), so new terminal tabs opened while Langley runs are proxied too and automatically clear proxy variables when Langley exits.
+- In terminal tabs that were already open before Langley started, run `langley` to attach a proxied subshell to the running instance, or run `eval "$(langley env)"` to adopt the proxy environment and automatic prompt synchronization in-place.
 - Writes server logs to `~/.config/langley/langley.log` so they don't interfere with interactive tools.
 
 Use `-no-shell` to run as a foreground server instead (logs to the terminal; use `langley run <cmd>` from another terminal), `-no-open` to skip opening the browser, and `-no-hook` to leave your RC files alone. The `LANGLEY_NO_SHELL`, `LANGLEY_NO_OPEN`, and `LANGLEY_NO_HOOK` environment variables do the same. Non-interactive runs (no TTY) always use foreground server mode and never touch RC files.
@@ -64,7 +65,7 @@ Six views, all fed by real-time WebSocket updates:
 
 | View | What you see |
 |------|-------------|
-| **Flows** | Every request/response with method, host, path, status, tokens, cost. Click any flow to inspect full request/response headers and bodies — including decompressed content, with a tabbed viewer. Filter by host, task, or status. Export to NDJSON, JSON, or CSV. |
+| **Flows** | Every request/response with method, host, path, status, tokens, cost. Click any flow to inspect full request/response headers and bodies — including decompressed content, with a tabbed viewer. Filter by host, task, status, method, path, or model; sort by time, cost, tokens, or duration. Export to NDJSON, JSON, or CSV. |
 | **Analytics** | Total cost, token counts, daily cost chart. The numbers that answer "how much did that session cost?" |
 | **Tasks** | Flows grouped by task. See token usage and cost per logical unit of work, not just per request. |
 | **Tools** | Tool invocation stats: call counts, success rates, average duration. Click any tool to drill into individual invocations — see the exact input JSON sent to each tool and the result returned, with duration and parent flow context. |
@@ -106,6 +107,7 @@ langley <command> [args]
 
 COMMANDS:
   run <cmd> [args]    Run a command with proxy environment configured
+  env                 Print shell snippet to adopt proxy & prompt sync in-place
   setup               Install CA certificate to system trust store
   token show          Show the current auth token
   token rotate        Generate a new auth token
@@ -149,6 +151,7 @@ See `docs/ARCHITECTURE.md` for internals: data flow, store interface, extension 
 ## Development
 
 ```bash
+make install        # Build and install to /usr/local/bin (falls back to ~/.local/bin)
 make install-deps   # Go modules + npm install (first time)
 make dev            # Backend + Vite dev server with hot reload
 make test           # All tests with race detector
@@ -160,3 +163,5 @@ make stop           # Kill orphaned dev processes (Windows Ctrl+C workaround)
 Dashboard at `http://localhost:3000` during development. Proxy at `localhost:9090`.
 
 Frontend tests use Playwright. Backend tests use Go's race detector.
+
+Use `make install PREFIX=/custom/prefix` or `make install BINDIR=/custom/bin` to choose the installation directory. Ensure the installed directory is on your `PATH`.

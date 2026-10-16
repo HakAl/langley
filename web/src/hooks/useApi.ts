@@ -8,6 +8,20 @@ export interface FlowFetchParams {
   host?: string
   taskId?: string
   status?: string
+  method?: string
+  path?: string
+  model?: string
+  sortBy?: string
+  sortDir?: 'asc' | 'desc'
+}
+
+/** Set the method/path/model/sort query params shared by list, count, and export. */
+export function setFlowQueryParams(qs: URLSearchParams, params: Pick<FlowFetchParams, 'method' | 'path' | 'model' | 'sortBy' | 'sortDir'>): void {
+  if (params.method) qs.set('method', params.method)
+  if (params.path) qs.set('path', params.path)
+  if (params.model) qs.set('model', params.model)
+  if (params.sortBy) qs.set('sort_by', params.sortBy)
+  if (params.sortDir) qs.set('sort_dir', params.sortDir)
 }
 
 /** Window used by stats and daily-cost endpoints when no time range is selected. */
@@ -40,6 +54,7 @@ export function useApi() {
     if (params.host) qs.set('host', params.host)
     if (params.taskId) qs.set('task_id', params.taskId)
     if (params.status && params.status !== 'all') qs.set('status', params.status)
+    setFlowQueryParams(qs, params)
     if (params.days != null) {
       const end = new Date()
       const start = new Date(end.getTime() - params.days * 24 * 60 * 60 * 1000)

@@ -29,10 +29,10 @@ const (
 // ExportFlowFull extends ExportFlowSummary with body fields.
 type ExportFlowFull struct {
 	ExportFlowSummary
-	RequestBody           *string            `json:"request_body,omitempty"`
-	RequestBodyTruncated  bool               `json:"request_body_truncated,omitempty"`
-	ResponseBody          *string            `json:"response_body,omitempty"`
-	ResponseBodyTruncated bool               `json:"response_body_truncated,omitempty"`
+	RequestBody           *string             `json:"request_body,omitempty"`
+	RequestBodyTruncated  bool                `json:"request_body_truncated,omitempty"`
+	ResponseBody          *string             `json:"response_body,omitempty"`
+	ResponseBodyTruncated bool                `json:"response_body_truncated,omitempty"`
 	RequestHeaders        map[string][]string `json:"request_headers,omitempty"`
 	ResponseHeaders       map[string][]string `json:"response_headers,omitempty"`
 }
@@ -239,7 +239,7 @@ func NewExporter(format ExportFormat) FlowExporter {
 func toExportFlowFull(f *store.Flow) ExportFlowFull {
 	return ExportFlowFull{
 		ExportFlowSummary:     toExportFlowSummary(f),
-		RequestBody:          f.RequestBody,
+		RequestBody:           f.RequestBody,
 		RequestBodyTruncated:  f.RequestBodyTruncated,
 		ResponseBody:          f.ResponseBody,
 		ResponseBodyTruncated: f.ResponseBodyTruncated,

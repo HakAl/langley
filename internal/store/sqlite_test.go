@@ -1247,3 +1247,173 @@ func TestConcurrentAccess(t *testing.T) {
 		t.Errorf("len(flows) = %d, want %d", len(flows), expected)
 	}
 }
+
+func TestListFlows_MethodPathModelFilters(t *testing.T) {
+	t.Parallel()
+	store := setupTestDB(t)
+	ctx := context.Background()
+	base := time.Now()
+
+	sonnet := "claude-Sonnet-4"
+	gpt := "gpt-4o"
+	fixtures := []struct {
+		id, method, path string
+		model            *string
+	}{
+		{"f-msg", "POST", "/v1/messages", &sonnet},
+		{"f-chat", "post", "/v1/chat_completions", &gpt},
+		{"f-chatx", "POST", "/v1/chatXcompletions", &gpt},
+		{"f-get", "GET", "/v1/models", nil},
+		{"f-pct", "POST", "/v1/100%done", nil},
+	}
+	for i, fx := range fixtures {
+		flow := &Flow{
+			ID: fx.id, Host: "api.example.com", Method: fx.method, Path: fx.path,
+			URL: "https://api.example.com" + fx.path, Timestamp: base.Add(time.Duration(i) * time.Second),
+			TimestampMono: int64(i), FlowIntegrity: "complete", Provider: "other", Model: fx.model,
+		}
+		if err := store.SaveFlow(ctx, flow); err != nil {
+			t.Fatalf("SaveFlow %s: %v", fx.id, err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		filter FlowFilter
+		want   []string
+	}{
+		{"method exact case-insensitive", FlowFilter{Method: "post"}, []string{"f-pct", "f-chatx", "f-chat", "f-msg"}},
+		{"method is exact not substring", FlowFilter{Method: "PO"}, nil},
+		{"path substring case-insensitive", FlowFilter{Path: "MESSAGES"}, []string{"f-msg"}},
+		{"path underscore is literal", FlowFilter{Path: "chat_completions"}, []string{"f-chat"}},
+		{"path percent is literal", FlowFilter{Path: "100%"}, []string{"f-pct"}},
+		{"model substring case-insensitive", FlowFilter{Model: "sonnet"}, []string{"f-msg"}},
+		{"model excludes null models", FlowFilter{Model: "gpt"}, []string{"f-chatx", "f-chat"}},
+		{"combined filters", FlowFilter{Method: "POST", Path: "chat", Model: "4o"}, []string{"f-chatx", "f-chat"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flows, err := store.ListFlows(ctx, tt.filter)
+			if err != nil {
+				t.Fatalf("ListFlows: %v", err)
+			}
+			if got := flowIDs(flows); !equalStrings(got, tt.want) {
+				t.Errorf("ListFlows = %v, want %v", got, tt.want)
+			}
+			count, err := store.CountFlows(ctx, tt.filter)
+			if err != nil {
+				t.Fatalf("CountFlows: %v", err)
+			}
+			if count != len(tt.want) {
+				t.Errorf("CountFlows = %d, want %d", count, len(tt.want))
+			}
+		})
+	}
+}
+
+func TestListFlows_Sorting(t *testing.T) {
+	t.Parallel()
+	store := setupTestDB(t)
+	ctx := context.Background()
+	base := time.Now()
+
+	i64 := func(v int64) *int64 { return &v }
+	f64 := func(v float64) *float64 { return &v }
+	i := func(v int) *int { return &v }
+
+	// Inserted oldest -> newest.
+	fixtures := []*Flow{
+		{ID: "a", TotalCost: f64(0.5), InputTokens: i(100), OutputTokens: i(50), DurationMs: i64(300)},
+		{ID: "b", TotalCost: nil, InputTokens: nil, OutputTokens: nil, DurationMs: nil},
+		{ID: "c", TotalCost: f64(2.0), InputTokens: i(10), OutputTokens: nil, DurationMs: i64(100)},
+		{ID: "d", TotalCost: f64(0.5), InputTokens: i(1000), OutputTokens: i(1), DurationMs: i64(900)},
+	}
+	for n, flow := range fixtures {
+		flow.Host = "api.example.com"
+		flow.Method = "POST"
+		flow.Path = "/v1/messages"
+		flow.URL = "https://api.example.com/v1/messages"
+		flow.Timestamp = base.Add(time.Duration(n) * time.Second)
+		flow.FlowIntegrity = "complete"
+		flow.Provider = "other"
+		if err := store.SaveFlow(ctx, flow); err != nil {
+			t.Fatalf("SaveFlow %s: %v", flow.ID, err)
+		}
+	}
+
+	tests := []struct {
+		sortBy, sortDir string
+		want            []string
+	}{
+		{"", "", []string{"d", "c", "b", "a"}},
+		{"timestamp", "asc", []string{"a", "b", "c", "d"}},
+		// equal costs tie-break by timestamp DESC; NULL last
+		{"cost", "desc", []string{"c", "d", "a", "b"}},
+		{"total_cost", "asc", []string{"d", "a", "c", "b"}},
+		{"tokens", "desc", []string{"d", "a", "c", "b"}},
+		{"total_tokens", "asc", []string{"c", "a", "d", "b"}},
+		{"input_tokens", "asc", []string{"c", "a", "d", "b"}},
+		{"output_tokens", "desc", []string{"a", "d", "c", "b"}},
+		{"duration", "asc", []string{"c", "a", "d", "b"}},
+		{"duration_ms", "DESC", []string{"d", "a", "c", "b"}},
+		// unknown keys never reach SQL; fall back to timestamp
+		{"id; DROP TABLE flows", "", []string{"d", "c", "b", "a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.sortBy+"_"+tt.sortDir, func(t *testing.T) {
+			flows, err := store.ListFlows(ctx, FlowFilter{SortBy: tt.sortBy, SortDir: tt.sortDir})
+			if err != nil {
+				t.Fatalf("ListFlows: %v", err)
+			}
+			if got := flowIDs(flows); !equalStrings(got, tt.want) {
+				t.Errorf("order = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("pagination respects sort", func(t *testing.T) {
+		flows, err := store.ListFlows(ctx, FlowFilter{SortBy: "cost", SortDir: "desc", Limit: 2, Offset: 2})
+		if err != nil {
+			t.Fatalf("ListFlows: %v", err)
+		}
+		if got := flowIDs(flows); !equalStrings(got, []string{"a", "b"}) {
+			t.Errorf("page 2 = %v, want [a b]", got)
+		}
+	})
+}
+
+func TestIsValidFlowSort(t *testing.T) {
+	t.Parallel()
+	valid := [][2]string{{"", ""}, {"cost", "asc"}, {"tokens", "DESC"}, {"duration_ms", ""}, {"", "asc"}}
+	for _, v := range valid {
+		if !IsValidFlowSort(v[0], v[1]) {
+			t.Errorf("IsValidFlowSort(%q, %q) = false, want true", v[0], v[1])
+		}
+	}
+	invalid := [][2]string{{"status_code", ""}, {"cost", "up"}, {"COST", "asc"}, {"timestamp; --", ""}}
+	for _, v := range invalid {
+		if IsValidFlowSort(v[0], v[1]) {
+			t.Errorf("IsValidFlowSort(%q, %q) = true, want false", v[0], v[1])
+		}
+	}
+}
+
+func flowIDs(flows []*Flow) []string {
+	var ids []string
+	for _, f := range flows {
+		ids = append(ids, f.ID)
+	}
+	return ids
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

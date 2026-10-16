@@ -1,13 +1,16 @@
 # Langley Makefile
 # Requires: Go 1.24+, Node ^20.19.0 || >=22.12.0
 
-.PHONY: all build build-backend build-frontend run dev dev-debug dev-backend dev-backend-debug dev-frontend test test-backend test-frontend test-cover clean clean-all help install-deps lint check stop stop-frontend stop-backend
+.PHONY: install all build build-backend build-frontend run dev dev-debug dev-backend dev-backend-debug dev-frontend test test-backend test-frontend test-cover clean clean-all help install-deps lint check stop stop-frontend stop-backend
 
 ifeq ($(OS),Windows_NT)
 BINARY := langley.exe
 else
 BINARY := langley
 endif
+
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
 
 # Default target
 all: build
@@ -18,6 +21,12 @@ all: build
 
 build: build-frontend ## Build everything (frontend first so assets are embedded)
 	$(MAKE) build-backend
+
+install: build ## Install binary (falls back to ~/.local/bin when needed)
+	@set -e; dest="$(BINDIR)"; \
+	if ! (mkdir -p "$$dest" && test -w "$$dest") 2>/dev/null; then dest="$(HOME)/.local/bin"; mkdir -p "$$dest"; fi; \
+	install -m 755 "$(BINARY)" "$$dest/$(BINARY)"; \
+	echo "Installed $$dest/$(BINARY)"
 
 build-backend: web/dist/index.html ## Build Go binary
 	go build -o $(BINARY) ./cmd/langley

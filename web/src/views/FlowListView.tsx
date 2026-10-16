@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { Flow } from '../types'
+import type { FlowSortDir } from '../mergeFlows'
 import { formatTime, formatCost, formatDuration, getStatusClass } from '../utils'
 import { TimeRangeSelect } from '../components/TimeRangeSelect'
 import { Pagination } from '../components/Pagination'
@@ -19,6 +20,15 @@ interface FlowListViewProps {
   onHostFilterChange: (value: string) => void
   onTaskFilterChange: (value: string) => void
   onStatusFilterChange: (value: 'all' | 'success' | 'error') => void
+  methodFilter: string
+  pathFilter: string
+  modelFilter: string
+  sortBy: string
+  sortDir: FlowSortDir
+  onMethodFilterChange: (value: string) => void
+  onPathFilterChange: (value: string) => void
+  onModelFilterChange: (value: string) => void
+  onSortChange: (sortBy: string, sortDir: FlowSortDir) => void
   onTimeRangeChange: (days: number | null) => void
   onPageChange: (page: number) => void
   onFlowSelect: (id: string) => void
@@ -28,6 +38,21 @@ interface FlowListViewProps {
 }
 
 const PAGE_SIZE = 50
+
+const HTTP_METHODS = ['POST', 'GET', 'PUT', 'DELETE']
+
+const SORT_OPTIONS: { value: string; label: string }[] = [
+  { value: 'timestamp:desc', label: 'Newest first' },
+  { value: 'timestamp:asc', label: 'Oldest first' },
+  { value: 'cost:desc', label: 'Highest cost' },
+  { value: 'cost:asc', label: 'Lowest cost' },
+  { value: 'tokens:desc', label: 'Most tokens' },
+  { value: 'tokens:asc', label: 'Fewest tokens' },
+  { value: 'input_tokens:desc', label: 'Most input tokens' },
+  { value: 'output_tokens:desc', label: 'Most output tokens' },
+  { value: 'duration:desc', label: 'Longest duration' },
+  { value: 'duration:asc', label: 'Shortest duration' },
+]
 
 export function FlowListView({
   flows,
@@ -41,6 +66,15 @@ export function FlowListView({
   onHostFilterChange,
   onTaskFilterChange,
   onStatusFilterChange,
+  methodFilter,
+  pathFilter,
+  modelFilter,
+  sortBy,
+  sortDir,
+  onMethodFilterChange,
+  onPathFilterChange,
+  onModelFilterChange,
+  onSortChange,
   onTimeRangeChange,
   onPageChange,
   onFlowSelect,
@@ -63,6 +97,11 @@ export function FlowListView({
       e.target.value = ''
     }
   }, [onStartExport])
+
+  const handleSortSelect = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
+    const [nextSortBy, nextSortDir] = e.target.value.split(':')
+    onSortChange(nextSortBy, nextSortDir as FlowSortDir)
+  }, [onSortChange])
 
   const rangeStart = page * PAGE_SIZE + 1
   const rangeEnd = Math.min((page + 1) * PAGE_SIZE, totalFlows)
@@ -99,6 +138,37 @@ export function FlowListView({
           <option value="all">All Status</option>
           <option value="success">Success (2xx/3xx)</option>
           <option value="error">Errors (4xx/5xx)</option>
+        </select>
+        <div className="filter-input-wrapper">
+          <input
+            type="text"
+            placeholder="Filter by path..."
+            aria-label="Filter by path"
+            value={pathFilter}
+            onChange={(e) => onPathFilterChange(e.target.value)}
+          />
+          {pathFilter && (
+            <button className="filter-clear-btn" onClick={() => onPathFilterChange('')} aria-label="Clear path filter">&times;</button>
+          )}
+        </div>
+        <div className="filter-input-wrapper">
+          <input
+            type="text"
+            placeholder="Filter by model..."
+            aria-label="Filter by model"
+            value={modelFilter}
+            onChange={(e) => onModelFilterChange(e.target.value)}
+          />
+          {modelFilter && (
+            <button className="filter-clear-btn" onClick={() => onModelFilterChange('')} aria-label="Clear model filter">&times;</button>
+          )}
+        </div>
+        <select aria-label="HTTP method" value={methodFilter} onChange={(e) => onMethodFilterChange(e.target.value)}>
+          <option value="">All Methods</option>
+          {HTTP_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <select aria-label="Sort flows" value={`${sortBy}:${sortDir}`} onChange={handleSortSelect}>
+          {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         <TimeRangeSelect timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
         <div className="export-dropdown">

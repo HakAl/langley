@@ -1,6 +1,6 @@
 import { useRef, useEffect } from 'react'
 import type { Anomaly, Flow } from '../types'
-import { formatTime, formatDate, formatCost, formatDuration, getStatusClass, getSeverityClass } from '../utils'
+import { formatTime, formatDate, formatCost, formatDuration, formatStatusText, formatTaskId, getStatusClass, getSeverityClass } from '../utils'
 import { BodyViewer } from './BodyViewer'
 
 interface FlowDetailProps {
@@ -16,6 +16,7 @@ export function FlowDetail({ flow, loading, anomalies = [], onClose }: FlowDetai
 
   const hasCache = (flow.cache_creation_tokens ?? 0) > 0 || (flow.cache_read_tokens ?? 0) > 0
   const integrityIssue = flow.flow_integrity && flow.flow_integrity !== 'complete'
+  const statusReason = formatStatusText(flow.status_code, flow.status_text)
 
   return (
     <div className="flow-detail">
@@ -30,7 +31,7 @@ export function FlowDetail({ flow, loading, anomalies = [], onClose }: FlowDetai
       <dl className="detail-summary-bar">
         <div className="summary-item">
           <dt>Status</dt>
-          <dd><span className={`status-code ${getStatusClass(flow.status_code)}`}>{flow.status_code ?? '...'}</span> {flow.status_text}</dd>
+          <dd><span className={`status-code ${getStatusClass(flow.status_code)}`}>{flow.status_code ?? '...'}</span>{statusReason ? ` ${statusReason}` : ''}</dd>
         </div>
         <div className="summary-item">
           <dt>Provider</dt>
@@ -70,7 +71,7 @@ export function FlowDetail({ flow, loading, anomalies = [], onClose }: FlowDetai
         {flow.task_id && (
           <div className="summary-item">
             <dt>Task</dt>
-            <dd><code>{flow.task_id}</code>{flow.task_source && <span className="summary-muted"> ({flow.task_source})</span>}</dd>
+            <dd><code title={flow.task_id}>{formatTaskId(flow.task_id)}</code>{flow.task_source && <span className="summary-muted"> ({flow.task_source})</span>}</dd>
           </div>
         )}
       </dl>

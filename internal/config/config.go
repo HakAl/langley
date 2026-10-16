@@ -46,18 +46,18 @@ type MemoryConfig struct {
 
 // PersistenceConfig configures SQLite persistence.
 type PersistenceConfig struct {
-	DBPath             string `yaml:"db_path"`
-	BodyMaxBytes       int    `yaml:"body_max_bytes"`
-	EventBatchSize     int    `yaml:"event_batch_size"`
+	DBPath              string `yaml:"db_path"`
+	BodyMaxBytes        int    `yaml:"body_max_bytes"`
+	EventBatchSize      int    `yaml:"event_batch_size"`
 	EventBatchTimeoutMs int    `yaml:"event_batch_timeout_ms"`
-	QueueMaxSize       int    `yaml:"queue_max_size"`
+	QueueMaxSize        int    `yaml:"queue_max_size"`
 }
 
 // AnalyticsConfig configures anomaly detection thresholds.
 type AnalyticsConfig struct {
-	AnomalyContextTokens      int `yaml:"anomaly_context_tokens"`
-	AnomalyToolDelayMs        int `yaml:"anomaly_tool_delay_ms"`
-	AnomalyRapidCallsWindowS  int `yaml:"anomaly_rapid_calls_window_s"`
+	AnomalyContextTokens       int `yaml:"anomaly_context_tokens"`
+	AnomalyToolDelayMs         int `yaml:"anomaly_tool_delay_ms"`
+	AnomalyRapidCallsWindowS   int `yaml:"anomaly_rapid_calls_window_s"`
 	AnomalyRapidCallsThreshold int `yaml:"anomaly_rapid_calls_threshold"`
 }
 
@@ -71,11 +71,11 @@ type RetentionConfig struct {
 
 // RedactionConfig configures credential redaction.
 type RedactionConfig struct {
-	AlwaysRedactHeaders []string `yaml:"always_redact_headers"`
+	AlwaysRedactHeaders  []string `yaml:"always_redact_headers"`
 	PatternRedactHeaders []string `yaml:"pattern_redact_headers"`
-	RedactAPIKeys        bool `yaml:"redact_api_keys"`
-	RedactBase64Images   bool `yaml:"redact_base64_images"`
-	DisableBodyStorage   bool `yaml:"disable_body_storage"`
+	RedactAPIKeys        bool     `yaml:"redact_api_keys"`
+	RedactBase64Images   bool     `yaml:"redact_base64_images"`
+	DisableBodyStorage   bool     `yaml:"disable_body_storage"`
 }
 
 // AuthConfig configures API authentication.
@@ -94,16 +94,16 @@ func DefaultConfig() *Config {
 			MaxEventsPerFlow: 500,
 		},
 		Persistence: PersistenceConfig{
-			DBPath:             "", // Set in Load based on platform
-			BodyMaxBytes:       1048576, // 1MB
-			EventBatchSize:     50,
+			DBPath:              "",      // Set in Load based on platform
+			BodyMaxBytes:        1048576, // 1MB
+			EventBatchSize:      50,
 			EventBatchTimeoutMs: 1000,
-			QueueMaxSize:       10000,
+			QueueMaxSize:        10000,
 		},
 		Analytics: AnalyticsConfig{
-			AnomalyContextTokens:      100000,
-			AnomalyToolDelayMs:        30000,
-			AnomalyRapidCallsWindowS:  10,
+			AnomalyContextTokens:       100000,
+			AnomalyToolDelayMs:         30000,
+			AnomalyRapidCallsWindowS:   10,
 			AnomalyRapidCallsThreshold: 5,
 		},
 		Retention: RetentionConfig{
@@ -116,7 +116,7 @@ func DefaultConfig() *Config {
 			AlwaysRedactHeaders: []string{
 				"authorization",
 				"x-api-key",
-				"api-key", // Azure OpenAI uses this header
+				"api-key",              // Azure OpenAI uses this header
 				"x-amz-security-token", // AWS session tokens
 				"cookie",
 				"set-cookie",

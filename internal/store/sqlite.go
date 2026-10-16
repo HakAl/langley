@@ -350,42 +350,10 @@ func (s *SQLiteStore) ListFlows(ctx context.Context, filter FlowFilter) ([]*Flow
 		FROM flows WHERE 1=1
 	`)
 
-	args := []interface{}{}
-
-	if filter.Host != nil {
-		query.WriteString(" AND host = ?")
-		args = append(args, *filter.Host)
-	}
-	if filter.TaskID != nil {
-		query.WriteString(" AND task_id = ?")
-		args = append(args, *filter.TaskID)
-	}
-	if filter.TaskSource != nil {
-		query.WriteString(" AND task_source = ?")
-		args = append(args, *filter.TaskSource)
-	}
-	if filter.Model != nil {
-		query.WriteString(" AND model = ?")
-		args = append(args, *filter.Model)
-	}
-	if filter.Status != nil {
-		switch *filter.Status {
-		case "success":
-			query.WriteString(" AND status_code IS NOT NULL AND status_code < 400")
-		case "error":
-			query.WriteString(" AND status_code IS NOT NULL AND status_code >= 400")
-		}
-	}
-	if filter.StartTime != nil {
-		query.WriteString(" AND timestamp >= ?")
-		args = append(args, filter.StartTime.Format(time.RFC3339Nano))
-	}
-	if filter.EndTime != nil {
-		query.WriteString(" AND timestamp <= ?")
-		args = append(args, filter.EndTime.Format(time.RFC3339Nano))
-	}
-
-	query.WriteString(" ORDER BY timestamp DESC")
+	where, args := buildFlowFilterClause(filter)
+	query.WriteString(where)
+	query.WriteString(" ORDER BY ")
+	query.WriteString(flowOrderClause(filter.SortBy, filter.SortDir))
 
 	if filter.Limit > 0 {
 		query.WriteString(" LIMIT ?")
@@ -418,45 +386,106 @@ func (s *SQLiteStore) ListFlows(ctx context.Context, filter FlowFilter) ([]*Flow
 func (s *SQLiteStore) CountFlows(ctx context.Context, filter FlowFilter) (int, error) {
 	query := strings.Builder{}
 	query.WriteString("SELECT COUNT(*) FROM flows WHERE 1=1")
-
-	args := []interface{}{}
-
-	if filter.Host != nil {
-		query.WriteString(" AND host = ?")
-		args = append(args, *filter.Host)
-	}
-	if filter.TaskID != nil {
-		query.WriteString(" AND task_id = ?")
-		args = append(args, *filter.TaskID)
-	}
-	if filter.TaskSource != nil {
-		query.WriteString(" AND task_source = ?")
-		args = append(args, *filter.TaskSource)
-	}
-	if filter.Model != nil {
-		query.WriteString(" AND model = ?")
-		args = append(args, *filter.Model)
-	}
-	if filter.Status != nil {
-		switch *filter.Status {
-		case "success":
-			query.WriteString(" AND status_code IS NOT NULL AND status_code < 400")
-		case "error":
-			query.WriteString(" AND status_code IS NOT NULL AND status_code >= 400")
-		}
-	}
-	if filter.StartTime != nil {
-		query.WriteString(" AND timestamp >= ?")
-		args = append(args, filter.StartTime.Format(time.RFC3339Nano))
-	}
-	if filter.EndTime != nil {
-		query.WriteString(" AND timestamp <= ?")
-		args = append(args, filter.EndTime.Format(time.RFC3339Nano))
-	}
+	where, args := buildFlowFilterClause(filter)
+	query.WriteString(where)
 
 	var count int
 	err := s.db.QueryRowContext(ctx, query.String(), args...).Scan(&count)
 	return count, err
+}
+
+// buildFlowFilterClause returns the " AND ..." predicates and args for a
+// FlowFilter, shared by ListFlows and CountFlows so pagination totals always
+// match the listed rows.
+func buildFlowFilterClause(filter FlowFilter) (string, []interface{}) {
+	var b strings.Builder
+	args := []interface{}{}
+
+	if filter.Host != nil {
+		b.WriteString(" AND host = ?")
+		args = append(args, *filter.Host)
+	}
+	if filter.TaskID != nil {
+		b.WriteString(" AND task_id = ?")
+		args = append(args, *filter.TaskID)
+	}
+	if filter.TaskSource != nil {
+		b.WriteString(" AND task_source = ?")
+		args = append(args, *filter.TaskSource)
+	}
+	if filter.Model != "" {
+		b.WriteString(` AND LOWER(COALESCE(model, '')) LIKE '%' || LOWER(?) || '%' ESCAPE '\'`)
+		args = append(args, escapeLike(filter.Model))
+	}
+	if filter.Method != "" {
+		b.WriteString(" AND UPPER(method) = UPPER(?)")
+		args = append(args, filter.Method)
+	}
+	if filter.Path != "" {
+		b.WriteString(` AND LOWER(path) LIKE '%' || LOWER(?) || '%' ESCAPE '\'`)
+		args = append(args, escapeLike(filter.Path))
+	}
+	if filter.Status != nil {
+		switch *filter.Status {
+		case "success":
+			b.WriteString(" AND status_code IS NOT NULL AND status_code < 400")
+		case "error":
+			b.WriteString(" AND status_code IS NOT NULL AND status_code >= 400")
+		}
+	}
+	if filter.StartTime != nil {
+		b.WriteString(" AND timestamp >= ?")
+		args = append(args, filter.StartTime.Format(time.RFC3339Nano))
+	}
+	if filter.EndTime != nil {
+		b.WriteString(" AND timestamp <= ?")
+		args = append(args, filter.EndTime.Format(time.RFC3339Nano))
+	}
+
+	return b.String(), args
+}
+
+// escapeLike escapes LIKE wildcards so the value matches literally under ESCAPE '\'.
+func escapeLike(v string) string {
+	return strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(v)
+}
+
+// flowSortExprs maps allowlisted sort keys to SQL expressions. User input is
+// never interpolated; unknown keys fall back to timestamp ordering.
+var flowSortExprs = map[string]string{
+	"cost":          "total_cost",
+	"total_cost":    "total_cost",
+	"tokens":        "(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))",
+	"total_tokens":  "(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))",
+	"input_tokens":  "input_tokens",
+	"output_tokens": "output_tokens",
+	"duration":      "duration_ms",
+	"duration_ms":   "duration_ms",
+}
+
+// flowSortNullable lists the sort expressions whose NULLs sort last. Token
+// sums are NULL only when both token columns are NULL.
+var flowSortNullable = map[string]string{
+	"total_cost":    "total_cost IS NULL",
+	"input_tokens":  "input_tokens IS NULL",
+	"output_tokens": "output_tokens IS NULL",
+	"duration_ms":   "duration_ms IS NULL",
+	"(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))": "(input_tokens IS NULL AND output_tokens IS NULL)",
+}
+
+// flowOrderClause builds the ORDER BY body for ListFlows. It always ends with
+// a deterministic timestamp/id tie-breaker.
+func flowOrderClause(sortBy, sortDir string) string {
+	dir := "DESC"
+	if strings.EqualFold(sortDir, "asc") {
+		dir = "ASC"
+	}
+	expr, ok := flowSortExprs[sortBy]
+	if !ok {
+		return "timestamp " + dir + ", id " + dir
+	}
+	return "CASE WHEN " + flowSortNullable[expr] + " THEN 1 ELSE 0 END ASC, " +
+		expr + " " + dir + ", timestamp DESC, id DESC"
 }
 
 // DeleteFlow deletes a flow and its associated data.
@@ -576,7 +605,9 @@ func (s *SQLiteStore) SaveToolInvocation(ctx context.Context, inv *ToolInvocatio
 const toolInvocationColumns = `id, flow_id, task_id, tool_use_id, tool_name, tool_type, timestamp, duration_ms, success, error_message, tool_input, tool_result, input_tokens, output_tokens, cost, created_at, expires_at`
 
 // scanToolInvocation scans a tool invocation from a row scanner (sql.Row or sql.Rows).
-func scanToolInvocation(scanner interface{ Scan(dest ...interface{}) error }) (*ToolInvocation, error) {
+func scanToolInvocation(scanner interface {
+	Scan(dest ...interface{}) error
+}) (*ToolInvocation, error) {
 	var inv ToolInvocation
 	var ts, createdAt string
 	var expiresAt, taskID, toolUseID, toolType, errorMsg, toolInput, toolResult sql.NullString

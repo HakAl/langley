@@ -40,13 +40,13 @@ var upgrader = websocket.Upgrader{
 
 // Hub manages WebSocket connections and message broadcasting.
 type Hub struct {
-	cfg       *config.Config
-	logger    *slog.Logger
-	clients   map[*Client]bool
-	broadcast chan *Message
-	register  chan *Client
+	cfg        *config.Config
+	logger     *slog.Logger
+	clients    map[*Client]bool
+	broadcast  chan *Message
+	register   chan *Client
 	unregister chan *Client
-	mu        sync.RWMutex
+	mu         sync.RWMutex
 }
 
 // Client represents a WebSocket client connection.
@@ -58,11 +58,11 @@ type Client struct {
 
 // Message types for WebSocket communication.
 const (
-	MessageTypeFlowStart   = "flow_start"
-	MessageTypeFlowUpdate  = "flow_update"
+	MessageTypeFlowStart    = "flow_start"
+	MessageTypeFlowUpdate   = "flow_update"
 	MessageTypeFlowComplete = "flow_complete"
-	MessageTypeEvent       = "event"
-	MessageTypePing        = "ping"
+	MessageTypeEvent        = "event"
+	MessageTypePing         = "ping"
 )
 
 // Message is a WebSocket message.

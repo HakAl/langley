@@ -26,11 +26,11 @@ const (
 // CertCache is an LRU cache for dynamically generated TLS certificates.
 // This addresses langley-bma (unbounded cache leading to memory exhaustion).
 type CertCache struct {
-	ca       *CA
-	maxSize  int
-	mu       sync.Mutex
-	cache    map[string]*cacheEntry
-	order    []string // LRU order (oldest first)
+	ca      *CA
+	maxSize int
+	mu      sync.Mutex
+	cache   map[string]*cacheEntry
+	order   []string // LRU order (oldest first)
 }
 
 type cacheEntry struct {

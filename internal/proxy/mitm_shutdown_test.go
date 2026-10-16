@@ -44,7 +44,9 @@ func TestShutdownDrainsTunnels(t *testing.T) {
 	// Simulate what handleConnectPassthrough does: track and launch tunnels.
 	for i := range pairs {
 		cp := pairs[i]
-		if !p.beginHijackedSession(cp.pClient, cp.pUp) { t.Fatal("session rejected") }
+		if !p.beginHijackedSession(cp.pClient, cp.pUp) {
+			t.Fatal("session rejected")
+		}
 		go func() {
 			defer p.endHijackedSession([]io.Closer{cp.pClient, cp.pUp}, cp.pClient, cp.pUp)
 			tunnel(cp.pClient, cp.pUp, p.logger, "test.com")
@@ -393,4 +395,3 @@ func TestShutdownCancelsUpstreamDial(t *testing.T) {
 		t.Fatal("in-flight upstream dial was not canceled by closeTunnels")
 	}
 }
-

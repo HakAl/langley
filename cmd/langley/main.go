@@ -43,6 +43,9 @@ func main() {
 		case "run":
 			handleRunCommand(os.Args[2:])
 			return
+		case "env":
+			handleEnvCommand(os.Args[2:])
+			return
 		case "token":
 			handleTokenCommand(os.Args[2:])
 			return
@@ -89,13 +92,24 @@ func main() {
 	// in this terminal. Skipped when nested inside an active Langley shell.
 	shellDetector := NewOSShellDetector()
 	interactiveTTY := shellDetector.IsInteractiveTTY()
+	existingStore, stateErr := NewFileStateStore()
+	var envActive bool
+	if stateErr == nil {
+		envActive = isLangleyEnvActive(existingStore)
+	}
 	shellMode := !*noShell && os.Getenv("LANGLEY_NO_SHELL") == "" &&
-		os.Getenv("LANGLEY_ACTIVE") == "" && interactiveTTY
+		!envActive && interactiveTTY
 	// The hook only touches ~/.zshrc / ~/.bashrc for interactive top-level
 	// sessions, so non-TTY runs (CI, test/e2e) never modify the user's RC files.
 	hookEnabled := !*noHook && os.Getenv("LANGLEY_NO_HOOK") == "" &&
-		os.Getenv("LANGLEY_ACTIVE") == "" && interactiveTTY && runtime.GOOS != "windows"
+		!envActive && interactiveTTY && runtime.GOOS != "windows"
 	openBrowser := !*noOpen && os.Getenv("LANGLEY_NO_OPEN") == "" && !*showCA
+
+	if interactiveTTY && !*noShell && os.Getenv("LANGLEY_NO_SHELL") == "" && !*showCA && *configPath == "" && *listenAddr == "" && *apiAddr == "localhost:9091" && os.Getenv("LANGLEY_LISTEN") == "" && os.Getenv("LANGLEY_DB_PATH") == "" && stateErr == nil {
+		if state := runningInstance(context.Background(), existingStore, &HTTPHealthChecker{}); state != nil {
+			os.Exit(attachInstance(context.Background(), state, shellDetector, &ExecProcessRunner{}, &ProxyEnvBuilder{}, NewOSBrowserOpener(), openBrowser, os.Stderr))
+		}
+	}
 
 	// Determine actual config path for reload support
 	actualConfigPath := *configPath
@@ -426,6 +440,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  Log:       %s\n", logPath)
 		fmt.Fprintf(os.Stderr, "\n")
 		fmt.Fprintf(os.Stderr, "  Run 'claude', 'codex', etc. directly in this terminal.\n")
+		fmt.Fprintf(os.Stderr, "  In already-open tabs, run 'langley' or 'eval \"$(langley env)\"' to attach.\n")
 		fmt.Fprintf(os.Stderr, "  Type 'exit' (or Ctrl+D) to stop Langley.\n")
 		fmt.Fprintf(os.Stderr, "\n")
 
@@ -575,10 +590,13 @@ USAGE:
     subshell in the same terminal. Run 'claude', 'codex', etc. directly;
     type 'exit' (or Ctrl+D) to stop Langley. Terminal tabs opened while
     Langley runs are proxied too via a temporary hook in ~/.zshrc / ~/.bashrc
-    that is removed on exit. Server logs go to ~/.config/langley/langley.log.
+    that is removed on exit. Already-open tabs can attach by running 'langley'
+    or adopt automatic prompt sync in-place via 'eval "$(langley env)"'.
+    Server logs go to ~/.config/langley/langley.log.
 
 COMMANDS:
     run <cmd> [args]  Run a command with proxy environment configured
+    env               Print shell snippet to adopt proxy & prompt sync in-place
     setup             Install CA certificate to system trust store
     token show        Show the current auth token
     token rotate      Generate a new auth token
@@ -597,6 +615,7 @@ OPTIONS:
 EXAMPLES:
     langley                     Start proxy + dashboard and open a proxied shell
     langley -no-shell           Run as a foreground server only
+    eval "$(langley env)"       Adopt proxy + prompt sync in an already-open tab
     langley run claude          Run claude with proxy env configured
     langley setup               Install CA certificate (first-time setup)
     langley -listen :8080       Start proxy on port 8080
@@ -619,7 +638,7 @@ CONFIGURATION:
     - LANGLEY_NO_OPEN            Same as -no-open when set
     - LANGLEY_NO_HOOK            Same as -no-hook when set
     - LANGLEY_ACTIVE             Set inside Langley shells; a nested 'langley'
-                                 runs as a foreground server without a hook
+                                 reports the active server and dashboard
 
 DASHBOARD:
     Access the web dashboard at http://localhost:9091 (or your -api address)
@@ -627,6 +646,24 @@ DASHBOARD:
 
 For more information, see: https://github.com/HakAl/langley
 `)
+}
+
+// handleEnvCommand prints the shell integration snippet for `eval "$(langley env)"`.
+func handleEnvCommand(args []string) {
+	for _, arg := range args {
+		if arg == "-h" || arg == "--help" || arg == "help" {
+			fmt.Fprintln(os.Stderr, "Usage: eval \"$(langley env)\"")
+			fmt.Fprintln(os.Stderr, "\nAdopts Langley's proxy environment and prompt synchronization hook")
+			fmt.Fprintln(os.Stderr, "in an already-open zsh or bash shell.")
+			os.Exit(0)
+		}
+	}
+	configDir, err := config.ConfigDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+	fmt.Print(renderShellEnv(filepath.Join(configDir, "active.env")))
 }
 
 // handleTokenCommand handles the "token" subcommand

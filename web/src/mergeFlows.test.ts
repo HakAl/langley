@@ -5,6 +5,7 @@ import {
   matchesFlowFilter,
   applyFlowUpdate,
   applyLiveDeltaToTotal,
+  compareFlows,
   computeQuietRefreshDelay,
   reconcileCountRefresh,
   reconcileFlowPage,
@@ -604,3 +605,188 @@ describe('applyLiveDeltaToTotal & runCountRefreshAttempts (exhaustion and quiet 
     expect(countReconciled.countInvalidated).toBe(true)
   })
 })
+
+describe('matchesFlowFilter method/path/model', () => {
+  const f = flow({ id: '1', method: 'post', path: '/v1/Chat_Completions', model: 'claude-Sonnet-4' })
+
+  it('matches method exactly, case-insensitively', () => {
+    expect(matchesFlowFilter(f, { method: 'POST' })).toBe(true)
+    expect(matchesFlowFilter(f, { method: 'GET' })).toBe(false)
+    expect(matchesFlowFilter(f, { method: 'PO' })).toBe(false)
+  })
+
+  it('matches path as case-insensitive substring with literal underscores', () => {
+    expect(matchesFlowFilter(f, { path: 'chat_completions' })).toBe(true)
+    expect(matchesFlowFilter(f, { path: 'chatXcompletions' })).toBe(false)
+  })
+
+  it('matches model as case-insensitive substring and excludes missing models', () => {
+    expect(matchesFlowFilter(f, { model: 'sonnet' })).toBe(true)
+    expect(matchesFlowFilter(f, { model: 'gpt' })).toBe(false)
+    expect(matchesFlowFilter(flow({ id: '2' }), { model: 'sonnet' })).toBe(false)
+  })
+})
+
+describe('compareFlows', () => {
+  const a = flow({ id: 'a', timestamp: '2025-01-01T00:00:01Z', total_cost: 0.5, input_tokens: 100, output_tokens: 50, duration_ms: 300 })
+  const b = flow({ id: 'b', timestamp: '2025-01-01T00:00:02Z' })
+  const c = flow({ id: 'c', timestamp: '2025-01-01T00:00:03Z', total_cost: 2, input_tokens: 10, duration_ms: 100 })
+  const d = flow({ id: 'd', timestamp: '2025-01-01T00:00:04Z', total_cost: 0.5, input_tokens: 1000, output_tokens: 1, duration_ms: 900 })
+  const order = (sortBy?: string, sortDir?: 'asc' | 'desc') =>
+    [a, b, c, d].sort((x, y) => compareFlows(x, y, sortBy, sortDir)).map(f => f.id)
+
+  // Expectations mirror the Go store's TestListFlows_Sorting fixture.
+  it('defaults to newest first', () => {
+    expect(order()).toEqual(['d', 'c', 'b', 'a'])
+    expect(order('timestamp', 'asc')).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('sorts by cost with nulls last and timestamp desc tie-break', () => {
+    expect(order('cost', 'desc')).toEqual(['c', 'd', 'a', 'b'])
+    expect(order('cost', 'asc')).toEqual(['d', 'a', 'c', 'b'])
+  })
+
+  it('sorts by total tokens, treating one missing side as zero', () => {
+    expect(order('tokens', 'desc')).toEqual(['d', 'a', 'c', 'b'])
+    expect(order('tokens', 'asc')).toEqual(['c', 'a', 'd', 'b'])
+  })
+
+  it('sorts by duration', () => {
+    expect(order('duration', 'asc')).toEqual(['c', 'a', 'd', 'b'])
+    expect(order('duration', 'desc')).toEqual(['d', 'a', 'c', 'b'])
+  })
+
+  it('mergeFlows applies the requested sort', () => {
+    expect(mergeFlows([a, b], [c, d], 'cost', 'desc').map(f => f.id)).toEqual(['c', 'd', 'a', 'b'])
+  })
+})
+
+describe('applyFlowUpdate with custom sort', () => {
+  const page = [
+    flow({ id: 'hi', timestamp: '2025-01-01T00:00:01Z', total_cost: 3 }),
+    flow({ id: 'lo', timestamp: '2025-01-01T00:00:02Z', total_cost: 1 }),
+  ]
+  const costDesc = { sortBy: 'cost', sortDir: 'desc' as const }
+
+  it('inserts a new page-0 flow at its sorted position', () => {
+    const incoming = flow({ id: 'mid', timestamp: '2025-01-01T00:00:03Z', total_cost: 2 })
+    const result = applyFlowUpdate(page, incoming, 0, costDesc, new Set())
+    expect(result.flows.map(f => f.id)).toEqual(['hi', 'mid', 'lo'])
+    expect(result.totalDelta).toBe(1)
+  })
+
+  it('keeps a full page at its size, moving the last-sorted flow off-page', () => {
+    const incoming = flow({ id: 'new', timestamp: '2025-01-01T00:00:03Z' }) // null cost sorts last
+    const result = applyFlowUpdate(page, incoming, 0, costDesc, new Set(), 2)
+    expect(result.flows.map(f => f.id)).toEqual(['hi', 'lo'])
+    expect(result.totalDelta).toBe(1)
+  })
+
+  it('displaces the last row when a full page gains a higher-sorted flow', () => {
+    const incoming = flow({ id: 'top', timestamp: '2025-01-01T00:00:03Z', total_cost: 9 })
+    const result = applyFlowUpdate(page, incoming, 0, costDesc, new Set(), 2)
+    expect(result.flows.map(f => f.id)).toEqual(['top', 'hi'])
+  })
+
+  it('re-sorts when an existing flow update changes its sort value', () => {
+    const updated = { ...page[1], total_cost: 5 }
+    const result = applyFlowUpdate(page, updated, 0, costDesc, new Set(['hi', 'lo']))
+    expect(result.flows.map(f => f.id)).toEqual(['lo', 'hi'])
+    expect(result.totalDelta).toBe(0)
+  })
+
+  it('drops flows that stop matching a method filter', () => {
+    const current = [flow({ id: 'x', method: 'POST' })]
+    const result = applyFlowUpdate(current, flow({ id: 'x', method: 'GET' }), 0, { method: 'POST' }, new Set(['x']))
+    expect(result.flows).toEqual([])
+    expect(result.totalDelta).toBe(-1)
+  })
+
+  it('keeps default newest-first prepend behavior', () => {
+    const incoming = flow({ id: 'new', timestamp: '2025-01-01T00:00:00Z' })
+    const result = applyFlowUpdate(page, incoming, 0, {}, new Set())
+    expect(result.flows[0].id).toBe('new')
+  })
+
+  it('counts flow_complete on page > 0 when a model filter is active and flow_start had no model', () => {
+    const known = new Set<string>(['existing'])
+    const page1Flows = [flow({ id: 'existing', model: 'claude-opus-4-6', status_code: 200 })]
+    const filter = { model: 'opus' }
+
+    // 1. flow_start arrives without model — does not match filter
+    const started = flow({ id: 'live-opus' })
+    const step1 = applyFlowUpdate(page1Flows, started, 1, filter, known)
+    expect(step1.totalDelta).toBe(0)
+    expect(known.has('live-opus')).toBe(false)
+
+    // 2. flow_complete arrives with model — matches for the first time and increments totalDelta
+    const completed = flow({ id: 'live-opus', model: 'claude-opus-4-6', status_code: 200 })
+    const step2 = applyFlowUpdate(step1.flows, completed, 1, filter, known)
+    expect(step2.totalDelta).toBe(1)
+    expect(step2.deltaById.get('live-opus')).toBe(1)
+
+    // 3. Duplicate completion does not double-count
+    const step3 = applyFlowUpdate(step2.flows, completed, 1, filter, known)
+    expect(step3.totalDelta).toBe(0)
+  })
+
+  it('requests a page refresh when a flow completes under a non-timestamp sort on page > 0', () => {
+    const known = new Set<string>(['pending-51'])
+    const page2Flows = [flow({ id: 'pending-51', timestamp: '2025-01-01T00:00:51Z' })]
+    const completed = flow({
+      id: 'pending-51',
+      timestamp: '2025-01-01T00:00:51Z',
+      status_code: 200,
+      total_cost: 100,
+    })
+    const res = applyFlowUpdate(page2Flows, completed, 1, costDesc, known)
+    expect(res.needsPageRefresh).toBe(true)
+  })
+
+  it('drops displaced REST rows and caps page size on reconnect merge', () => {
+    const restIds = new Set<string>()
+    const initial50 = Array.from({ length: 50 }, (_, i) =>
+      flow({
+        id: `id_${i + 1}`,
+        timestamp: `2025-01-01T00:${String(i).padStart(2, '0')}:00Z`,
+        status_code: 200,
+        total_cost: 51 - (i + 1),
+      }),
+    )
+    const first = reconcileFlowPage({
+      currentFlows: [],
+      incomingFlows: initial50,
+      incomingTotal: 50,
+      merge: true,
+      knownIds: new Set(),
+      restIds,
+      sortBy: 'cost',
+      sortDir: 'desc',
+    })
+    expect(first.flows).toHaveLength(50)
+    expect(restIds.size).toBe(50)
+
+    const higher5 = Array.from({ length: 5 }, (_, i) =>
+      flow({
+        id: `id_${51 + i}`,
+        timestamp: `2025-01-01T01:0${i}:00Z`,
+        status_code: 200,
+        total_cost: 100 - i,
+      }),
+    )
+    const nextTop50 = [...higher5, ...initial50.slice(0, 45)]
+    const reconnected = reconcileFlowPage({
+      currentFlows: first.flows,
+      incomingFlows: nextTop50,
+      incomingTotal: 55,
+      merge: true,
+      knownIds: new Set(),
+      restIds,
+      sortBy: 'cost',
+      sortDir: 'desc',
+    })
+    expect(reconnected.flows).toHaveLength(50)
+    expect(reconnected.flows.map(f => f.id)).toEqual(nextTop50.map(f => f.id))
+  })
+})
+

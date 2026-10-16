@@ -281,6 +281,16 @@ func TestExtractMetadataTaskID(t *testing.T) {
 			body: []byte(`{"data": {"metadata": {"user_id": "nested"}}}`),
 			want: "", // Only top-level metadata counts
 		},
+		{
+			name: "claude code json user_id with session_id",
+			body: []byte(`{"metadata": {"user_id": "{\"device_id\":\"dev-1\",\"account_uuid\":\"acct-1\",\"session_id\":\"sess-abc-123\"}"}}`),
+			want: "session-sess-abc-123",
+		},
+		{
+			name: "claude code json user_id with device_id only",
+			body: []byte(`{"metadata": {"user_id": "{\"device_id\":\"dev-1\"}"}}`),
+			want: "device-dev-1",
+		},
 	}
 
 	for _, tt := range tests {
@@ -307,7 +317,7 @@ func TestSimplifyHost(t *testing.T) {
 		{"bedrock-runtime.us-east-1.amazonaws.com", "amazonaws"},
 		{"localhost", "localhost"},
 		{"localhost:8080", "localhost"},
-		{"127.0.0.1", "0"},       // IP treated as domain parts: [127, 0, 0, 1] -> second-to-last
+		{"127.0.0.1", "0"},      // IP treated as domain parts: [127, 0, 0, 1] -> second-to-last
 		{"127.0.0.1:9090", "0"}, // Same after port stripping
 		{"single", "single"},
 		{"", "unknown"},

@@ -36,24 +36,24 @@ type QueueItem struct {
 
 // Stats holds queue statistics.
 type Stats struct {
-	Size         int
-	HighCount    int
-	MediumCount  int
-	LowCount     int
-	DropsTotal   uint64
-	DropsLow     uint64
-	DropsHigh    uint64
+	Size          int
+	HighCount     int
+	MediumCount   int
+	LowCount      int
+	DropsTotal    uint64
+	DropsLow      uint64
+	DropsHigh     uint64
 	DropsCritical uint64
 }
 
 // Queue is a bounded priority queue with backpressure support.
 type Queue struct {
-	mu          sync.Mutex
-	items       priorityHeap
-	maxSize     int
-	dropsTotal  uint64
-	dropsLow    uint64
-	dropsHigh   uint64
+	mu            sync.Mutex
+	items         priorityHeap
+	maxSize       int
+	dropsTotal    uint64
+	dropsLow      uint64
+	dropsHigh     uint64
 	dropsCritical uint64
 
 	// Channels for async processing

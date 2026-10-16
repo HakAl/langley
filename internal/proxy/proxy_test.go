@@ -1731,4 +1731,3 @@ func TestMITMProxy_Redaction_EventsAndTools(t *testing.T) {
 		}
 	})
 }
-

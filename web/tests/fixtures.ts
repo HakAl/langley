@@ -226,6 +226,40 @@ export async function setupMocks(page: Page, options: SetupMocksOptions = {}) {
     } else if (status === 'error') {
       filtered = filtered.filter(f => f.status_code != null && (f.status_code as number) >= 400);
     }
+    const method = url.searchParams.get('method');
+    if (method) {
+      filtered = filtered.filter(f => String(f.method ?? '').toUpperCase() === method.toUpperCase());
+    }
+    const pathParam = url.searchParams.get('path');
+    if (pathParam) {
+      filtered = filtered.filter(f => String(f.path ?? '').toLowerCase().includes(pathParam.toLowerCase()));
+    }
+    const model = url.searchParams.get('model');
+    if (model) {
+      filtered = filtered.filter(f => String(f.model ?? '').toLowerCase().includes(model.toLowerCase()));
+    }
+    const sortBy = url.searchParams.get('sort_by') ?? 'timestamp';
+    const sortDir = (url.searchParams.get('sort_dir') ?? 'desc').toLowerCase() === 'asc' ? 1 : -1;
+    filtered.sort((a, b) => {
+      if (sortBy === 'cost') {
+        return (((a.total_cost as number) ?? 0) - ((b.total_cost as number) ?? 0)) * sortDir;
+      }
+      if (sortBy === 'tokens') {
+        const ta = ((a.input_tokens as number) ?? 0) + ((a.output_tokens as number) ?? 0);
+        const tb = ((b.input_tokens as number) ?? 0) + ((b.output_tokens as number) ?? 0);
+        return (ta - tb) * sortDir;
+      }
+      if (sortBy === 'input_tokens') {
+        return (((a.input_tokens as number) ?? 0) - ((b.input_tokens as number) ?? 0)) * sortDir;
+      }
+      if (sortBy === 'output_tokens') {
+        return (((a.output_tokens as number) ?? 0) - ((b.output_tokens as number) ?? 0)) * sortDir;
+      }
+      if (sortBy === 'duration') {
+        return (((a.duration_ms as number) ?? 0) - ((b.duration_ms as number) ?? 0)) * sortDir;
+      }
+      return (Date.parse(String(a.timestamp)) - Date.parse(String(b.timestamp))) * sortDir;
+    });
 
     // Pagination
     const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);

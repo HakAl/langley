@@ -1,5 +1,56 @@
 import type { Flow } from './types'
 
+export type FlowSortDir = 'asc' | 'desc'
+
+const PAGE_SIZE = 50
+
+function sortValue(flow: Flow, sortBy: string): number | null {
+  switch (sortBy) {
+    case 'cost':
+    case 'total_cost':
+      return flow.total_cost ?? null
+    case 'tokens':
+    case 'total_tokens':
+      if (flow.input_tokens == null && flow.output_tokens == null) return null
+      return (flow.input_tokens ?? 0) + (flow.output_tokens ?? 0)
+    case 'input_tokens':
+      return flow.input_tokens ?? null
+    case 'output_tokens':
+      return flow.output_tokens ?? null
+    case 'duration':
+    case 'duration_ms':
+      return flow.duration_ms ?? null
+    default:
+      return null
+  }
+}
+
+function isTimestampSort(sortBy?: string): boolean {
+  return !sortBy || sortBy === 'timestamp'
+}
+
+/** True when the sort differs from the server default (newest first). */
+export function isCustomFlowSort(sortBy?: string, sortDir?: FlowSortDir): boolean {
+  return !isTimestampSort(sortBy) || sortDir === 'asc'
+}
+
+/**
+ * Compare flows in the same order as the server's ListFlows: the sort column
+ * in the requested direction with nulls last, then timestamp DESC, id DESC.
+ */
+export function compareFlows(a: Flow, b: Flow, sortBy?: string, sortDir: FlowSortDir = 'desc'): number {
+  const sign = sortDir === 'asc' ? 1 : -1
+  if (isTimestampSort(sortBy)) {
+    return sign * (a.timestamp.localeCompare(b.timestamp) || a.id.localeCompare(b.id))
+  }
+  const av = sortValue(a, sortBy!)
+  const bv = sortValue(b, sortBy!)
+  if (av == null && bv != null) return 1
+  if (av != null && bv == null) return -1
+  if (av != null && bv != null && av !== bv) return sign * (av - bv)
+  return b.timestamp.localeCompare(a.timestamp) || b.id.localeCompare(a.id)
+}
+
 /**
  * Merge incoming REST flows with current in-memory flows.
  *
@@ -10,7 +61,14 @@ import type { Flow } from './types'
  * Flows present in current but absent from incoming (WS-only, not yet in DB)
  * are preserved.
  */
-export function mergeFlows(current: Flow[], incoming: Flow[]): Flow[] {
+export function mergeFlows(
+  current: Flow[],
+  incoming: Flow[],
+  sortBy?: string,
+  sortDir?: FlowSortDir,
+  restIds?: ReadonlySet<string>,
+  pageSize = PAGE_SIZE,
+): Flow[] {
   const currentById = new Map(current.map(f => [f.id, f]))
 
   const merged = new Map<string, Flow>()
@@ -24,15 +82,20 @@ export function mergeFlows(current: Flow[], incoming: Flow[]): Flow[] {
     }
   }
 
-  // Preserve WS-only flows not present in REST response
+  // Preserve WS-only flows not present in REST response (excluding rows from
+  // a prior REST page that were displaced off-page by newer/higher-ranked rows)
   for (const [id, flow] of currentById) {
-    if (!merged.has(id)) {
+    if (!merged.has(id) && !restIds?.has(id)) {
       merged.set(id, flow)
     }
   }
 
-  return [...merged.values()]
-    .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+  const sorted = [...merged.values()]
+    .sort((a, b) => compareFlows(a, b, sortBy, sortDir))
+  if (incoming.length >= pageSize && sorted.length > incoming.length) {
+    return sorted.slice(0, incoming.length)
+  }
+  return sorted
 }
 
 const MS_PER_DAY = 86_400_000
@@ -43,6 +106,11 @@ export interface FlowFilterCriteria {
   status?: 'all' | 'success' | 'error'
   days?: number | null
   nowMs?: number
+  method?: string
+  path?: string
+  model?: string
+  sortBy?: string
+  sortDir?: FlowSortDir
 }
 
 export function matchesFlowFilter(flow: Flow, filter?: FlowFilterCriteria): boolean {
@@ -52,6 +120,16 @@ export function matchesFlowFilter(flow: Flow, filter?: FlowFilterCriteria): bool
     return false
   }
   if (filter.taskId && (flow.task_id ?? '') !== filter.taskId) {
+    return false
+  }
+  // Method is exact, path/model are substrings; all case-insensitive like the server.
+  if (filter.method && flow.method.toUpperCase() !== filter.method.toUpperCase()) {
+    return false
+  }
+  if (filter.path && !flow.path.toLowerCase().includes(filter.path.toLowerCase())) {
+    return false
+  }
+  if (filter.model && !(flow.model ?? '').toLowerCase().includes(filter.model.toLowerCase())) {
     return false
   }
   if (filter.days != null) {
@@ -113,12 +191,15 @@ export interface ApplyFlowUpdateResult {
   flows: Flow[]
   totalDelta: number
   deltaById: Map<string, number>
+  needsPageRefresh?: boolean
 }
 
 /**
  * Apply a single real-time WebSocket flow event to the current flow list.
  * Prevents double-counting when flow_start is followed by flow_complete/flow_update,
  * respects active filters (including time-range windows), and handles non-zero pagination pages cleanly.
+ * With a custom sort, page-0 inserts are placed via compareFlows and a full
+ * page does not grow: whichever flow sorts last moves to the next page.
  */
 export function applyFlowUpdate(
   currentFlows: Flow[],
@@ -126,7 +207,15 @@ export function applyFlowUpdate(
   page: number,
   filter?: FlowFilterCriteria,
   knownIds?: Set<string>,
+  pageSize = PAGE_SIZE,
 ): ApplyFlowUpdateResult {
+  const customSort = isCustomFlowSort(filter?.sortBy, filter?.sortDir)
+  const nonTimestampSort = !isTimestampSort(filter?.sortBy)
+  const replaceAt = (flows: Flow[], i: number): Flow[] => {
+    const updated = [...flows]
+    updated[i] = incoming
+    return customSort ? updated.sort((a, b) => compareFlows(a, b, filter?.sortBy, filter?.sortDir)) : updated
+  }
   const pruned = pruneExpiredFlows(currentFlows, filter, knownIds, incoming.id)
   const baseFlows = pruned.flows
   const deltaById = new Map(pruned.deltaById)
@@ -149,37 +238,63 @@ export function applyFlowUpdate(
 
   knownIds?.add(incoming.id)
 
+  // Both status_code and model are populated on response (flow_complete), so a
+  // flow matching a status or model filter may be seen for the first time at completion.
+  const hasCompletionOnlyFilter =
+    filter?.status === 'success' ||
+    filter?.status === 'error' ||
+    Boolean(filter?.model)
+
   if (page !== 0) {
     if (idx >= 0) {
-      const updated = [...baseFlows]
-      updated[idx] = incoming
-      return { flows: updated, totalDelta: pruned.totalDelta, deltaById }
+      return {
+        flows: replaceAt(baseFlows, idx),
+        totalDelta: pruned.totalDelta,
+        deltaById,
+        needsPageRefresh: nonTimestampSort && incoming.status_code != null,
+      }
     }
-    // Without a status filter, a completed flow was already counted at
+    // Without a completion-only filter, a completed flow was already counted at
     // flow_start or by an intervening REST page fetch's total.
-    const hasStatusFilter = filter?.status === 'success' || filter?.status === 'error'
-    const isCompletionOfStartedFlow = !hasStatusFilter && incoming.status_code != null
+    const isCompletionOfStartedFlow = !hasCompletionOnlyFilter && incoming.status_code != null
     const incomingDelta = alreadyKnown || isCompletionOfStartedFlow ? 0 : 1
     if (incomingDelta !== 0) deltaById.set(incoming.id, incomingDelta)
     return {
       flows: baseFlows,
       totalDelta: pruned.totalDelta + incomingDelta,
       deltaById,
+      needsPageRefresh:
+        (nonTimestampSort && incoming.status_code != null) ||
+        (hasCompletionOnlyFilter && incoming.status_code != null && !alreadyKnown),
     }
   }
 
   if (idx >= 0) {
-    const updated = [...baseFlows]
-    updated[idx] = incoming
-    return { flows: updated, totalDelta: pruned.totalDelta, deltaById }
+    return {
+      flows: replaceAt(baseFlows, idx),
+      totalDelta: pruned.totalDelta,
+      deltaById,
+      needsPageRefresh: nonTimestampSort && incoming.status_code != null && baseFlows.length >= pageSize,
+    }
   }
 
   const incomingDelta = alreadyKnown ? 0 : 1
   if (incomingDelta !== 0) deltaById.set(incoming.id, incomingDelta)
+  let flows: Flow[]
+  if (customSort || (hasCompletionOnlyFilter && incoming.status_code != null)) {
+    // A flow that sorts past a full page belongs to a later page.
+    flows = [...baseFlows, incoming]
+      .sort((a, b) => compareFlows(a, b, filter?.sortBy, filter?.sortDir))
+    if (baseFlows.length >= pageSize) flows = flows.slice(0, baseFlows.length)
+  } else {
+    flows = [incoming, ...baseFlows]
+  }
   return {
-    flows: [incoming, ...baseFlows],
+    flows,
     totalDelta: pruned.totalDelta + incomingDelta,
     deltaById,
+    needsPageRefresh:
+      hasCompletionOnlyFilter && incoming.status_code != null && !alreadyKnown && baseFlows.length >= pageSize,
   }
 }
 
@@ -190,7 +305,11 @@ export interface ReconcileFlowPageParams {
   preFetchTotal?: number | null
   merge?: boolean
   knownIds: Set<string>
+  restIds?: Set<string>
   inFlightDeltas?: ReadonlyMap<string, number>
+  sortBy?: string
+  sortDir?: FlowSortDir
+  pageSize?: number
 }
 
 export interface ReconcileFlowPageResult {
@@ -221,10 +340,22 @@ export function reconcileFlowPage({
   preFetchTotal,
   merge = false,
   knownIds,
+  restIds,
   inFlightDeltas,
+  sortBy,
+  sortDir,
+  pageSize = PAGE_SIZE,
 }: ReconcileFlowPageParams): ReconcileFlowPageResult {
-  const nextFlows = merge ? mergeFlows(currentFlows, incomingFlows) : incomingFlows
+  const nextFlows = merge
+    ? mergeFlows(currentFlows, incomingFlows, sortBy, sortDir, restIds, pageSize)
+    : incomingFlows
   const returnedIds = new Set(incomingFlows.map(f => f.id))
+  if (restIds) {
+    restIds.clear()
+    for (const id of returnedIds) {
+      restIds.add(id)
+    }
+  }
 
   for (const f of nextFlows) {
     knownIds.add(f.id)

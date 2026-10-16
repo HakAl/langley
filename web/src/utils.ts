@@ -1,4 +1,4 @@
-import type { View } from './types'
+import type { View, TaskSummary } from './types'
 
 export const VALID_VIEWS: View[] = ['flows', 'analytics', 'tasks', 'tools', 'anomalies', 'settings']
 export const DEFAULT_VIEW: View = 'flows'
@@ -12,6 +12,88 @@ export const formatTime = (timestamp: string) => new Date(timestamp).toLocaleTim
 export const formatDate = (timestamp: string) => new Date(timestamp).toLocaleDateString()
 export const formatCost = (cost?: number) => cost != null ? `$${cost.toFixed(4)}` : null
 export const formatDuration = (ms?: number) => ms != null ? `${(ms / 1000).toFixed(2)}s` : null
+
+/**
+ * Strips any leading HTTP status code prefix from statusText so that rendering
+ * status_code alongside status_text never duplicates the numeric code (e.g. "200 200 OK" -> "OK").
+ */
+export function formatStatusText(statusCode?: number, statusText?: string): string {
+  if (!statusText) return ''
+  const trimmed = statusText.trim()
+  if (!trimmed) return ''
+  if (statusCode != null) {
+    const codeStr = String(statusCode)
+    if (trimmed === codeStr) return ''
+    if (trimmed.startsWith(`${codeStr} `)) {
+      return trimmed.slice(codeStr.length).trimStart()
+    }
+  }
+  return trimmed
+}
+
+/**
+ * Formats a task identifier for display. If the task ID is a serialized JSON object
+ * from Claude Code metadata.user_id, extracts the concise session/device identifier.
+ */
+export function formatTaskId(taskId: string): string {
+  if (taskId.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(taskId) as { session_id?: unknown; device_id?: unknown }
+      if (typeof parsed?.session_id === 'string' && parsed.session_id.length > 0) {
+        return `session-${parsed.session_id}`
+      }
+      if (typeof parsed?.device_id === 'string' && parsed.device_id.length > 0) {
+        return `device-${parsed.device_id}`
+      }
+    } catch {
+      // Fall through to raw taskId
+    }
+  }
+  return taskId
+}
+
+export type TaskSortField =
+  | 'task_id'
+  | 'flow_count'
+  | 'total_tokens_in'
+  | 'total_tokens_out'
+  | 'total_cost'
+  | 'duration_ms'
+  | 'last_seen'
+
+export type SortDirection = 'asc' | 'desc'
+
+export function sortTasks(tasks: readonly TaskSummary[], field: TaskSortField, direction: SortDirection): TaskSummary[] {
+  const mult = direction === 'asc' ? 1 : -1
+  return [...tasks].sort((a, b) => {
+    let cmp = 0
+    switch (field) {
+      case 'task_id':
+        cmp = formatTaskId(a.task_id).localeCompare(formatTaskId(b.task_id))
+        break
+      case 'flow_count':
+        cmp = (a.flow_count ?? 0) - (b.flow_count ?? 0)
+        break
+      case 'total_tokens_in':
+        cmp = (a.total_tokens_in ?? 0) - (b.total_tokens_in ?? 0)
+        break
+      case 'total_tokens_out':
+        cmp = (a.total_tokens_out ?? 0) - (b.total_tokens_out ?? 0)
+        break
+      case 'total_cost':
+        cmp = (a.total_cost ?? 0) - (b.total_cost ?? 0)
+        break
+      case 'duration_ms':
+        cmp = (a.duration_ms ?? 0) - (b.duration_ms ?? 0)
+        break
+      case 'last_seen':
+        cmp = Date.parse(a.last_seen) - Date.parse(b.last_seen)
+        break
+    }
+    if (cmp !== 0) return cmp * mult
+    return a.task_id.localeCompare(b.task_id)
+  })
+}
 
 export interface TimeRangeOption {
   key: string

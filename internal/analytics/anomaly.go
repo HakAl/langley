@@ -9,13 +9,13 @@ import (
 type AnomalyType string
 
 const (
-	AnomalyLargeContext   AnomalyType = "large_context"   // Unusually large input token count
-	AnomalySlowResponse   AnomalyType = "slow_response"   // Response took longer than threshold
-	AnomalyRapidRepeats   AnomalyType = "rapid_repeats"   // Multiple similar requests in short time
-	AnomalyHighCost       AnomalyType = "high_cost"       // Single request cost above threshold
-	AnomalyToolFailure    AnomalyType = "tool_failure"    // Tool invocation failed
-	AnomalyManyToolCalls  AnomalyType = "many_tool_calls" // Unusually high tool call count
-	AnomalyDroppedEvents  AnomalyType = "dropped_events"  // Events were dropped due to backpressure
+	AnomalyLargeContext  AnomalyType = "large_context"   // Unusually large input token count
+	AnomalySlowResponse  AnomalyType = "slow_response"   // Response took longer than threshold
+	AnomalyRapidRepeats  AnomalyType = "rapid_repeats"   // Multiple similar requests in short time
+	AnomalyHighCost      AnomalyType = "high_cost"       // Single request cost above threshold
+	AnomalyToolFailure   AnomalyType = "tool_failure"    // Tool invocation failed
+	AnomalyManyToolCalls AnomalyType = "many_tool_calls" // Unusually high tool call count
+	AnomalyDroppedEvents AnomalyType = "dropped_events"  // Events were dropped due to backpressure
 )
 
 // Anomaly represents a detected issue.
@@ -32,23 +32,23 @@ type Anomaly struct {
 
 // AnomalyThresholds configures what triggers anomaly detection.
 type AnomalyThresholds struct {
-	LargeContextTokens  int           // Input tokens above this = large context
-	SlowResponseMs      int64         // Duration above this = slow response
-	RapidRepeatWindow   time.Duration // Window for detecting rapid repeats
-	RapidRepeatCount    int           // Number of similar requests to trigger
-	HighCostDollars     float64       // Cost above this = high cost
-	ManyToolCallsCount  int           // Tool calls above this = many tool calls
+	LargeContextTokens int           // Input tokens above this = large context
+	SlowResponseMs     int64         // Duration above this = slow response
+	RapidRepeatWindow  time.Duration // Window for detecting rapid repeats
+	RapidRepeatCount   int           // Number of similar requests to trigger
+	HighCostDollars    float64       // Cost above this = high cost
+	ManyToolCallsCount int           // Tool calls above this = many tool calls
 }
 
 // DefaultThresholds returns sensible default anomaly thresholds.
 func DefaultThresholds() *AnomalyThresholds {
 	return &AnomalyThresholds{
-		LargeContextTokens:  100000, // 100k tokens
-		SlowResponseMs:      30000,  // 30 seconds
-		RapidRepeatWindow:   60 * time.Second,
-		RapidRepeatCount:    5,
-		HighCostDollars:     1.0, // $1 per request
-		ManyToolCallsCount:  20,
+		LargeContextTokens: 100000, // 100k tokens
+		SlowResponseMs:     30000,  // 30 seconds
+		RapidRepeatWindow:  60 * time.Second,
+		RapidRepeatCount:   5,
+		HighCostDollars:    1.0, // $1 per request
+		ManyToolCallsCount: 20,
 	}
 }
 

@@ -613,9 +613,9 @@ func TestE2E_NonStreamingToolUse_OpenAI(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":      "chatcmpl-abc123",
-			"object":  "chat.completion",
-			"model":   "gpt-4o-mini",
+			"id":     "chatcmpl-abc123",
+			"object": "chat.completion",
+			"model":  "gpt-4o-mini",
 			"choices": []map[string]interface{}{
 				{
 					"index": 0,

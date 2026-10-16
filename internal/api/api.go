@@ -234,7 +234,11 @@ func (s *Server) listFlows(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	filter := s.parseFlowFilter(r)
+	filter, err := s.parseFlowFilter(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	flows, err := s.store.ListFlows(ctx, filter)
 	if err != nil {
@@ -266,7 +270,11 @@ func (s *Server) countFlows(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	filter := s.parseFlowFilter(r)
+	filter, err := s.parseFlowFilter(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	// CountFlows ignores Limit/Offset, so these are harmless
 
 	count, err := s.store.CountFlows(ctx, filter)
@@ -285,7 +293,11 @@ func (s *Server) exportFlows(w http.ResponseWriter, r *http.Request) {
 	exportCfg := ParseExportConfig(r)
 
 	// Parse filters (reuse shared parser, override limit for batch streaming)
-	filter := s.parseFlowFilter(r)
+	filter, err := s.parseFlowFilter(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	filter.Limit = 100 // batch size for streaming
 	filter.Offset = 0
 
@@ -775,8 +787,9 @@ func (s *Server) getAnomalies(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, response)
 }
 
-// parseFlowFilter extracts flow filter params from the request.
-func (s *Server) parseFlowFilter(r *http.Request) store.FlowFilter {
+// parseFlowFilter extracts flow filter params from the request. It returns an
+// error for invalid sort_by/sort_dir values.
+func (s *Server) parseFlowFilter(r *http.Request) (store.FlowFilter, error) {
 	filter := store.FlowFilter{
 		Limit:  50,
 		Offset: 0,
@@ -798,8 +811,15 @@ func (s *Server) parseFlowFilter(r *http.Request) store.FlowFilter {
 	if v := r.URL.Query().Get("task_id"); v != "" {
 		filter.TaskID = &v
 	}
-	if v := r.URL.Query().Get("model"); v != "" {
-		filter.Model = &v
+	q := r.URL.Query()
+	filter.Model = q.Get("model")
+	filter.Method = q.Get("method")
+	filter.Path = q.Get("path")
+	filter.SortBy = q.Get("sort_by")
+	filter.SortDir = strings.ToLower(q.Get("sort_dir"))
+	if !store.IsValidFlowSort(filter.SortBy, filter.SortDir) {
+		return filter, fmt.Errorf("invalid sort_by or sort_dir (sort_by: %s; sort_dir: asc, desc)",
+			strings.Join(store.FlowSortColumns, ", "))
 	}
 	if v := r.URL.Query().Get("status"); v != "" {
 		if v == "success" || v == "error" {
@@ -817,7 +837,7 @@ func (s *Server) parseFlowFilter(r *http.Request) store.FlowFilter {
 		}
 	}
 
-	return filter
+	return filter, nil
 }
 
 // parseTimeRange extracts start/end times from query params (default: last 24 hours).
@@ -929,13 +949,13 @@ func (s *Server) checkpoint(w http.ResponseWriter, r *http.Request) {
 	_ = db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)").Scan(new(int), &walPagesAfter, new(int))
 
 	response := CheckpointResponse{
-		Success:          blocked == 0,
-		WALSizeBefore:    walPagesBefore * 4096,
-		WALSizeAfter:     walPagesAfter * 4096,
-		PagesLog:         walPagesLog,
+		Success:           blocked == 0,
+		WALSizeBefore:     walPagesBefore * 4096,
+		WALSizeAfter:      walPagesAfter * 4096,
+		PagesLog:          walPagesLog,
 		PagesCheckpointed: walPagesCheckpointed,
-		Blocked:          blocked == 1,
-		Timestamp:        time.Now(),
+		Blocked:           blocked == 1,
+		Timestamp:         time.Now(),
 	}
 
 	if blocked == 1 {
@@ -1085,20 +1105,20 @@ type FlowListResponse struct {
 
 // FlowSummary is the summary view of a flow.
 type FlowSummary struct {
-	ID           string     `json:"id"`
-	Host         string     `json:"host"`
-	Method       string     `json:"method"`
-	Path         string     `json:"path"`
-	StatusCode   *int       `json:"status_code"`
-	IsSSE        bool       `json:"is_sse"`
-	Timestamp    time.Time  `json:"timestamp"`
-	DurationMs   *int64     `json:"duration_ms,omitempty"`
-	TaskID       *string    `json:"task_id,omitempty"`
-	TaskSource   *string    `json:"task_source,omitempty"`
-	Model        *string    `json:"model,omitempty"`
-	InputTokens  *int       `json:"input_tokens,omitempty"`
-	OutputTokens *int       `json:"output_tokens,omitempty"`
-	TotalCost    *float64   `json:"total_cost,omitempty"`
+	ID           string    `json:"id"`
+	Host         string    `json:"host"`
+	Method       string    `json:"method"`
+	Path         string    `json:"path"`
+	StatusCode   *int      `json:"status_code"`
+	IsSSE        bool      `json:"is_sse"`
+	Timestamp    time.Time `json:"timestamp"`
+	DurationMs   *int64    `json:"duration_ms,omitempty"`
+	TaskID       *string   `json:"task_id,omitempty"`
+	TaskSource   *string   `json:"task_source,omitempty"`
+	Model        *string   `json:"model,omitempty"`
+	InputTokens  *int      `json:"input_tokens,omitempty"`
+	OutputTokens *int      `json:"output_tokens,omitempty"`
+	TotalCost    *float64  `json:"total_cost,omitempty"`
 }
 
 // FlowDetail is the detailed view of a flow.
@@ -1244,16 +1264,16 @@ type AnomalyResponse struct {
 
 // HealthResponse is the API response for health status.
 type HealthResponse struct {
-	Status         string    `json:"status"` // "ok", "degraded", "error"
-	Timestamp      time.Time `json:"timestamp"`
-	Uptime         string    `json:"uptime"`
-	WALSizeBytes   int64     `json:"wal_size_bytes"`
-	WALCheckpointed int64    `json:"wal_checkpointed_bytes"`
-	DropsLast24h   int64     `json:"drops_last_24h"`
-	ActiveFlows    int       `json:"active_flows"` // Flows in last 5 minutes
-	TotalFlows     int64     `json:"total_flows"`
-	DBSizeBytes    int64     `json:"db_size_bytes"`
-	Warning        string    `json:"warning,omitempty"`
+	Status          string    `json:"status"` // "ok", "degraded", "error"
+	Timestamp       time.Time `json:"timestamp"`
+	Uptime          string    `json:"uptime"`
+	WALSizeBytes    int64     `json:"wal_size_bytes"`
+	WALCheckpointed int64     `json:"wal_checkpointed_bytes"`
+	DropsLast24h    int64     `json:"drops_last_24h"`
+	ActiveFlows     int       `json:"active_flows"` // Flows in last 5 minutes
+	TotalFlows      int64     `json:"total_flows"`
+	DBSizeBytes     int64     `json:"db_size_bytes"`
+	Warning         string    `json:"warning,omitempty"`
 }
 
 // CheckpointResponse is the API response for WAL checkpoint operations.
