@@ -105,7 +105,10 @@ function App() {
   const knownFlowIdsRef = useRef<Set<string>>(new Set())
   const activeFetchTrackersRef = useRef<Set<Map<string, number>>>(new Set())
   const flowPageRequestIdRef = useRef(0)
+  const foregroundNavIdRef = useRef(0)
   const pollFailureCountRef = useRef(0)
+  const viewRef = useRef(view)
+  viewRef.current = view
   const filterCriteriaRef = useRef({ host: hostFilter, taskId: taskFilter, status: statusFilter, days: timeRange })
   filterCriteriaRef.current = { host: hostFilter, taskId: taskFilter, status: statusFilter, days: timeRange }
 
@@ -121,6 +124,7 @@ function App() {
   const clampPageToTotal = useCallback((total: number): boolean => {
     const maxPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1)
     if (pageRef.current > maxPage) {
+      foregroundNavIdRef.current += 1
       pageRef.current = maxPage
       setViewLoading(true)
       setPage(maxPage)
@@ -130,15 +134,18 @@ function App() {
     return false
   }, [])
 
-  // Build fetch params from current filter/page state
-  const buildFetchParams = useCallback((pageOverride?: number): FlowFetchParams => ({
-    days: timeRange ?? undefined,
-    limit: PAGE_SIZE,
-    offset: (pageOverride ?? page) * PAGE_SIZE,
-    host: hostFilter || undefined,
-    taskId: taskFilter || undefined,
-    status: statusFilter !== 'all' ? statusFilter : undefined,
-  }), [timeRange, page, hostFilter, taskFilter, statusFilter])
+  // Build fetch params from current filter/page refs so reconnect closures always use live filters
+  const buildFetchParams = useCallback((pageOverride?: number): FlowFetchParams => {
+    const { host, taskId, status, days } = filterCriteriaRef.current
+    return {
+      days: days ?? undefined,
+      limit: PAGE_SIZE,
+      offset: (pageOverride ?? pageRef.current) * PAGE_SIZE,
+      host: host || undefined,
+      taskId: taskId || undefined,
+      status: status !== 'all' ? status : undefined,
+    }
+  }, [])
 
   // When a page fetch overlaps with an off-page live event, its embedded total
   // cannot prove whether the server snapshot ran before or after that event.
@@ -232,6 +239,8 @@ function App() {
 
   const fetchFlowPage = useCallback(async (opts?: { page?: number; merge?: boolean }) => {
     const requestId = ++flowPageRequestIdRef.current
+    const navIdAtStart = foregroundNavIdRef.current
+    const pageAtStart = opts?.page ?? pageRef.current
     clearPendingQuietRefresh()
     const preFetchTotal = authoritativeDerivedTotalRef.current
     const tracker = new Map<string, number>()
@@ -242,7 +251,7 @@ function App() {
       const stale = flowPageRequestIdRef.current !== requestId
       if (data && !stale) {
         pollFailureCountRef.current = 0
-        const shouldMerge = Boolean(opts?.merge && (opts?.page ?? pageRef.current) === 0)
+        const shouldMerge = Boolean(opts?.merge && pageAtStart === 0)
         const reconciled = reconcileFlowPage({
           currentFlows: flowsRef.current,
           incomingFlows: data.flows,
@@ -261,8 +270,17 @@ function App() {
         setFlows(reconciled.flows)
         setTotalFlows(reconciled.total)
         const clamped = clampPageToTotal(reconciled.total)
-        if (!clamped && reconciled.countInvalidated) {
-          void refreshAuthoritativeCount(requestId, params)
+        if (!clamped) {
+          if (
+            foregroundNavIdRef.current === navIdAtStart &&
+            pageRef.current === pageAtStart &&
+            viewRef.current === 'flows'
+          ) {
+            setViewLoading(false)
+          }
+          if (reconciled.countInvalidated) {
+            void refreshAuthoritativeCount(requestId, params)
+          }
         }
       }
       return { data, error, stale }
@@ -308,6 +326,7 @@ function App() {
   // Reset page to 0 on filter change; ignore no-op selections so viewLoading never gets stuck
   const handleHostFilterChange = useCallback((v: string) => {
     if (v === filterCriteriaRef.current.host && pageRef.current === 0) return
+    foregroundNavIdRef.current += 1
     filterCriteriaRef.current = { ...filterCriteriaRef.current, host: v }
     pageRef.current = 0
     setViewLoading(true)
@@ -316,6 +335,7 @@ function App() {
   }, [])
   const handleTaskFilterChange = useCallback((v: string) => {
     if (v === filterCriteriaRef.current.taskId && pageRef.current === 0) return
+    foregroundNavIdRef.current += 1
     filterCriteriaRef.current = { ...filterCriteriaRef.current, taskId: v }
     pageRef.current = 0
     setViewLoading(true)
@@ -324,6 +344,7 @@ function App() {
   }, [])
   const handleStatusFilterChange = useCallback((v: 'all' | 'success' | 'error') => {
     if (v === filterCriteriaRef.current.status && pageRef.current === 0) return
+    foregroundNavIdRef.current += 1
     filterCriteriaRef.current = { ...filterCriteriaRef.current, status: v }
     pageRef.current = 0
     setViewLoading(true)
@@ -332,6 +353,7 @@ function App() {
   }, [])
   const handleTimeRangeChange = useCallback((days: number | null) => {
     if (days === filterCriteriaRef.current.days && pageRef.current === 0) return
+    foregroundNavIdRef.current += 1
     filterCriteriaRef.current = { ...filterCriteriaRef.current, days }
     pageRef.current = 0
     setViewLoading(true)
@@ -340,6 +362,7 @@ function App() {
   }, [])
   const handlePageChange = useCallback((newPage: number) => {
     if (newPage === pageRef.current) return
+    foregroundNavIdRef.current += 1
     pageRef.current = newPage
     setViewLoading(true)
     setPage(newPage)
@@ -372,11 +395,15 @@ function App() {
   // Re-fetch flows when filters or page change
   useEffect(() => {
     if (view !== 'flows') return
+    const navId = ++foregroundNavIdRef.current
     pollFailureCountRef.current = 0
     setViewLoading(true)
     fetchFlowPage({ page }).then(({ error, stale }) => {
       if (!stale && error) setViewError(error)
-      if (!stale && pageRef.current === page) setViewLoading(false)
+    }).finally(() => {
+      if (foregroundNavIdRef.current === navId && pageRef.current === page && viewRef.current === 'flows') {
+        setViewLoading(false)
+      }
     })
   }, [page, hostFilter, taskFilter, statusFilter, timeRange, view]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -492,14 +519,16 @@ function App() {
   // View-specific data (non-flow views)
   useEffect(() => {
     setViewError(null)
-    setViewLoading(true)
-    const days = timeRange ?? undefined
-    const showError = (error: string | null) => { if (error) setViewError(error) }
-    const done = () => setViewLoading(false)
     if (view === 'flows') {
       // Handled by the filter/page effect above
-      done()
-    } else if (view === 'analytics') {
+      return
+    }
+    const navId = ++foregroundNavIdRef.current
+    setViewLoading(true)
+    const days = timeRange ?? undefined
+    const showError = (error: string | null) => { if (foregroundNavIdRef.current === navId && error) setViewError(error) }
+    const done = () => { if (foregroundNavIdRef.current === navId) setViewLoading(false) }
+    if (view === 'analytics') {
       Promise.all([
         api.fetchStats(days).then(({ data, error }) => { if (data) setStats(data); showError(error) }),
         api.fetchDailyCosts(days).then(({ data, error }) => { if (data) setDailyCosts(data); showError(error) }),

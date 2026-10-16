@@ -1054,5 +1054,80 @@ test.describe('Flow Inspector & Time Range UX (langley-63xq)', () => {
     await expect(page.locator('.flow-count')).toHaveText('Showing 1–50 of 50 flows');
     await expect(page.locator('.flow-item')).toHaveCount(50);
   });
+
+  test('reconnect superseding a held host-filter request settles loading and preserves expiry', async ({ page }) => {
+    const now = Date.now();
+    await page.clock.install({ time: new Date(now) });
+    await page.addInitScript(() => {
+      const sockets: unknown[] = [];
+      (window as unknown as { __sockets: unknown[] }).__sockets = sockets;
+      class FakeSocket {
+        static OPEN = 1;
+        readyState = 1;
+        onopen?: (ev: unknown) => void;
+        onclose?: (ev: unknown) => void;
+        constructor() {
+          sockets.push(this);
+          setTimeout(() => this.onopen?.({}), 0);
+        }
+        close() {
+          this.readyState = 3;
+          this.onclose?.({});
+        }
+        send() {}
+      }
+      (window as unknown as { WebSocket: unknown }).WebSocket = FakeSocket;
+    });
+
+    const singleFlow = {
+      ...mockFlows[0],
+      id: 'f-0',
+      host: 'api.example.test',
+      timestamp: new Date(now - 240_000).toISOString(),
+    };
+
+    let releaseHeldHostFetch: (() => void) | null = null;
+    let hostFetchCount = 0;
+
+    await page.route('**/api/flows?*', async route => {
+      const url = new URL(route.request().url());
+      const start = Date.parse(url.searchParams.get('start_time') ?? '1970-01-01T00:00:00Z');
+      const host = url.searchParams.get('host');
+      const filtered = [singleFlow].filter(f => Date.parse(f.timestamp) >= start && (!host || f.host === host));
+      if (host === 'api.example.test') {
+        hostFetchCount += 1;
+        if (hostFetchCount === 1) {
+          await new Promise<void>(resolve => { releaseHeldHostFetch = resolve; });
+        }
+      }
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ flows: filtered, total: filtered.length, limit: 50, offset: 0 }),
+      });
+    });
+
+    await page.goto('/');
+    await authenticate(page);
+    await page.getByLabel('Time range').selectOption('5m');
+    await expect(page.locator('.flow-item')).toHaveCount(1);
+
+    // Trigger host filter and hold its first request
+    await page.getByLabel('Filter by host').fill('api.example.test');
+    await expect.poll(() => hostFetchCount).toBe(1);
+
+    // Close and reconnect the socket while the host-filter request is held
+    await page.evaluate(() => {
+      const sockets = (window as unknown as { __sockets: Array<{ readyState: number; close: () => void }> }).__sockets;
+      sockets.filter(s => s.readyState === 1).forEach(s => s.close());
+    });
+    await page.clock.runFor(1_100);
+    await expect.poll(() => hostFetchCount).toBe(2);
+
+    // Release the held first host-filter request, then advance 61s so the 4m-old flow expires
+    releaseHeldHostFetch?.();
+    await page.clock.fastForward(61_000);
+    await expect(page.locator('.flow-item')).toHaveCount(0);
+    await expect(page.locator('.flow-count')).toHaveText('Showing 0 of 0 flows');
+  });
 });
 
