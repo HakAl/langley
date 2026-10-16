@@ -1106,12 +1106,16 @@ func TestStripHookBlock(t *testing.T) {
 	}
 }
 
-// sourceEnvInSh sources envPath in a clean sh and prints the named variables.
+// sourceEnvInSh sources envPath in a clean POSIX sh (preferring dash when available) and prints the named variables.
 func sourceEnvInSh(t *testing.T, envPath string, vars ...string) []string {
 	t.Helper()
+	shBin := "sh"
+	if dashPath, err := exec.LookPath("dash"); err == nil {
+		shBin = dashPath
+	}
 	script := `. "$1"; shift; for v in "$@"; do eval "printf '%s\n' \"\${$v-<unset>}\""; done`
 	args := append([]string{"-c", script, "sh", envPath}, vars...)
-	cmd := exec.Command("sh", args...)
+	cmd := exec.Command(shBin, args...)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 	out, err := cmd.Output()
 	if err != nil {
@@ -3218,7 +3222,19 @@ _langley_sync
 `
 	out, err := exec.Command("bash", "-c", script).CombinedOutput()
 	if err != nil {
-		t.Fatalf("hook sync: %v: %s", err, out)
+		t.Fatalf("bash hook sync: %v: %s", err, out)
+	}
+	if zshBin, err := exec.LookPath("zsh"); err == nil {
+		writeFile(t, path, string(renderActiveEnv("live:9090", "/ca", os.Getpid())), 0600)
+		zshScript := hook + hook + `(( ${precmd_functions[(Ie)_langley_sync]} == 1 && ${#precmd_functions} == 1 )) || exit 2
+[[ "$HTTPS_PROXY" == 'http://live:9090' ]] || exit 3
+rm -- ` + shellQuote(path) + `
+_langley_sync
+[[ -z "${LANGLEY_ACTIVE:-}" && -z "${HTTPS_PROXY:-}" ]] || exit 4
+`
+		if out, err := exec.Command(zshBin, "-f", "-c", zshScript).CombinedOutput(); err != nil {
+			t.Fatalf("zsh hook sync: %v: %s", err, out)
+		}
 	}
 }
 

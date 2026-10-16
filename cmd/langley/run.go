@@ -558,11 +558,10 @@ func renderHookBlock(envPath string) string {
 		"  if [ -f " + q + " ]; then\n    . " + q + "\n" +
 		"  elif [ -n \"${LANGLEY_ACTIVE:-}\" ]; then\n    " + unsetProxyEnv + "\n  fi\n}\n" +
 		"if [ -n \"${ZSH_VERSION:-}\" ]; then\n" +
-		"  typeset -ga precmd_functions\n  if (( ! ${precmd_functions[(Ie)_langley_sync]} )); then\n    precmd_functions+=(_langley_sync)\n  fi\n" +
+		"  eval 'typeset -ga precmd_functions; if (( ! ${precmd_functions[(Ie)_langley_sync]} )); then precmd_functions+=(_langley_sync); fi'\n" +
 		"elif [ -n \"${BASH_VERSION:-}\" ]; then\n" +
-		"  if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == 'declare -a '* ]]; then\n" +
-		"    if [[ \";${PROMPT_COMMAND[*]};\" != *'_langley_sync'* ]]; then PROMPT_COMMAND+=(_langley_sync); fi\n" +
-		"  else\n    case \";${PROMPT_COMMAND:-};\" in\n      *'_langley_sync'*) ;;\n      *) PROMPT_COMMAND=\"_langley_sync${PROMPT_COMMAND:+; $PROMPT_COMMAND}\" ;;\n    esac\n  fi\nfi\n" +
+		"  eval 'if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == \"declare -a \"* ]]; then if [[ \";${PROMPT_COMMAND[*]};\" != *\"_langley_sync\"* ]]; then PROMPT_COMMAND+=(_langley_sync); fi; else case \";${PROMPT_COMMAND:-};\" in *\"_langley_sync\"*) ;; *) PROMPT_COMMAND=\"_langley_sync${PROMPT_COMMAND:+; $PROMPT_COMMAND}\" ;; esac; fi'\n" +
+		"fi\n" +
 		hookEndMarker + "\n"
 }
 
