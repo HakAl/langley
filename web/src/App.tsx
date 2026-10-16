@@ -85,6 +85,8 @@ function App() {
   const [toolInvocationsLoading, setToolInvocationsLoading] = useState(false)
   const [selectedToolInvocation, setSelectedToolInvocation] = useState<ToolInvocation | null>(null)
   const [invocationSelectedIndex, setInvocationSelectedIndex] = useState(0)
+  const [expiryTick, setExpiryTick] = useState(0)
+  const [offPagePollTick, setOffPagePollTick] = useState(0)
   const hostFilterRef = useRef<HTMLInputElement>(null)
   const pageRef = useRef(page)
   pageRef.current = page
@@ -103,6 +105,7 @@ function App() {
   const knownFlowIdsRef = useRef<Set<string>>(new Set())
   const activeFetchTrackersRef = useRef<Set<Map<string, number>>>(new Set())
   const flowPageRequestIdRef = useRef(0)
+  const pollFailureCountRef = useRef(0)
   const filterCriteriaRef = useRef({ host: hostFilter, taskId: taskFilter, status: statusFilter, days: timeRange })
   filterCriteriaRef.current = { host: hostFilter, taskId: taskFilter, status: statusFilter, days: timeRange }
 
@@ -113,6 +116,18 @@ function App() {
       window.clearTimeout(pendingQuietRefreshRef.current.timerId)
       pendingQuietRefreshRef.current = null
     }
+  }, [])
+
+  const clampPageToTotal = useCallback((total: number): boolean => {
+    const maxPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1)
+    if (pageRef.current > maxPage) {
+      pageRef.current = maxPage
+      setViewLoading(true)
+      setPage(maxPage)
+      setSelectedIndex(0)
+      return true
+    }
+    return false
   }, [])
 
   // Build fetch params from current filter/page state
@@ -149,6 +164,9 @@ function App() {
           }
           totalFlowsRef.current = refreshed.total
           setTotalFlows(refreshed.total)
+          if (clampPageToTotal(refreshed.total)) {
+            clearPendingQuietRefresh()
+          }
         },
         scheduleQuietRetry: (retryAttempt) => {
           clearPendingQuietRefresh()
@@ -163,7 +181,7 @@ function App() {
       MAX_COUNT_REFRESH_ATTEMPTS,
       quietRetryAttempt,
     )
-  }, [api.fetchFlowCount, clearPendingQuietRefresh])
+  }, [api.fetchFlowCount, clampPageToTotal, clearPendingQuietRefresh])
 
   const applyDeltaToTotals = useCallback((totalDelta: number, deltaById?: ReadonlyMap<string, number>) => {
     let hasIdDelta = false
@@ -195,6 +213,10 @@ function App() {
       authoritativeDerivedTotalRef.current = updated.authoritativeDerivedTotal
       totalFlowsRef.current = updated.total
       setTotalFlows(updated.total)
+      if (clampPageToTotal(updated.total)) {
+        clearPendingQuietRefresh()
+        return
+      }
     }
     if (pendingQuietRefreshRef.current !== null) {
       const { requestId, params, retryAttempt } = pendingQuietRefreshRef.current
@@ -206,7 +228,7 @@ function App() {
       }, delay)
       pendingQuietRefreshRef.current = { requestId, params, retryAttempt, timerId }
     }
-  }, [clearPendingQuietRefresh, refreshAuthoritativeCount])
+  }, [clampPageToTotal, clearPendingQuietRefresh, refreshAuthoritativeCount])
 
   const fetchFlowPage = useCallback(async (opts?: { page?: number; merge?: boolean }) => {
     const requestId = ++flowPageRequestIdRef.current
@@ -217,7 +239,9 @@ function App() {
     const params = buildFetchParams(opts?.page)
     try {
       const { data, error } = await api.fetchFlows(params)
-      if (data && flowPageRequestIdRef.current === requestId) {
+      const stale = flowPageRequestIdRef.current !== requestId
+      if (data && !stale) {
+        pollFailureCountRef.current = 0
         const shouldMerge = Boolean(opts?.merge && (opts?.page ?? pageRef.current) === 0)
         const reconciled = reconcileFlowPage({
           currentFlows: flowsRef.current,
@@ -236,15 +260,16 @@ function App() {
         totalFlowsRef.current = reconciled.total
         setFlows(reconciled.flows)
         setTotalFlows(reconciled.total)
-        if (reconciled.countInvalidated) {
+        const clamped = clampPageToTotal(reconciled.total)
+        if (!clamped && reconciled.countInvalidated) {
           void refreshAuthoritativeCount(requestId, params)
         }
       }
-      return { data, error }
+      return { data, error, stale }
     } finally {
       activeFetchTrackersRef.current.delete(tracker)
     }
-  }, [api.fetchFlows, buildFetchParams, clearPendingQuietRefresh, refreshAuthoritativeCount])
+  }, [api.fetchFlows, buildFetchParams, clampPageToTotal, clearPendingQuietRefresh, refreshAuthoritativeCount])
 
   const handleFlowUpdate = useCallback((flow: Flow) => {
     const { host, taskId, status, days } = filterCriteriaRef.current
@@ -264,8 +289,10 @@ function App() {
     setFlows(result.flows)
     if (result.totalDelta !== 0 || result.deltaById.size > 0) {
       applyDeltaToTotals(result.totalDelta, result.deltaById)
+    } else {
+      clampPageToTotal(totalFlowsRef.current)
     }
-  }, [applyDeltaToTotals])
+  }, [applyDeltaToTotals, clampPageToTotal])
 
   const handleReconnect = useCallback(() => {
     fetchFlowPage({ merge: true })
@@ -278,12 +305,46 @@ function App() {
     onReconnect: handleReconnect,
   })
 
-  // Reset page to 0 on filter change
-  const handleHostFilterChange = useCallback((v: string) => { setViewLoading(true); setHostFilter(v); setPage(0) }, [])
-  const handleTaskFilterChange = useCallback((v: string) => { setViewLoading(true); setTaskFilter(v); setPage(0) }, [])
-  const handleStatusFilterChange = useCallback((v: 'all' | 'success' | 'error') => { setViewLoading(true); setStatusFilter(v); setPage(0) }, [])
-  const handleTimeRangeChange = useCallback((days: number | null) => { setViewLoading(true); setTimeRange(days); setPage(0) }, [])
-  const handlePageChange = useCallback((newPage: number) => { setViewLoading(true); setPage(newPage); setSelectedIndex(0) }, [])
+  // Reset page to 0 on filter change; ignore no-op selections so viewLoading never gets stuck
+  const handleHostFilterChange = useCallback((v: string) => {
+    if (v === filterCriteriaRef.current.host && pageRef.current === 0) return
+    filterCriteriaRef.current = { ...filterCriteriaRef.current, host: v }
+    pageRef.current = 0
+    setViewLoading(true)
+    setHostFilter(v)
+    setPage(0)
+  }, [])
+  const handleTaskFilterChange = useCallback((v: string) => {
+    if (v === filterCriteriaRef.current.taskId && pageRef.current === 0) return
+    filterCriteriaRef.current = { ...filterCriteriaRef.current, taskId: v }
+    pageRef.current = 0
+    setViewLoading(true)
+    setTaskFilter(v)
+    setPage(0)
+  }, [])
+  const handleStatusFilterChange = useCallback((v: 'all' | 'success' | 'error') => {
+    if (v === filterCriteriaRef.current.status && pageRef.current === 0) return
+    filterCriteriaRef.current = { ...filterCriteriaRef.current, status: v }
+    pageRef.current = 0
+    setViewLoading(true)
+    setStatusFilter(v)
+    setPage(0)
+  }, [])
+  const handleTimeRangeChange = useCallback((days: number | null) => {
+    if (days === filterCriteriaRef.current.days && pageRef.current === 0) return
+    filterCriteriaRef.current = { ...filterCriteriaRef.current, days }
+    pageRef.current = 0
+    setViewLoading(true)
+    setTimeRange(days)
+    setPage(0)
+  }, [])
+  const handlePageChange = useCallback((newPage: number) => {
+    if (newPage === pageRef.current) return
+    pageRef.current = newPage
+    setViewLoading(true)
+    setPage(newPage)
+    setSelectedIndex(0)
+  }, [])
 
   // Initial load
   useEffect(() => {
@@ -302,6 +363,7 @@ function App() {
     hasAuthoritativeTotalRef.current = false
     authoritativeDerivedTotalRef.current = null
     totalFlowsRef.current = 0
+    pollFailureCountRef.current = 0
     for (const tracker of activeFetchTrackersRef.current) {
       tracker.clear()
     }
@@ -310,13 +372,17 @@ function App() {
   // Re-fetch flows when filters or page change
   useEffect(() => {
     if (view !== 'flows') return
+    pollFailureCountRef.current = 0
     setViewLoading(true)
-    fetchFlowPage().then(({ error }) => { if (error) setViewError(error) }).finally(() => setViewLoading(false))
+    fetchFlowPage({ page }).then(({ error, stale }) => {
+      if (!stale && error) setViewError(error)
+      if (!stale && pageRef.current === page) setViewLoading(false)
+    })
   }, [page, hostFilter, taskFilter, statusFilter, timeRange, view]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Expire displayed flows and reconcile off-page rolling-window totals as the time boundary advances
+  // Expire displayed flows locally as the rolling time window advances
   useEffect(() => {
-    if (view !== 'flows' || initialLoading || viewLoading || timeRange == null) return
+    if (view !== 'flows' || initialLoading || viewLoading || timeRange == null || flows.length === 0) return
     const windowMs = timeRange * MS_PER_DAY
     let nextExpiryMs = Infinity
     for (const f of flows) {
@@ -325,18 +391,9 @@ function App() {
         nextExpiryMs = Math.min(nextExpiryMs, flowMs + windowMs)
       }
     }
-    const hasOffPageFlows =
-      page === 0 &&
-      totalFlows > flows.length &&
-      (flows.length >= PAGE_SIZE || flows.length === 0)
+    if (!Number.isFinite(nextExpiryMs)) return
 
-    if (!Number.isFinite(nextExpiryMs) && !hasOffPageFlows) return
-
-    const visibleDelay = Number.isFinite(nextExpiryMs)
-      ? Math.min(MAX_TIMEOUT_MS, Math.max(0, nextExpiryMs - Date.now() + 10))
-      : MAX_TIMEOUT_MS
-    const delay = hasOffPageFlows ? Math.min(visibleDelay, 1000) : visibleDelay
-
+    const delay = Math.min(MAX_TIMEOUT_MS, Math.max(0, nextExpiryMs - Date.now() + 10))
     const timerId = window.setTimeout(() => {
       const { host, taskId, status, days } = filterCriteriaRef.current
       const pruned = pruneExpiredFlows(
@@ -350,34 +407,87 @@ function App() {
         knownFlowIdsRef.current,
       )
       if (pruned.totalDelta !== 0) {
+        pollFailureCountRef.current = 0
+        flowsRef.current = pruned.flows
+        setFlows(pruned.flows)
+        applyDeltaToTotals(pruned.totalDelta, pruned.deltaById)
+      } else {
+        setExpiryTick((t) => t + 1)
+      }
+      clampPageToTotal(totalFlowsRef.current)
+    }, delay)
+    return () => window.clearTimeout(timerId)
+  }, [view, initialLoading, viewLoading, timeRange, flows, expiryTick, applyDeltaToTotals, clampPageToTotal])
+
+  // Reconcile off-page rolling-window totals and membership when older pages exist
+  useEffect(() => {
+    if (view !== 'flows' || initialLoading || viewLoading || timeRange == null) return
+    const hasOffPageFlows =
+      (totalFlows > page * PAGE_SIZE + flows.length && flows.length >= PAGE_SIZE) ||
+      (flows.length === 0 && totalFlows > page * PAGE_SIZE)
+    if (!hasOffPageFlows || pollFailureCountRef.current >= 3) return
+
+    let cancelled = false
+    const timerId = window.setTimeout(async () => {
+      if (cancelled) return
+      const { host, taskId, status, days } = filterCriteriaRef.current
+      const pruned = pruneExpiredFlows(
+        flowsRef.current,
+        {
+          host: host || undefined,
+          taskId: taskId || undefined,
+          status,
+          days,
+        },
+        knownFlowIdsRef.current,
+      )
+      if (pruned.totalDelta !== 0) {
+        pollFailureCountRef.current = 0
         flowsRef.current = pruned.flows
         setFlows(pruned.flows)
         applyDeltaToTotals(pruned.totalDelta, pruned.deltaById)
       }
-
-      const maxPage = Math.max(0, Math.ceil(totalFlowsRef.current / PAGE_SIZE) - 1)
-      if (pageRef.current > maxPage) {
-        pageRef.current = maxPage
-        setPage(maxPage)
-        setSelectedIndex(0)
+      if (clampPageToTotal(totalFlowsRef.current)) {
         return
       }
 
+      const currentPage = pageRef.current
       const stillHasOffPage =
-        pageRef.current === 0 &&
-        totalFlowsRef.current > pruned.flows.length &&
-        (pruned.flows.length >= PAGE_SIZE || pruned.flows.length === 0)
+        (totalFlowsRef.current > currentPage * PAGE_SIZE + flowsRef.current.length &&
+          flowsRef.current.length >= PAGE_SIZE) ||
+        (flowsRef.current.length === 0 && totalFlowsRef.current > currentPage * PAGE_SIZE)
 
       if (
-        stillHasOffPage &&
-        activeFetchTrackersRef.current.size === 0 &&
-        pendingQuietRefreshRef.current === null
+        !stillHasOffPage ||
+        activeFetchTrackersRef.current.size > 0 ||
+        pendingQuietRefreshRef.current !== null
       ) {
-        void fetchFlowPage({ page: 0 })
+        if (stillHasOffPage && !cancelled) {
+          setOffPagePollTick((t) => t + 1)
+        }
+        return
       }
-    }, delay)
-    return () => window.clearTimeout(timerId)
-  }, [view, initialLoading, viewLoading, timeRange, page, flows, totalFlows, applyDeltaToTotals, fetchFlowPage])
+
+      let lastError: string | null = null
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (cancelled) return
+        const { error, stale } = await fetchFlowPage({ page: currentPage })
+        lastError = error
+        if (!error || stale) break
+      }
+      if (lastError) {
+        pollFailureCountRef.current += 1
+      }
+      if (!cancelled) {
+        setOffPagePollTick((t) => t + 1)
+      }
+    }, 1000)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timerId)
+    }
+  }, [view, initialLoading, viewLoading, timeRange, page, flows.length, totalFlows, offPagePollTick, applyDeltaToTotals, clampPageToTotal, fetchFlowPage])
 
   // View-specific data (non-flow views)
   useEffect(() => {

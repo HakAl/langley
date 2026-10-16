@@ -885,5 +885,174 @@ test.describe('Flow Inspector & Time Range UX (langley-63xq)', () => {
     await expect(page.locator('.flow-item')).toHaveCount(0);
     await expect(page.locator('.flow-count')).toHaveText('Showing 0 of 0 flows');
   });
+
+  test('middle-page view reconciles oldest off-page cohort expiry and clamps when middle cohort expires', async ({ page }) => {
+    const now = Date.now();
+    await page.clock.install({ time: new Date(now) });
+    await page.addInitScript(() => {
+      class FakeSocket {
+        static OPEN = 1;
+        readyState = 1;
+        onopen?: (ev: unknown) => void;
+        constructor() { setTimeout(() => this.onopen?.({}), 0); }
+        close() { this.readyState = 3; }
+        send() {}
+      }
+      (window as unknown as { WebSocket: unknown }).WebSocket = FakeSocket;
+    });
+
+    const dataset = Array.from({ length: 150 }, (_, i) => ({
+      ...mockFlows[0],
+      id: `f-${i}`,
+      timestamp: new Date(now - (i < 50 ? 120_000 : i < 100 ? 180_000 : 240_000)).toISOString(),
+    }));
+
+    await page.route('**/api/flows?*', route => {
+      const url = new URL(route.request().url());
+      const start = Date.parse(url.searchParams.get('start_time') ?? '1970-01-01T00:00:00Z');
+      const filtered = dataset.filter(f => Date.parse(f.timestamp) >= start);
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ flows: filtered.slice(offset, offset + 50), total: filtered.length, limit: 50, offset }),
+      });
+    });
+
+    await page.goto('/');
+    await authenticate(page);
+    await page.getByLabel('Time range').selectOption('5m');
+    await page.getByRole('button', { name: 'Page 2' }).click();
+    await expect(page.locator('.flow-item')).toHaveCount(50);
+    await expect(page.locator('.flow-count')).toHaveText('Showing 51–100 of 150 flows');
+
+    // +61s: oldest cohort (page 3, 4m old) expires off-page
+    await page.clock.fastForward(61_000);
+    await expect(page.locator('.flow-count')).toHaveText('Showing 51–100 of 100 flows');
+    await expect(page.locator('.flow-item')).toHaveCount(50);
+
+    // +60s: middle cohort (page 2, 3m old) expires and clamps to page 1
+    await page.clock.fastForward(60_000);
+    await expect(page.locator('.flow-count')).toHaveText('Showing 1–50 of 50 flows');
+    await expect(page.locator('.flow-item')).toHaveCount(50);
+  });
+
+  test('background off-page refresh recovers after transient HTTP 503 and preserves local expiry', async ({ page }) => {
+    const now = Date.now();
+    await page.clock.install({ time: new Date(now) });
+    await page.addInitScript(() => {
+      class FakeSocket {
+        static OPEN = 1;
+        readyState = 1;
+        onopen?: (ev: unknown) => void;
+        constructor() { setTimeout(() => this.onopen?.({}), 0); }
+        close() { this.readyState = 3; }
+        send() {}
+      }
+      (window as unknown as { WebSocket: unknown }).WebSocket = FakeSocket;
+    });
+
+    const dataset = Array.from({ length: 100 }, (_, i) => ({
+      ...mockFlows[0],
+      id: `f-${i}`,
+      timestamp: new Date(now - (i < 50 ? 120_000 : 240_000)).toISOString(),
+    }));
+
+    let fiveMinFetches = 0;
+    await page.route('**/api/flows?*', route => {
+      const url = new URL(route.request().url());
+      const start = Date.parse(url.searchParams.get('start_time') ?? '1970-01-01T00:00:00Z');
+      const end = Date.parse(url.searchParams.get('end_time') ?? '1970-01-01T00:00:00Z');
+      const isFiveMinWindow = Math.abs((end - start) - 300_000) < 5_000;
+      if (isFiveMinWindow) {
+        fiveMinFetches += 1;
+        // Fail the first background poll (second 5m fetch) with HTTP 503
+        if (fiveMinFetches === 2) {
+          return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'busy' }) });
+        }
+      }
+      const filtered = dataset.filter(f => Date.parse(f.timestamp) >= start);
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ flows: filtered.slice(offset, offset + 50), total: filtered.length, limit: 50, offset }),
+      });
+    });
+
+    await page.goto('/');
+    await authenticate(page);
+    await page.getByLabel('Time range').selectOption('5m');
+    await expect(page.locator('.flow-count')).toHaveText('Showing 1–50 of 100 flows');
+
+    await page.clock.fastForward(61_000);
+    await expect(page.locator('.flow-count')).toHaveText('Showing 1–50 of 50 flows');
+    await expect(page.locator('.flow-item')).toHaveCount(50);
+
+    await page.clock.fastForward(120_000);
+    await expect(page.locator('.flow-item')).toHaveCount(0);
+    await expect(page.locator('.flow-count')).toHaveText('Showing 0 of 0 flows');
+  });
+
+  test('clicking active page button does not disable expiry and WebSocket pruning clamps empty nonzero page', async ({ page }) => {
+    const now = Date.now();
+    await page.clock.install({ time: new Date(now) });
+    await page.addInitScript(() => {
+      const sockets: unknown[] = [];
+      (window as unknown as { __sockets: unknown[] }).__sockets = sockets;
+      class FakeSocket {
+        static OPEN = 1;
+        readyState = 1;
+        onopen?: (ev: unknown) => void;
+        onmessage?: (ev: { data: string }) => void;
+        constructor() {
+          sockets.push(this);
+          setTimeout(() => this.onopen?.({}), 0);
+        }
+        close() { this.readyState = 3; }
+        send() {}
+      }
+      (window as unknown as { WebSocket: unknown }).WebSocket = FakeSocket;
+    });
+
+    const dataset = Array.from({ length: 51 }, (_, i) => ({
+      ...mockFlows[0],
+      id: `f-${i}`,
+      timestamp: new Date(now - (i < 50 ? 120_000 : 240_000)).toISOString(),
+    }));
+    const oldFlow = {
+      ...mockFlows[1],
+      id: 'flow-ancient',
+      timestamp: new Date(now - 600_000).toISOString(),
+    };
+
+    await page.route('**/api/flows?*', route => {
+      const url = new URL(route.request().url());
+      const start = Date.parse(url.searchParams.get('start_time') ?? '1970-01-01T00:00:00Z');
+      const filtered = dataset.filter(f => Date.parse(f.timestamp) >= start);
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ flows: filtered.slice(offset, offset + 50), total: filtered.length, limit: 50, offset }),
+      });
+    });
+
+    await page.goto('/');
+    await authenticate(page);
+    await page.getByLabel('Time range').selectOption('5m');
+    await page.getByRole('button', { name: 'Page 2' }).click();
+    await expect(page.locator('.flow-count')).toHaveText('Showing 51–51 of 51 flows');
+
+    // Click already-selected Page 2 button
+    await page.getByRole('button', { name: 'Page 2' }).click();
+
+    // Advance to boundary + 1ms (60_001ms), before the +10ms local timer fires, and deliver a WS event
+    await page.clock.runFor(60_001);
+    await page.evaluate(f => {
+      const sockets = (window as unknown as { __sockets: Array<{ readyState: number; onmessage?: (ev: { data: string }) => void }> }).__sockets;
+      sockets.filter(s => s.readyState === 1).forEach(s => s.onmessage?.({ data: JSON.stringify({ type: 'flow_complete', data: f }) }));
+    }, oldFlow);
+
+    await expect(page.locator('.flow-count')).toHaveText('Showing 1–50 of 50 flows');
+    await expect(page.locator('.flow-item')).toHaveCount(50);
+  });
 });
 
