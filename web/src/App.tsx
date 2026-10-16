@@ -166,23 +166,36 @@ function App() {
   }, [api.fetchFlowCount, clearPendingQuietRefresh])
 
   const applyDeltaToTotals = useCallback((totalDelta: number, deltaById?: ReadonlyMap<string, number>) => {
-    if (totalDelta === 0) return
+    let hasIdDelta = false
     if (deltaById) {
-      for (const tracker of activeFetchTrackersRef.current) {
-        for (const [id, d] of deltaById.entries()) {
-          tracker.set(id, (tracker.get(id) ?? 0) + d)
+      for (const [, d] of deltaById.entries()) {
+        if (d !== 0) {
+          hasIdDelta = true
+          break
+        }
+      }
+      if (hasIdDelta) {
+        for (const tracker of activeFetchTrackersRef.current) {
+          for (const [id, d] of deltaById.entries()) {
+            if (d !== 0) {
+              tracker.set(id, (tracker.get(id) ?? 0) + d)
+            }
+          }
         }
       }
     }
-    const updated = applyLiveDeltaToTotal({
-      currentTotal: totalFlowsRef.current,
-      authoritativeDerivedTotal: authoritativeDerivedTotalRef.current,
-      hasAuthoritativeTotal: hasAuthoritativeTotalRef.current,
-      totalDelta,
-    })
-    authoritativeDerivedTotalRef.current = updated.authoritativeDerivedTotal
-    totalFlowsRef.current = updated.total
-    setTotalFlows(updated.total)
+    if (totalDelta === 0 && !hasIdDelta) return
+    if (totalDelta !== 0) {
+      const updated = applyLiveDeltaToTotal({
+        currentTotal: totalFlowsRef.current,
+        authoritativeDerivedTotal: authoritativeDerivedTotalRef.current,
+        hasAuthoritativeTotal: hasAuthoritativeTotalRef.current,
+        totalDelta,
+      })
+      authoritativeDerivedTotalRef.current = updated.authoritativeDerivedTotal
+      totalFlowsRef.current = updated.total
+      setTotalFlows(updated.total)
+    }
     if (pendingQuietRefreshRef.current !== null) {
       const { requestId, params, retryAttempt } = pendingQuietRefreshRef.current
       clearPendingQuietRefresh()
@@ -249,8 +262,8 @@ function App() {
     )
     flowsRef.current = result.flows
     setFlows(result.flows)
-    if (result.totalDelta !== 0) {
-      applyDeltaToTotals(result.totalDelta, new Map([[flow.id, result.totalDelta]]))
+    if (result.totalDelta !== 0 || result.deltaById.size > 0) {
+      applyDeltaToTotals(result.totalDelta, result.deltaById)
     }
   }, [applyDeltaToTotals])
 
@@ -266,11 +279,11 @@ function App() {
   })
 
   // Reset page to 0 on filter change
-  const handleHostFilterChange = useCallback((v: string) => { setHostFilter(v); setPage(0) }, [])
-  const handleTaskFilterChange = useCallback((v: string) => { setTaskFilter(v); setPage(0) }, [])
-  const handleStatusFilterChange = useCallback((v: 'all' | 'success' | 'error') => { setStatusFilter(v); setPage(0) }, [])
-  const handleTimeRangeChange = useCallback((days: number | null) => { setTimeRange(days); setPage(0) }, [])
-  const handlePageChange = useCallback((newPage: number) => { setPage(newPage); setSelectedIndex(0) }, [])
+  const handleHostFilterChange = useCallback((v: string) => { setViewLoading(true); setHostFilter(v); setPage(0) }, [])
+  const handleTaskFilterChange = useCallback((v: string) => { setViewLoading(true); setTaskFilter(v); setPage(0) }, [])
+  const handleStatusFilterChange = useCallback((v: 'all' | 'success' | 'error') => { setViewLoading(true); setStatusFilter(v); setPage(0) }, [])
+  const handleTimeRangeChange = useCallback((days: number | null) => { setViewLoading(true); setTimeRange(days); setPage(0) }, [])
+  const handlePageChange = useCallback((newPage: number) => { setViewLoading(true); setPage(newPage); setSelectedIndex(0) }, [])
 
   // Initial load
   useEffect(() => {
@@ -301,9 +314,9 @@ function App() {
     fetchFlowPage().then(({ error }) => { if (error) setViewError(error) }).finally(() => setViewLoading(false))
   }, [page, hostFilter, taskFilter, statusFilter, timeRange, view]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Expire displayed flows as the active time-range boundary advances
+  // Expire displayed flows and reconcile off-page rolling-window totals as the time boundary advances
   useEffect(() => {
-    if (view !== 'flows' || initialLoading || viewLoading || timeRange == null || flows.length === 0) return
+    if (view !== 'flows' || initialLoading || viewLoading || timeRange == null) return
     const windowMs = timeRange * MS_PER_DAY
     let nextExpiryMs = Infinity
     for (const f of flows) {
@@ -312,9 +325,18 @@ function App() {
         nextExpiryMs = Math.min(nextExpiryMs, flowMs + windowMs)
       }
     }
-    if (!Number.isFinite(nextExpiryMs)) return
+    const hasOffPageFlows =
+      page === 0 &&
+      totalFlows > flows.length &&
+      (flows.length >= PAGE_SIZE || flows.length === 0)
 
-    const delay = Math.min(MAX_TIMEOUT_MS, Math.max(0, nextExpiryMs - Date.now() + 10))
+    if (!Number.isFinite(nextExpiryMs) && !hasOffPageFlows) return
+
+    const visibleDelay = Number.isFinite(nextExpiryMs)
+      ? Math.min(MAX_TIMEOUT_MS, Math.max(0, nextExpiryMs - Date.now() + 10))
+      : MAX_TIMEOUT_MS
+    const delay = hasOffPageFlows ? Math.min(visibleDelay, 1000) : visibleDelay
+
     const timerId = window.setTimeout(() => {
       const { host, taskId, status, days } = filterCriteriaRef.current
       const pruned = pruneExpiredFlows(
@@ -330,11 +352,32 @@ function App() {
       if (pruned.totalDelta !== 0) {
         flowsRef.current = pruned.flows
         setFlows(pruned.flows)
-        applyDeltaToTotals(pruned.totalDelta)
+        applyDeltaToTotals(pruned.totalDelta, pruned.deltaById)
+      }
+
+      const maxPage = Math.max(0, Math.ceil(totalFlowsRef.current / PAGE_SIZE) - 1)
+      if (pageRef.current > maxPage) {
+        pageRef.current = maxPage
+        setPage(maxPage)
+        setSelectedIndex(0)
+        return
+      }
+
+      const stillHasOffPage =
+        pageRef.current === 0 &&
+        totalFlowsRef.current > pruned.flows.length &&
+        (pruned.flows.length >= PAGE_SIZE || pruned.flows.length === 0)
+
+      if (
+        stillHasOffPage &&
+        activeFetchTrackersRef.current.size === 0 &&
+        pendingQuietRefreshRef.current === null
+      ) {
+        void fetchFlowPage({ page: 0 })
       }
     }, delay)
     return () => window.clearTimeout(timerId)
-  }, [view, initialLoading, viewLoading, timeRange, flows, applyDeltaToTotals])
+  }, [view, initialLoading, viewLoading, timeRange, page, flows, totalFlows, applyDeltaToTotals, fetchFlowPage])
 
   // View-specific data (non-flow views)
   useEffect(() => {

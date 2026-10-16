@@ -74,6 +74,7 @@ export interface PruneExpiredFlowsResult {
   flows: Flow[]
   removedIds: string[]
   totalDelta: number
+  deltaById: Map<string, number>
 }
 
 /**
@@ -86,28 +87,32 @@ export function pruneExpiredFlows(
   excludeId?: string,
 ): PruneExpiredFlowsResult {
   if (!filter || filter.days == null || currentFlows.length === 0) {
-    return { flows: currentFlows, removedIds: [], totalDelta: 0 }
+    return { flows: currentFlows, removedIds: [], totalDelta: 0, deltaById: new Map() }
   }
   const removedIds: string[] = []
+  const deltaById = new Map<string, number>()
   const kept = currentFlows.filter(f => {
     if (f.id === excludeId || matchesFlowFilter(f, filter)) return true
     removedIds.push(f.id)
+    deltaById.set(f.id, -1)
     knownIds?.delete(f.id)
     return false
   })
   if (removedIds.length === 0) {
-    return { flows: currentFlows, removedIds, totalDelta: 0 }
+    return { flows: currentFlows, removedIds, totalDelta: 0, deltaById }
   }
   return {
     flows: kept,
     removedIds,
     totalDelta: -removedIds.length,
+    deltaById,
   }
 }
 
 export interface ApplyFlowUpdateResult {
   flows: Flow[]
   totalDelta: number
+  deltaById: Map<string, number>
 }
 
 /**
@@ -124,6 +129,7 @@ export function applyFlowUpdate(
 ): ApplyFlowUpdateResult {
   const pruned = pruneExpiredFlows(currentFlows, filter, knownIds, incoming.id)
   const baseFlows = pruned.flows
+  const deltaById = new Map(pruned.deltaById)
   const idx = baseFlows.findIndex(f => f.id === incoming.id)
   const matches = matchesFlowFilter(incoming, filter)
   const alreadyKnown = idx >= 0 || (knownIds?.has(incoming.id) ?? false)
@@ -131,12 +137,14 @@ export function applyFlowUpdate(
   if (!matches) {
     if (idx >= 0) {
       knownIds?.delete(incoming.id)
+      deltaById.set(incoming.id, -1)
       return {
         flows: baseFlows.filter(f => f.id !== incoming.id),
         totalDelta: pruned.totalDelta - 1,
+        deltaById,
       }
     }
-    return { flows: baseFlows, totalDelta: pruned.totalDelta }
+    return { flows: baseFlows, totalDelta: pruned.totalDelta, deltaById }
   }
 
   knownIds?.add(incoming.id)
@@ -145,27 +153,33 @@ export function applyFlowUpdate(
     if (idx >= 0) {
       const updated = [...baseFlows]
       updated[idx] = incoming
-      return { flows: updated, totalDelta: pruned.totalDelta }
+      return { flows: updated, totalDelta: pruned.totalDelta, deltaById }
     }
     // Without a status filter, a completed flow was already counted at
     // flow_start or by an intervening REST page fetch's total.
     const hasStatusFilter = filter?.status === 'success' || filter?.status === 'error'
     const isCompletionOfStartedFlow = !hasStatusFilter && incoming.status_code != null
+    const incomingDelta = alreadyKnown || isCompletionOfStartedFlow ? 0 : 1
+    if (incomingDelta !== 0) deltaById.set(incoming.id, incomingDelta)
     return {
       flows: baseFlows,
-      totalDelta: pruned.totalDelta + (alreadyKnown || isCompletionOfStartedFlow ? 0 : 1),
+      totalDelta: pruned.totalDelta + incomingDelta,
+      deltaById,
     }
   }
 
   if (idx >= 0) {
     const updated = [...baseFlows]
     updated[idx] = incoming
-    return { flows: updated, totalDelta: pruned.totalDelta }
+    return { flows: updated, totalDelta: pruned.totalDelta, deltaById }
   }
 
+  const incomingDelta = alreadyKnown ? 0 : 1
+  if (incomingDelta !== 0) deltaById.set(incoming.id, incomingDelta)
   return {
     flows: [incoming, ...baseFlows],
-    totalDelta: pruned.totalDelta + (alreadyKnown ? 0 : 1),
+    totalDelta: pruned.totalDelta + incomingDelta,
+    deltaById,
   }
 }
 
@@ -217,15 +231,17 @@ export function reconcileFlowPage({
   }
 
   let postSnapshotDelta = 0
+  let hasOffPageActivity = false
   if (inFlightDeltas) {
     for (const [id, delta] of inFlightDeltas.entries()) {
-      if (!returnedIds.has(id)) {
+      if (!returnedIds.has(id) && delta !== 0) {
+        hasOffPageActivity = true
         postSnapshotDelta += delta
       }
     }
   }
 
-  const countInvalidated = postSnapshotDelta !== 0
+  const countInvalidated = hasOffPageActivity
   let reconciledTotal = incomingTotal
   if (postSnapshotDelta !== 0) {
     if (preFetchTotal != null) {
@@ -315,13 +331,17 @@ export function reconcileCountRefresh({
   inFlightDeltas,
 }: ReconcileCountRefreshParams): ReconcileCountRefreshResult {
   let overlapDelta = 0
+  let hasOverlap = false
   if (inFlightDeltas) {
     for (const delta of inFlightDeltas.values()) {
-      overlapDelta += delta
+      if (delta !== 0) {
+        hasOverlap = true
+        overlapDelta += delta
+      }
     }
   }
 
-  if (overlapDelta === 0) {
+  if (!hasOverlap) {
     return {
       total: Math.max(0, incomingCount),
       countInvalidated: false,
@@ -330,9 +350,13 @@ export function reconcileCountRefresh({
 
   let reconciledTotal = incomingCount + overlapDelta
   if (preRefreshTotal != null) {
-    reconciledTotal = overlapDelta > 0
-      ? Math.max(incomingCount, preRefreshTotal + overlapDelta)
-      : Math.min(incomingCount, preRefreshTotal + overlapDelta)
+    if (overlapDelta > 0) {
+      reconciledTotal = Math.max(incomingCount, preRefreshTotal + overlapDelta)
+    } else if (overlapDelta < 0) {
+      reconciledTotal = Math.min(incomingCount, preRefreshTotal + overlapDelta)
+    } else {
+      reconciledTotal = preRefreshTotal
+    }
   }
 
   return {

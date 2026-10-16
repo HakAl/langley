@@ -120,8 +120,12 @@ export function FlowListView({
         </div>
       </div>
 
-      {totalFlows > 0 && (
-        <div className="flow-count">Showing {rangeStart.toLocaleString()}&ndash;{rangeEnd.toLocaleString()} of {totalFlows.toLocaleString()} flows</div>
+      {!initialLoading && (
+        <div className="flow-count">
+          {totalFlows > 0
+            ? <>Showing {rangeStart.toLocaleString()}&ndash;{rangeEnd.toLocaleString()} of {totalFlows.toLocaleString()} flows</>
+            : 'Showing 0 of 0 flows'}
+        </div>
       )}
 
       <div className="flow-list" role="listbox" aria-label="Flow list" aria-activedescendant={flows.length > 0 ? `flow-${selectedIndex}` : undefined}>

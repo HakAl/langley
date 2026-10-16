@@ -568,4 +568,39 @@ describe('applyLiveDeltaToTotal & runCountRefreshAttempts (exhaustion and quiet 
     expect(computeQuietRefreshDelay(1)).toBe(160)
     expect(computeQuietRefreshDelay(10)).toBe(1000)
   })
+
+  it('preserves per-ID deltas when an expiry and a new arrival cancel out and reconciles held pre-expiry counts', () => {
+    const nowMs = Date.parse('2026-10-16T12:00:00Z')
+    const fiveMinDays = 5 / 1440
+    const expiring = flow({ id: 'expiring', timestamp: new Date(nowMs - 305_000).toISOString(), status_code: 200 })
+    const arriving = flow({ id: 'arriving', timestamp: new Date(nowMs).toISOString() })
+    const known = new Set([expiring.id])
+
+    const update = applyFlowUpdate([expiring], arriving, 0, { days: fiveMinDays, nowMs }, known)
+    expect(update.totalDelta).toBe(0)
+    expect(update.deltaById.get('expiring')).toBe(-1)
+    expect(update.deltaById.get('arriving')).toBe(1)
+
+    // If a page snapshot returned `arriving` (so it ran after `arriving` started)
+    // while `expiring` was pruned locally, reconcileFlowPage still detects `expiring`'s -1 delta.
+    const pageReconciled = reconcileFlowPage({
+      currentFlows: update.flows,
+      incomingFlows: [arriving],
+      incomingTotal: 52,
+      preFetchTotal: 51,
+      knownIds: known,
+      inFlightDeltas: update.deltaById,
+    })
+    expect(pageReconciled.total).toBe(50)
+    expect(pageReconciled.countInvalidated).toBe(true)
+
+    // If a held count refresh captured 52 before `expiring` aged out (-1), releasing 52 keeps 51 and marks invalidated.
+    const countReconciled = reconcileCountRefresh({
+      incomingCount: 52,
+      preRefreshTotal: 52,
+      inFlightDeltas: new Map([['expiring', -1]]),
+    })
+    expect(countReconciled.total).toBe(51)
+    expect(countReconciled.countInvalidated).toBe(true)
+  })
 })

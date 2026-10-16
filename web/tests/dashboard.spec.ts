@@ -832,6 +832,58 @@ test.describe('Flow Inspector & Time Range UX (langley-63xq)', () => {
       sockets.filter(s => s.readyState === 1).forEach(s => s.onmessage?.({ data: JSON.stringify({ type: 'flow_complete', data: f }) }));
     }, oldFlow);
     await expect(page.locator('.flow-item')).toHaveCount(0);
+    await expect(page.locator('.flow-count')).toHaveText('Showing 0 of 0 flows');
+  });
+
+  test('paginated live window reconciles off-page expiry and clamps when the last page expires', async ({ page }) => {
+    const now = Date.now();
+    await page.clock.install({ time: new Date(now) });
+    await page.addInitScript(() => {
+      class FakeSocket {
+        static OPEN = 1;
+        readyState = 1;
+        onopen?: (ev: unknown) => void;
+        constructor() { setTimeout(() => this.onopen?.({}), 0); }
+        close() { this.readyState = 3; }
+        send() {}
+      }
+      (window as unknown as { WebSocket: unknown }).WebSocket = FakeSocket;
+    });
+
+    const dataset = Array.from({ length: 100 }, (_, i) => ({
+      ...mockFlows[0],
+      id: `f-${i}`,
+      timestamp: new Date(now - (i < 50 ? 120_000 : 240_000)).toISOString(),
+    }));
+
+    await page.route('**/api/flows?*', route => {
+      const url = new URL(route.request().url());
+      const start = Date.parse(url.searchParams.get('start_time') ?? '1970-01-01T00:00:00Z');
+      const filtered = dataset.filter(f => Date.parse(f.timestamp) >= start);
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ flows: filtered.slice(offset, offset + 50), total: filtered.length, limit: 50, offset }),
+      });
+    });
+
+    await page.goto('/');
+    await authenticate(page);
+    await page.getByLabel('Time range').selectOption('5m');
+    await expect(page.locator('.flow-item')).toHaveCount(50);
+    await expect(page.locator('.flow-count')).toHaveText('Showing 1–50 of 100 flows');
+
+    // Navigate to page 2 (50 older flows, 4m old), then advance 61s so page 2 expires and clamps back to page 1
+    await page.getByRole('button', { name: 'Next page' }).click();
+    await expect(page.locator('.flow-count')).toHaveText('Showing 51–100 of 100 flows');
+    await page.clock.fastForward(61_000);
+    await expect(page.locator('.flow-count')).toHaveText('Showing 1–50 of 50 flows');
+    await expect(page.locator('.flow-item')).toHaveCount(50);
+
+    // Advance another 120s so the remaining 50 flows expire
+    await page.clock.fastForward(120_000);
+    await expect(page.locator('.flow-item')).toHaveCount(0);
+    await expect(page.locator('.flow-count')).toHaveText('Showing 0 of 0 flows');
   });
 });
 

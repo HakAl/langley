@@ -19,10 +19,13 @@ export function SettingsView({ settings, onSave, loading, draftIdleGap, onDraftC
   useEffect(() => {
     if (draftIdleGap != null) {
       setIdleGapInput(draftIdleGap)
+      if (settings && draftIdleGap === settings.idle_gap_minutes) {
+        onDraftChange?.(null)
+      }
     } else if (settings) {
       setIdleGapInput(settings.idle_gap_minutes)
     }
-  }, [settings, draftIdleGap])
+  }, [settings, draftIdleGap, onDraftChange])
 
   useEffect(() => {
     return () => {
@@ -32,13 +35,12 @@ export function SettingsView({ settings, onSave, loading, draftIdleGap, onDraftC
     }
   }, [])
 
-  const baseline = settings?.idle_gap_minutes ?? 5
   const isValid = idleGapInput >= 1 && idleGapInput <= 60
-  const isDirty = settings != null && idleGapInput !== settings.idle_gap_minutes
+  const isDirty = settings != null ? idleGapInput !== settings.idle_gap_minutes : draftIdleGap != null
 
   const updateInput = (nextVal: number) => {
     setIdleGapInput(nextVal)
-    if (nextVal !== baseline) {
+    if (!settings || nextVal !== settings.idle_gap_minutes) {
       onDraftChange?.(nextVal)
     } else {
       onDraftChange?.(null)
@@ -116,7 +118,10 @@ export function SettingsView({ settings, onSave, loading, draftIdleGap, onDraftC
         {isDirty && (
           <button
             className="secondary-btn"
-            onClick={() => updateInput(settings?.idle_gap_minutes ?? 5)}
+            onClick={() => {
+              setIdleGapInput(settings?.idle_gap_minutes ?? 5)
+              onDraftChange?.(null)
+            }}
           >
             Reset
           </button>
