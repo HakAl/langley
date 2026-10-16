@@ -1,5 +1,6 @@
 import type { Stats, CostPeriod } from '../types'
 import { TimeRangeSelect } from '../components/TimeRangeSelect'
+import { formatTimeRangeLabel } from '../utils'
 
 interface AnalyticsViewProps {
   stats: Stats | null
@@ -10,6 +11,8 @@ interface AnalyticsViewProps {
 }
 
 export function AnalyticsView({ stats, dailyCosts, timeRange, onTimeRangeChange, loading }: AnalyticsViewProps) {
+  const rangeLabel = formatTimeRangeLabel(timeRange)
+  const windowPhrase = timeRange == null ? 'all time' : `last ${rangeLabel}`
   return (
     <div className="analytics-view">
       <div className="filters">
@@ -27,7 +30,7 @@ export function AnalyticsView({ stats, dailyCosts, timeRange, onTimeRangeChange,
           <div className="stat-card">
             <div className="stat-value">${stats.total_cost.toFixed(2)}</div>
             <div className="stat-label">Total Cost</div>
-            <div className="stat-sublabel">USD estimated</div>
+            <div className="stat-sublabel">USD, {windowPhrase}</div>
           </div>
           <div className="stat-card">
             <div className="stat-value">{(stats.total_tokens_in + stats.total_tokens_out).toLocaleString()}</div>
@@ -54,6 +57,7 @@ export function AnalyticsView({ stats, dailyCosts, timeRange, onTimeRangeChange,
 
       <div className="chart-section">
         <h3>Daily Cost</h3>
+        <p className="chart-subtitle">Cost over {windowPhrase}</p>
         {dailyCosts.length === 0 || dailyCosts.every(d => d.total_cost === 0) ? (
           <div className="chart-empty">
             <p>No cost data for this period</p>

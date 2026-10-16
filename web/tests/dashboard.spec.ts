@@ -627,3 +627,101 @@ test.describe('Hash Routing', () => {
     await expect(page).toHaveURL(/#settings/);
   });
 });
+
+test.describe('Flow Inspector & Time Range UX (langley-63xq)', () => {
+  test.beforeEach(async ({ page }) => {
+    await setupMocks(page);
+    await page.route('**/api/flows/flow-1', route => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...mockFlows[0],
+        request_headers: { 'x-request-test': ['request header value'] },
+        response_headers: { 'x-response-test': ['response header value'] },
+        request_body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          system: 'Helpful assistant',
+          messages: [{ role: 'user', content: 'Find the answer' }],
+          tools: [{ name: 'search' }],
+        }),
+        response_body: 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Reconstructed answer"}}\n\n',
+      }),
+    }));
+    await page.goto('/');
+    await authenticate(page);
+  });
+
+  test('live intervals select exact windows and readable analytics labels', async ({ page }) => {
+    const range = page.getByLabel('Time range');
+    await expect(range).toHaveValue('24h');
+    for (const [key, minutes] of [['5m', 5], ['15m', 15], ['1h', 60], ['6h', 360]] as const) {
+      const request = page.waitForRequest(request => {
+        const url = new URL(request.url());
+        return url.pathname === '/api/flows' && url.searchParams.has('start_time') &&
+          Math.abs(Date.parse(url.searchParams.get('end_time')!) - Date.parse(url.searchParams.get('start_time')!) - minutes * 60000) < 2;
+      });
+      await range.selectOption(key);
+      await request;
+      await expect(range).toHaveValue(key);
+    }
+    await page.getByRole('button', { name: 'Analytics', exact: true }).click();
+    await page.getByLabel('Time range').selectOption('5m');
+    await expect(page.getByText('Cost over last 5 minutes')).toBeVisible();
+    await page.getByLabel('Time range').selectOption('all');
+    await expect(page.getByText('Cost over all time')).toBeVisible();
+  });
+
+  test('formatted conversation is immediately visible and raw bodies and headers remain inspectable', async ({ page }) => {
+    await expect(page.locator('.flow-item').first().locator('.flow-model')).toHaveText(mockFlows[0].model);
+    await expect(page.locator('.flow-item').first().locator('.flow-duration')).toHaveText('1.50s');
+    await page.locator('.flow-item').first().click();
+    await expect(page.getByRole('tab', { name: 'Formatted', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByText('Helpful assistant')).toBeVisible();
+    await expect(page.getByText('Reconstructed answer')).toBeVisible();
+    await expect(page.locator('.llm-tools-summary')).toContainText('1 tool:');
+    await expect(page.locator('.llm-tools-summary')).toContainText('search');
+    await expect(page.getByRole('button', { name: /Show all/ })).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Request', exact: true }).click();
+    await expect(page.locator('.body-content pre')).toContainText('Find the answer');
+    await page.getByRole('tab', { name: 'Response', exact: true }).click();
+    await expect(page.locator('.body-content pre')).toContainText('event: content_block_delta');
+    await page.getByRole('tab', { name: 'Headers', exact: true }).click();
+    await expect(page.locator('.body-panel')).toContainText('x-request-test:');
+    await expect(page.locator('.body-panel')).toContainText('request header value');
+    await expect(page.locator('.body-panel')).toContainText('x-response-test:');
+    await expect(page.locator('.body-panel')).toContainText('response header value');
+  });
+
+  test('desktop inspector occupies two thirds and has an internal full-height scroll region', async ({ page }) => {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await page.locator('.flow-item').first().click();
+    const detail = await page.locator('.flow-detail').boundingBox();
+    const list = await page.locator('.content-area').boundingBox();
+    expect(detail!.width / list!.width).toBeGreaterThan(1.8);
+    expect(detail!.width / list!.width).toBeLessThan(2.2);
+    const scroll = await page.locator('.body-panel').evaluate(element => ({
+      overflow: getComputedStyle(element).overflowY,
+      height: element.clientHeight,
+    }));
+    expect(scroll.overflow).toBe('auto');
+    expect(scroll.height).toBeGreaterThan(300);
+    await expect(page.locator('.detail-overlay')).not.toBeVisible();
+  });
+
+  test('long raw bodies remain fully available in the scrolling inspector', async ({ page }) => {
+    const lines = Array.from({ length: 100 }, (_, index) => `line ${index}`).join('\n');
+    await page.route('**/api/flows/flow-1', route => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ ...mockFlows[0], request_body: '', response_body: lines }),
+    }));
+    await page.locator('.flow-item').first().click();
+    await expect(page.getByRole('tab', { name: 'Response', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('.body-content pre')).toContainText('line 99');
+    const dimensions = await page.locator('.body-panel').evaluate(element => ({
+      content: element.scrollHeight,
+      viewport: element.clientHeight,
+    }));
+    expect(dimensions.content).toBeGreaterThan(dimensions.viewport);
+    await expect(page.getByRole('button', { name: /Show all/ })).toHaveCount(0);
+  });
+});
+

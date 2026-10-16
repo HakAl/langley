@@ -988,20 +988,30 @@ func printManualInstructions(caPath string) {
 
 // printPostInstall prints post-installation instructions
 func printPostInstall() {
-	fmt.Println()
-	fmt.Println("Next steps:")
-	fmt.Println("  1. Configure your HTTP client to use the proxy:")
-	fmt.Println("     export HTTPS_PROXY=http://localhost:9090")
-	fmt.Println("     export HTTP_PROXY=http://localhost:9090")
-	fmt.Println()
-	fmt.Println("  2. Start langley:")
-	fmt.Println("     langley")
-	fmt.Println()
-	fmt.Println("  3. Open the dashboard:")
-	fmt.Println("     http://localhost:9091")
-	fmt.Println()
-	fmt.Println("Note: Firefox uses its own certificate store. See 'langley setup --manual'")
-	fmt.Println("      for Firefox-specific instructions.")
+	writePostInstall(os.Stdout)
+}
+
+// writePostInstall writes post-setup guidance, leading with the one-command workflow.
+func writePostInstall(w io.Writer) {
+	fmt.Fprint(w, `
+Next steps:
+  Run langley:
+     langley
+
+  That one command starts the proxy, opens the dashboard
+  (http://localhost:9091), and launches a shell with HTTPS_PROXY
+  already set. Run your LLM client (e.g. claude) from that shell.
+
+Other ways to run:
+  langley -no-shell       Server only (no subshell). From another terminal,
+                          use 'langley run <command>' or point clients at
+                          the proxy yourself:
+                            export HTTPS_PROXY=http://localhost:9090
+                            export HTTP_PROXY=http://localhost:9090
+
+Note: Firefox uses its own certificate store. See 'langley setup --manual'
+      for Firefox-specific instructions.
+`)
 }
 
 // printSetupHelp prints help for setup subcommand

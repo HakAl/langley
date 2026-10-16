@@ -1,3 +1,5 @@
+import { TIME_RANGE_OPTIONS, timeRangeKey } from '../utils'
+
 interface TimeRangeSelectProps {
   timeRange: number | null
   onTimeRangeChange: (days: number | null) => void
@@ -7,14 +9,15 @@ export function TimeRangeSelect({ timeRange, onTimeRangeChange }: TimeRangeSelec
   return (
     <select
       aria-label="Time range"
-      value={timeRange == null ? 'all' : String(timeRange)}
-      onChange={(e) => onTimeRangeChange(e.target.value === 'all' ? null : Number(e.target.value))}
+      value={timeRangeKey(timeRange)}
+      onChange={(e) => {
+        const opt = TIME_RANGE_OPTIONS.find(o => o.key === e.target.value)
+        onTimeRangeChange(opt ? opt.days : null)
+      }}
     >
-      <option value="1">Last 24 hours</option>
-      <option value="7">Last 7 days</option>
-      <option value="30">Last 30 days</option>
-      <option value="90">Last 90 days</option>
-      <option value="all">All time</option>
+      {TIME_RANGE_OPTIONS.map(o => (
+        <option key={o.key} value={o.key}>{o.label}</option>
+      ))}
     </select>
   )
 }

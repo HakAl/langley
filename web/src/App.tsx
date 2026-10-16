@@ -8,7 +8,7 @@ import {
   reconcileFlowPage,
   runCountRefreshAttempts,
 } from './mergeFlows'
-import { filterAnomalies, loadDismissedAnomalyKeys, saveDismissedAnomalyKeys } from './anomalies'
+import { filterAnomalies, getAnomalyKey, loadDismissedAnomalyKeys, saveDismissedAnomalyKeys } from './anomalies'
 import { getInitialTheme } from './utils'
 import { useHashRoute } from './hooks/useHashRoute'
 import { useApi } from './hooks/useApi'
@@ -74,7 +74,7 @@ function App() {
   const [hostFilter, setHostFilter] = useState('')
   const [taskFilter, setTaskFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'error'>('all')
-  const [timeRange, setTimeRange] = useState<number | null>(30)
+  const [timeRange, setTimeRange] = useState<number | null>(1)
   // Tool drill-down state
   const [selectedTool, setSelectedTool] = useState<string | null>(null)
   const [toolInvocations, setToolInvocations] = useState<ToolInvocation[]>([])
@@ -360,6 +360,8 @@ function App() {
     }
   }, [])
 
+  const detailOpen = (!!selectedFlow && view === 'flows') || (!!selectedToolInvocation && view === 'tools')
+
   const { visible: visibleAnomalies, activeCount: activeAnomalyCount } = filterAnomalies(
     anomalies,
     dismissedAnomalyKeys,
@@ -553,7 +555,7 @@ function App() {
             <button className="error-banner-dismiss" onClick={() => setError(null)} aria-label="Dismiss error">&times;</button>
           </div>
         )}
-        <div className="main-content">
+        <div className={`main-content${detailOpen ? ' has-detail' : ''}`}>
           <div className="content-area">
             {viewError && (
               <div className="error-banner" role="alert">
@@ -570,7 +572,7 @@ function App() {
           </div>
           {selectedFlow && view === 'flows' && <>
             <div className="detail-overlay" onClick={closeFlowDetail} />
-            <FlowDetail flow={selectedFlow} onClose={closeFlowDetail} loading={detailLoading} />
+            <FlowDetail flow={selectedFlow} onClose={closeFlowDetail} loading={detailLoading} anomalies={anomalies.filter(a => a.flow_id === selectedFlow.id && !dismissedAnomalyKeys.has(getAnomalyKey(a)))} />
           </>}
           {selectedToolInvocation && view === 'tools' && <>
             <div className="detail-overlay" onClick={() => setSelectedToolInvocation(null)} />

@@ -225,8 +225,31 @@ header h1 {
 }
 
 .content-area {
-  flex: 1;
+  flex: 1 1 0%;
   min-width: 0;
+}
+
+/* With a detail panel open on desktop, the list compacts to ~1/3 width. */
+@media (min-width: 1025px) {
+  .main-content.has-detail .content-area {
+    min-width: 300px;
+  }
+}
+
+@media (min-width: 1025px) {
+  .main-content.has-detail .flow-item {
+    grid-template-columns: auto 1fr auto;
+    gap: 0.5rem;
+  }
+
+  .main-content.has-detail .tokens {
+    grid-column: 2 / -1;
+    justify-content: flex-end;
+  }
+
+  .main-content.has-detail .timestamp {
+    display: none;
+  }
 }
 
 /* Filters */
@@ -374,12 +397,41 @@ header h1 {
   gap: 0.5rem;
 }
 
+.path-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
 .path {
   font-size: 0.875rem;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.flow-model {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 50%;
+  font-family: monospace;
+  font-size: 0.6875rem;
+  padding: 0 0.375rem;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flow-duration {
+  font-family: monospace;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .status-code {
@@ -591,16 +643,32 @@ header h1 {
   display: none;
 }
 
-/* Flow detail panel */
+/* Flow detail panel: ~2/3 of the desktop width, full viewport height.
+   Header/summary are fixed; the body inspector fills and scrolls the rest. */
 .flow-detail {
-  width: clamp(360px, 38vw, 500px);
-  flex-shrink: 0;
+  flex: 2 1 0%;
+  min-width: 560px;
+  max-width: 1200px;
+  display: flex;
+  flex-direction: column;
+  align-self: flex-start;
+  position: sticky;
+  top: 1rem;
+  height: calc(100vh - 150px);
   background: var(--bg-secondary);
   border-radius: 0;
   border: 1px solid var(--border);
-  overflow: hidden;
-  max-height: calc(100vh - 150px);
+  overflow-x: hidden;
   overflow-y: auto;
+}
+
+.flow-detail > * {
+  flex-shrink: 0;
+}
+
+.flow-detail > .body-inspector {
+  flex: 1 1 auto;
+  min-height: 240px;
 }
 
 .detail-header {
@@ -611,6 +679,68 @@ header h1 {
   border-bottom: 2px solid var(--accent);
   background: var(--bg-tertiary);
 }
+
+.detail-summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
+  font-size: 0.8125rem;
+}
+
+.summary-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.summary-item dt {
+  font-size: 0.625rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+}
+
+.summary-item dd {
+  margin: 0;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.summary-model,
+.summary-muted,
+.summary-cache {
+  color: var(--text-secondary);
+}
+
+.summary-item code {
+  font-size: 0.75rem;
+}
+
+.detail-alerts {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-alert {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-left: 3px solid var(--info);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.detail-alert.warning { border-left-color: var(--warning); }
+.detail-alert.error { border-left-color: var(--error); }
 
 .detail-header h2 {
   font-size: 0.875rem;
@@ -684,25 +814,6 @@ header h1 {
   color: var(--text-secondary);
 }
 
-.detail-row.warning {
-  color: var(--warning);
-}
-
-.cost-row {
-  color: var(--success);
-  font-weight: 500;
-}
-
-.headers {
-  margin-top: 1rem;
-}
-
-.headers h4 {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  margin: 0 0 0.5rem 0;
-}
-
 .header-row {
   font-size: 0.75rem;
   font-family: monospace;
@@ -713,6 +824,200 @@ header h1 {
 
 .body-viewer {
   border-top: 1px solid var(--border);
+}
+
+.body-inspector {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: none;
+}
+
+.body-inspector .body-tabs {
+  flex-shrink: 0;
+}
+
+.body-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.body-panel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.header-name {
+  color: var(--text-primary);
+}
+
+.headers-group h4 {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* Formatted LLM conversation view */
+.llm-formatted {
+  padding: 0.75rem 1rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.llm-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.llm-section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding-bottom: 0.375rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.llm-meta {
+  font-family: monospace;
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+.llm-tools-summary {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.llm-message {
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-primary);
+  border-left: 3px solid var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.llm-role-user { border-left-color: var(--accent); }
+.llm-role-assistant { border-left-color: var(--success); }
+.llm-role-system,
+.llm-role-developer { border-left-color: var(--warning); }
+.llm-role-tool { border-left-color: var(--sse); }
+
+.llm-role {
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+.llm-text {
+  font-size: 0.8125rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-primary);
+}
+
+.llm-other {
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.llm-thinking,
+.llm-system {
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.llm-system {
+  border-left: 3px solid var(--warning);
+}
+
+.llm-thinking summary,
+.llm-system summary {
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.llm-thinking summary:hover,
+.llm-system summary:hover {
+  color: var(--accent);
+}
+
+.llm-thinking summary:active,
+.llm-system summary:active {
+  opacity: 0.8;
+}
+
+.llm-thinking summary:focus-visible,
+.llm-system summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.llm-thinking .llm-text,
+.llm-system .llm-text {
+  padding: 0.25rem 0.5rem 0.5rem;
+  color: var(--text-secondary);
+}
+
+.llm-tool-use,
+.llm-tool-result {
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.llm-tool-result.llm-tool-error {
+  border-color: var(--error);
+}
+
+.llm-tool-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.llm-tool-label strong {
+  color: var(--text-primary);
+  font-family: monospace;
+}
+
+.llm-tool-id {
+  font-size: 0.625rem;
+  color: var(--text-muted);
+}
+
+.llm-tool-use pre,
+.llm-tool-result pre {
+  margin: 0;
+  padding: 0.5rem;
+  font-size: 0.75rem;
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 24rem;
+  overflow-y: auto;
 }
 
 .body-tabs {
@@ -889,6 +1194,12 @@ header h1 {
   border: 1px solid var(--border);
   border-radius: 0;
   padding: 1.5rem;
+}
+
+.chart-subtitle {
+  margin: -0.5rem 0 1rem 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
 .chart-section h3 {
@@ -1215,6 +1526,8 @@ header h1 {
     position: fixed;
     top: 0;
     right: 0;
+    flex: none;
+    min-width: 0;
     width: 90%;
     max-width: 500px;
     height: 100vh;
@@ -1574,6 +1887,8 @@ kbd {
   .secondary-btn,
   .token-input button,
   .body-tab,
+  .llm-thinking summary,
+  .llm-system summary,
   .body-expand-btn,
   .body-copy-btn,
   .pagination-btn {

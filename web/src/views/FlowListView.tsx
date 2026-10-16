@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { Flow } from '../types'
-import { formatTime, formatCost, getStatusClass } from '../utils'
+import { formatTime, formatCost, formatDuration, getStatusClass } from '../utils'
 import { TimeRangeSelect } from '../components/TimeRangeSelect'
 import { Pagination } from '../components/Pagination'
 
@@ -154,12 +154,18 @@ export function FlowListView({
                   {flow.host}
                   {flow.is_sse && <span className="badge sse">SSE</span>}
                 </span>
-                <span className="path">{flow.path}</span>
+                <span className="path-line">
+                  <span className="path">{flow.path}</span>
+                  {flow.model && <span className="flow-model" title={flow.model}>{flow.model}</span>}
+                </span>
               </div>
               <span className={`status-code ${getStatusClass(flow.status_code)}`}>
                 {flow.status_code || '...'}
               </span>
               <div className="tokens">
+                {flow.duration_ms != null && (
+                  <span className="flow-duration" title="Duration">{formatDuration(flow.duration_ms)}</span>
+                )}
                 {flow.input_tokens != null && (
                   <span className="token-count">
                     <span className="token-arrow-in">↓</span>

@@ -10,6 +10,9 @@ export interface FlowFetchParams {
   status?: string
 }
 
+/** Window used by stats and daily-cost endpoints when no time range is selected. */
+export const DEFAULT_ANALYTICS_DAYS = 30
+
 export function useApi() {
   const apiFetch = useCallback(async <T,>(path: string): Promise<ApiResult<T>> => {
     try {
@@ -47,7 +50,7 @@ export function useApi() {
   }, [apiFetch])
 
   const fetchStats = useCallback(async (days?: number) => {
-    return apiFetch<Stats>(`/api/stats?${timeParams(days ?? 30)}`)
+    return apiFetch<Stats>(`/api/stats?${timeParams(days)}`)
   }, [apiFetch, timeParams])
 
   const fetchTasks = useCallback(async (days?: number) => {
@@ -67,7 +70,7 @@ export function useApi() {
   }, [apiFetch])
 
   const fetchDailyCosts = useCallback(async (days?: number) => {
-    return apiFetch<CostPeriod[]>(`/api/analytics/cost/daily?${timeParams(days ?? 30)}`)
+    return apiFetch<CostPeriod[]>(`/api/analytics/cost/daily?${timeParams(days)}`)
   }, [apiFetch, timeParams])
 
   const fetchSettings = useCallback(async () => {

@@ -126,7 +126,7 @@ No shadows anywhere.
 
 | Breakpoint | What changes |
 |------------|-------------|
-| `> 1024px` | List and detail panel sit side-by-side, with detail width `clamp(360px, 38vw, 500px)`. |
+| `> 1024px` | List and detail panel sit side-by-side. With a detail panel open, the detail takes ~2/3 (`flex: 2 1 0%`, `min-width: 560px`, `max-width: 1200px`) and the list compacts to ~1/3 (`flex: 1 1 0%`, `min-width: 300px`; rows drop the timestamp column). With no detail open, the list takes full width. |
 | `<= 1024px` | Main content stacks vertically. Flow detail panel becomes a fixed slide-over overlay with backdrop. |
 | `<= 768px` | Header wraps. Nav moves to full-width row. Flow items compress to 3-column grid. Tokens and timestamps span full row. |
 | `<= 480px` | Nav becomes horizontally scrollable with a thin scrollbar indicator. Nav buttons shrink. |
@@ -184,10 +184,18 @@ No shadows anywhere.
 ### Flow Items (`.flow-item`)
 
 - 5-column grid: method, host/path, status code, tokens, timestamp
+- Path line also shows the model (`.flow-model`, monospace, `--bg-tertiary` chip); the tokens cell leads with duration (`.flow-duration`)
 - Default left border: `3px solid var(--border)`
 - Hover: background to `--bg-tertiary`, left border to `--text-muted`
 - Selected: all borders to `--accent`, background to `--accent-dim`
 - At 768px: collapses to 3-column grid
+
+### Flow Detail Inspector (`.flow-detail`)
+
+- Flex column at full viewport height: `.detail-header`, then a compact `.detail-summary-bar` (status, provider/model, duration, tokens, cost, time, task), then `.detail-alerts` (integrity + anomalies, left border colored by severity)
+- `.body-inspector` fills the remaining height (`flex: 1`, `min-height: 0`); only `.body-panel` scrolls. No line-count truncation.
+- Tabs: `Formatted` (default when the body parses as an LLM request/response), `Request`, `Response`, `Headers`
+- Formatted view: messages are `.llm-message` blocks with a 3px left border by role (user `--accent`, assistant `--success`, system `--warning`, tool `--sse`); thinking and long system prompts use `<details>`
 
 ### Badges (`.badge`)
 

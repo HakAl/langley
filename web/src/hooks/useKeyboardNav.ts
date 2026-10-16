@@ -69,7 +69,10 @@ export function useKeyboardNav({
           if (list.length > 0) setSelectedIndex(i => Math.max(i - 1, 0))
           break
         case 'Enter':
-          if (list.length > 0 && selectedIndex < list.length) onEnter(list[selectedIndex])
+          if (list.length > 0 && selectedIndex < list.length) {
+            e.preventDefault()
+            onEnter(list[selectedIndex])
+          }
           break
         case '/':
           if (view === 'flows') {
