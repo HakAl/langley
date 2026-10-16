@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/HakAl/langley/internal/config"
+	"github.com/HakAl/langley/internal/parser"
 	"github.com/HakAl/langley/internal/provider"
 	"github.com/HakAl/langley/internal/redact"
 	"github.com/HakAl/langley/internal/store"
@@ -205,34 +207,54 @@ func TestRemoveHopByHopHeaders_ConnectionValues(t *testing.T) {
 	}
 }
 
+// toolResultUpdate captures arguments passed to UpdateToolResult.
+type toolResultUpdate struct {
+	ToolUseID     string
+	Success       bool
+	ErrorMsg      *string
+	ResultContent *string
+}
+
 // mockStore implements store.Store for testing
 type mockStore struct {
-	flows  map[string]*store.Flow
-	events map[string][]*store.Event
+	mu              sync.Mutex
+	flows           map[string]*store.Flow
+	events          map[string][]*store.Event
+	toolInvocations []*store.ToolInvocation
+	toolResults     map[string]toolResultUpdate
 }
 
 func newMockStore() *mockStore {
 	return &mockStore{
-		flows:  make(map[string]*store.Flow),
-		events: make(map[string][]*store.Event),
+		flows:       make(map[string]*store.Flow),
+		events:      make(map[string][]*store.Event),
+		toolResults: make(map[string]toolResultUpdate),
 	}
 }
 
 func (m *mockStore) SaveFlow(ctx context.Context, flow *store.Flow) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.flows[flow.ID] = flow
 	return nil
 }
 
 func (m *mockStore) UpdateFlow(ctx context.Context, flow *store.Flow) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.flows[flow.ID] = flow
 	return nil
 }
 
 func (m *mockStore) GetFlow(ctx context.Context, id string) (*store.Flow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.flows[id], nil
 }
 
 func (m *mockStore) ListFlows(ctx context.Context, filter store.FlowFilter) ([]*store.Flow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	var result []*store.Flow
 	for _, f := range m.flows {
 		result = append(result, f)
@@ -241,15 +263,21 @@ func (m *mockStore) ListFlows(ctx context.Context, filter store.FlowFilter) ([]*
 }
 
 func (m *mockStore) DeleteFlow(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.flows, id)
 	return nil
 }
 
 func (m *mockStore) CountFlows(ctx context.Context, filter store.FlowFilter) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return len(m.flows), nil
 }
 
 func (m *mockStore) SaveEvent(ctx context.Context, event *store.Event) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	// Simulate foreign key constraint - flow must exist (langley-2fa)
 	if _, exists := m.flows[event.FlowID]; !exists {
 		return fmt.Errorf("FOREIGN KEY constraint failed: flow %s does not exist", event.FlowID)
@@ -259,6 +287,8 @@ func (m *mockStore) SaveEvent(ctx context.Context, event *store.Event) error {
 }
 
 func (m *mockStore) SaveEvents(ctx context.Context, events []*store.Event) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, e := range events {
 		m.events[e.FlowID] = append(m.events[e.FlowID], e)
 	}
@@ -266,15 +296,28 @@ func (m *mockStore) SaveEvents(ctx context.Context, events []*store.Event) error
 }
 
 func (m *mockStore) GetEventsByFlow(ctx context.Context, flowID string) ([]*store.Event, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.events[flowID], nil
 }
 
 func (m *mockStore) SaveToolInvocation(ctx context.Context, inv *store.ToolInvocation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.toolInvocations = append(m.toolInvocations, inv)
 	return nil
 }
 
 func (m *mockStore) GetToolInvocationsByFlow(ctx context.Context, flowID string) ([]*store.ToolInvocation, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*store.ToolInvocation
+	for _, inv := range m.toolInvocations {
+		if inv.FlowID == flowID {
+			out = append(out, inv)
+		}
+	}
+	return out, nil
 }
 
 func (m *mockStore) GetToolInvocation(ctx context.Context, id string) (*store.ToolInvocation, error) {
@@ -286,6 +329,14 @@ func (m *mockStore) ListToolInvocations(ctx context.Context, toolName string, st
 }
 
 func (m *mockStore) UpdateToolResult(ctx context.Context, toolUseID string, success bool, errorMsg *string, resultContent *string, resultTime time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.toolResults[toolUseID] = toolResultUpdate{
+		ToolUseID:     toolUseID,
+		Success:       success,
+		ErrorMsg:      errorMsg,
+		ResultContent: resultContent,
+	}
 	return nil
 }
 
@@ -1457,3 +1508,224 @@ func TestMITMProxy_ShouldIntercept_Unit(t *testing.T) {
 		})
 	}
 }
+
+// TestMITMProxy_Redaction_EventsAndTools verifies that SSE event payloads,
+// extracted tool invocation inputs, and correlated tool results respect both
+// credential redaction rules and DisableBodyStorage (langley-e9ui).
+func TestMITMProxy_Redaction_EventsAndTools(t *testing.T) {
+	t.Parallel()
+
+	secretKey := "sk-ant-api03-secret1234567890abcdef"
+	sseStream := "event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_01\",\"name\":\"bash\",\"input\":{}}}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\":\\\"export KEY=" + secretKey + "\\\"}\"}}\n\n" +
+		"event: content_block_stop\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+
+	toolResultReq := []byte(`{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","is_error":true,"content":"leaked ` + secretKey + `"}]}]}`)
+
+	t.Run("redacts secrets in SSE events, tool inputs, and tool results", func(t *testing.T) {
+		redactor, err := redact.New(&config.RedactionConfig{RedactAPIKeys: true})
+		if err != nil {
+			t.Fatalf("redact.New: %v", err)
+		}
+		ms := newMockStore()
+		_ = ms.SaveFlow(context.Background(), &store.Flow{ID: "flow-1"})
+
+		capture := &flowCapture{}
+		p := &MITMProxy{
+			cfg:      testConfig(),
+			logger:   testLogger(),
+			redactor: redactor,
+			store:    ms,
+			onEvent:  capture.OnEvent,
+		}
+
+		var clientBuf, captureBuf bytes.Buffer
+		lb := &limitedBuffer{buf: &captureBuf, max: 1024 * 1024}
+		if err := p.streamSSEWithParser("flow-1", nil, strings.NewReader(sseStream), &clientBuf, lb); err != nil {
+			t.Fatalf("streamSSEWithParser: %v", err)
+		}
+
+		// Stored and broadcast events must not contain the raw secret key
+		events, _ := ms.GetEventsByFlow(context.Background(), "flow-1")
+		if len(events) != 3 {
+			t.Fatalf("saved events = %d, want 3", len(events))
+		}
+		for _, ev := range events {
+			if strings.Contains(fmt.Sprintf("%v", ev.EventData), secretKey) {
+				t.Errorf("stored event leaked secret: %v", ev.EventData)
+			}
+		}
+		for _, ev := range capture.Events() {
+			if strings.Contains(fmt.Sprintf("%v", ev.EventData), secretKey) {
+				t.Errorf("broadcast event leaked secret: %v", ev.EventData)
+			}
+		}
+
+		// Extracted tool invocation input must be redacted
+		invs, _ := ms.GetToolInvocationsByFlow(context.Background(), "flow-1")
+		if len(invs) != 1 {
+			t.Fatalf("saved tool invocations = %d, want 1", len(invs))
+		}
+		if invs[0].ToolInput == nil {
+			t.Fatal("expected non-nil ToolInput")
+		}
+		if strings.Contains(*invs[0].ToolInput, secretKey) {
+			t.Errorf("ToolInput leaked secret: %s", *invs[0].ToolInput)
+		}
+		if !strings.Contains(*invs[0].ToolInput, redact.RedactedValue) {
+			t.Errorf("ToolInput = %q, want to contain %q", *invs[0].ToolInput, redact.RedactedValue)
+		}
+
+		// Correlated tool result content and error message must be redacted
+		p.correlateToolResults(toolResultReq)
+		res, ok := ms.toolResults["toolu_01"]
+		if !ok {
+			t.Fatal("expected correlated tool result for toolu_01")
+		}
+		if res.ResultContent == nil || strings.Contains(*res.ResultContent, secretKey) {
+			t.Errorf("ResultContent leaked secret: %v", res.ResultContent)
+		}
+		if res.ErrorMsg == nil || strings.Contains(*res.ErrorMsg, secretKey) {
+			t.Errorf("ErrorMsg leaked secret: %v", res.ErrorMsg)
+		}
+	})
+
+	t.Run("preserves payloads when API key redaction is disabled", func(t *testing.T) {
+		redactor, err := redact.New(&config.RedactionConfig{RedactAPIKeys: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := &MITMProxy{redactor: redactor}
+		if got := p.redactOptionalString(&secretKey); got == nil || *got != secretKey {
+			t.Fatal("disabled redaction changed tool payload")
+		}
+		if got := p.redactEventData(map[string]interface{}{"key": secretKey}); got["key"] != secretKey {
+			t.Fatal("disabled redaction changed event payload")
+		}
+	})
+
+	t.Run("fails closed for oversized derivatives and forwards multiline SSE unchanged", func(t *testing.T) {
+		redactor, err := redact.New(&config.RedactionConfig{RedactAPIKeys: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ms := newMockStore()
+		capture := &flowCapture{}
+		p := &MITMProxy{cfg: testConfig(), logger: testLogger(), redactor: redactor, store: ms, onEvent: capture.OnEvent}
+		for _, size := range []int{redact.MaxRedactionInputSize, redact.MaxRedactionInputSize + 1} {
+			payload := strings.Repeat("x", size-len(secretKey)-1) + " " + secretKey
+			got := p.redactOptionalString(&payload)
+			if got == nil || strings.Contains(*got, secretKey) {
+				t.Fatal("boundary payload leaked")
+			}
+			if size > redact.MaxRedactionInputSize && *got != oversizedRedactedPlaceholder {
+				t.Fatal("oversized payload not replaced")
+			}
+			if size == redact.MaxRedactionInputSize && *got == oversizedRedactedPlaceholder {
+				t.Fatal("exact-limit payload was discarded")
+			}
+		}
+		payload := strings.Repeat("x", redact.MaxRedactionInputSize) + secretKey
+		p.saveToolInvocations("large", nil, []*parser.ToolUse{{ID: "large-tool", Name: "bash", Input: map[string]interface{}{"cmd": payload}}})
+		invs, err := ms.GetToolInvocationsByFlow(context.Background(), "large")
+		if err != nil || len(invs) != 1 {
+			t.Fatalf("saved tools = %d, err = %v", len(invs), err)
+		}
+		if invs[0].ToolInput == nil || *invs[0].ToolInput != oversizedRedactedPlaceholder {
+			t.Fatal("oversized input not replaced")
+		}
+		req, err := json.Marshal(map[string]interface{}{"messages": []interface{}{map[string]interface{}{"role": "user", "content": []interface{}{map[string]interface{}{"type": "tool_result", "tool_use_id": "large-tool", "is_error": true, "content": payload}}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.correlateToolResults(req)
+		result, ok := ms.toolResults["large-tool"]
+		if !ok || result.ResultContent == nil || result.ErrorMsg == nil || *result.ResultContent != oversizedRedactedPlaceholder || *result.ErrorMsg != oversizedRedactedPlaceholder {
+			t.Fatal("oversized result/error not replaced")
+		}
+		// Each line stays below the parser's 1 MiB line limit; the assembled
+		// valid JSON event exceeds the redactor limit.
+		half := strings.Repeat("x", redact.MaxRedactionInputSize/2)
+		stream := "event: message_start\ndata: {\"a\":\"" + half + "\",\ndata: \"b\":\"" + half + secretKey + "\"}\n\n"
+		var forwarded, captured bytes.Buffer
+		if err := p.streamSSEWithParser("large", nil, strings.NewReader(stream), &forwarded, &limitedBuffer{buf: &captured, max: 1024}); err != nil {
+			t.Fatal(err)
+		}
+		if forwarded.String() != stream {
+			t.Fatal("SSE forwarding changed")
+		}
+		events, err := ms.GetEventsByFlow(context.Background(), "large")
+		if err != nil || len(events) != 1 {
+			t.Fatalf("saved events = %d, err = %v", len(events), err)
+		}
+		broadcast := capture.Events()
+		if len(broadcast) != 1 {
+			t.Fatalf("broadcast events = %d", len(broadcast))
+		}
+		for _, event := range append(events, broadcast...) {
+			if event.EventData["reason"] != oversizedRedactedPlaceholder || event.EventData["truncated"] != true {
+				t.Fatal("oversized event not replaced")
+			}
+		}
+		if got := p.redactEventData(map[string]interface{}{"bad": make(chan int)}); got["error"] != "marshal_failed" {
+			t.Fatal("marshal failure did not fail closed")
+		}
+	})
+
+	t.Run("omits payloads when DisableBodyStorage is true", func(t *testing.T) {
+		redactor, err := redact.New(&config.RedactionConfig{DisableBodyStorage: true})
+		if err != nil {
+			t.Fatalf("redact.New: %v", err)
+		}
+		ms := newMockStore()
+		_ = ms.SaveFlow(context.Background(), &store.Flow{ID: "flow-2"})
+
+		capture := &flowCapture{}
+		p := &MITMProxy{
+			cfg:      testConfig(),
+			logger:   testLogger(),
+			redactor: redactor,
+			store:    ms,
+			onEvent:  capture.OnEvent,
+		}
+
+		var clientBuf, captureBuf bytes.Buffer
+		lb := &limitedBuffer{buf: &captureBuf, max: 1024 * 1024}
+		if err := p.streamSSEWithParser("flow-2", nil, strings.NewReader(sseStream), &clientBuf, lb); err != nil {
+			t.Fatalf("streamSSEWithParser: %v", err)
+		}
+
+		events, _ := ms.GetEventsByFlow(context.Background(), "flow-2")
+		for _, ev := range events {
+			if ev.EventData != nil {
+				t.Errorf("expected nil EventData when DisableBodyStorage=true, got %v", ev.EventData)
+			}
+		}
+
+		// Tool invocation metadata is still tracked, but ToolInput is nil
+		invs, _ := ms.GetToolInvocationsByFlow(context.Background(), "flow-2")
+		if len(invs) != 1 {
+			t.Fatalf("saved tool invocations = %d, want 1", len(invs))
+		}
+		if invs[0].ToolInput != nil {
+			t.Errorf("expected nil ToolInput when DisableBodyStorage=true, got %q", *invs[0].ToolInput)
+		}
+
+		// Correlated tool result still records status, but omits content and error message
+		p.correlateToolResults(toolResultReq)
+		res, ok := ms.toolResults["toolu_01"]
+		if !ok {
+			t.Fatal("expected correlated tool result for toolu_01")
+		}
+		if res.Success {
+			t.Error("expected Success=false for error tool result")
+		}
+		if res.ResultContent != nil || res.ErrorMsg != nil {
+			t.Errorf("expected nil ResultContent and ErrorMsg when DisableBodyStorage=true, got %v / %v", res.ResultContent, res.ErrorMsg)
+		}
+	})
+}
+

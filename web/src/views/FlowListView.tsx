@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import type { Flow } from '../types'
 import { formatTime, formatCost, getStatusClass } from '../utils'
 import { TimeRangeSelect } from '../components/TimeRangeSelect'
@@ -23,6 +23,7 @@ interface FlowListViewProps {
   onPageChange: (page: number) => void
   onFlowSelect: (id: string) => void
   onStartExport: (format: string) => void
+  exportMessage?: string | null
   hostFilterRef?: React.RefObject<HTMLInputElement | null>
 }
 
@@ -44,11 +45,17 @@ export function FlowListView({
   onPageChange,
   onFlowSelect,
   onStartExport,
+  exportMessage,
   timeRange,
   page,
   totalPages,
   hostFilterRef,
 }: FlowListViewProps) {
+  const selectedItemRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    selectedItemRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [selectedIndex])
 
   const handleExportChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     if (e.target.value) {
@@ -95,7 +102,9 @@ export function FlowListView({
         </select>
         <TimeRangeSelect timeRange={timeRange} onTimeRangeChange={onTimeRangeChange} />
         <div className="export-dropdown">
+          <label htmlFor="export-flows-select" className="export-label">&darr; Export</label>
           <select
+            id="export-flows-select"
             aria-label="Export flows"
             onChange={handleExportChange}
             defaultValue=""
@@ -105,6 +114,9 @@ export function FlowListView({
             <option value="json">JSON</option>
             <option value="csv">CSV</option>
           </select>
+          {exportMessage && (
+            <span className="export-toast" role="status">{exportMessage}</span>
+          )}
         </div>
       </div>
 
@@ -134,11 +146,7 @@ export function FlowListView({
               tabIndex={index === selectedIndex ? 0 : -1}
               className={`flow-item ${selectedFlowId === flow.id ? 'selected' : ''} ${index === selectedIndex ? 'keyboard-selected' : ''}`}
               onClick={() => onFlowSelect(flow.id)}
-              ref={el => {
-                if (index === selectedIndex && el) {
-                  el.scrollIntoView({ block: 'nearest' })
-                }
-              }}
+              ref={index === selectedIndex ? selectedItemRef : null}
             >
               <span className={`method ${flow.method}`}>{flow.method}</span>
               <div className="host-path">

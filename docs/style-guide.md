@@ -58,6 +58,8 @@ All colors come from CSS custom properties on `:root` (dark) and `[data-theme="l
 | Section labels (table headers, detail section titles) | Same stack | 600 | `0.6875rem` - `0.75rem`, uppercase, tracked |
 | Badges | Same stack | 700 | `0.5625rem`, uppercase |
 
+**Font weight scale**: The stylesheet uses four weights across `400`–`700`: `400` for body copy and inputs, `500` for primary data cells/hosts/pagination/status messages, `600` for section headers/table headers/buttons/status codes, and `700` for badges, stat card values, and brand headings.
+
 **Letter spacing**: Section headers and labels use `0.06em` - `0.1em` tracking. Header title uses `0.08em`.
 
 **Line height**: Global `1.5`.
@@ -124,9 +126,10 @@ No shadows anywhere.
 
 | Breakpoint | What changes |
 |------------|-------------|
-| `<= 1200px` | Main content stacks vertically. Flow detail panel goes full-width below the flow list. |
+| `> 1024px` | List and detail panel sit side-by-side, with detail width `clamp(360px, 38vw, 500px)`. |
+| `<= 1024px` | Main content stacks vertically. Flow detail panel becomes a fixed slide-over overlay with backdrop. |
 | `<= 768px` | Header wraps. Nav moves to full-width row. Flow items compress to 3-column grid. Tokens and timestamps span full row. |
-| `<= 480px` | Nav becomes horizontally scrollable (hidden scrollbar). Nav buttons shrink. |
+| `<= 480px` | Nav becomes horizontally scrollable with a thin scrollbar indicator. Nav buttons shrink. |
 | `pointer: coarse` | All interactive elements enforce `44px` minimum touch target (nav buttons, toggles, close buttons, primary/secondary buttons, clear buttons). |
 
 ---
@@ -281,6 +284,6 @@ Globally enforced. No opt-out:
 | Use monospace for data values | Use monospace for labels or prose |
 | Keep border-radius at 0 | Add rounding "just for this component" |
 | Use `letter-spacing` and `text-transform: uppercase` for section headers | Use font-size alone to create hierarchy |
-| Test at all three breakpoints (1200, 768, 480) | Assume desktop-only |
+| Test at all three breakpoints (1024, 768, 480) | Assume desktop-only |
 | Provide `aria-label` when there's no visible text label | Rely on placeholder text as a label |
 | Respect the spacing scale | Invent new magic-number spacing values |

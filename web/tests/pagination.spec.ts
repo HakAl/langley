@@ -97,4 +97,84 @@ test.describe('Pagination Edge Cases', () => {
     await page.keyboard.press('j');
     await expect(lastItem).toHaveClass(/keyboard-selected/);
   });
+
+  test('settles at authoritative server total after page overlap and count refresh exhaustion', async ({ page }) => {
+    let holdPage = false;
+    let heldPage: (() => Promise<void>) | null = null;
+    let serverTotal = 100;
+    let countRequests = 0;
+    const heldCounts: Array<() => Promise<void>> = [];
+
+    await setupMocks(page);
+    await page.route('**/api/flows/count*', async (route) => {
+      countRequests++;
+      const data = { count: countRequests === 1 ? 103 : serverTotal };
+      if (countRequests <= 2) {
+        heldCounts.push(() => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(data) }));
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(data) });
+    });
+    await page.route('**/api/flows?*', async (route) => {
+      const data = { flows: mockFlows, total: serverTotal };
+      if (holdPage) {
+        heldPage = () => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(data) });
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(data) });
+    });
+
+    let wsServer: { send: (payload: string) => void } | null = null;
+    await page.routeWebSocket('**/ws', (ws) => {
+      wsServer = ws;
+      ws.onMessage(() => {});
+    });
+
+    await page.goto('/');
+    await authenticate(page);
+    await expect(page.locator('.flow-count')).toContainText('100');
+
+    const emitFlow = (id: string, statusCode: number | null) => {
+      wsServer!.send(JSON.stringify({
+        type: statusCode === null ? 'flow_start' : 'flow_complete',
+        data: {
+          id,
+          host: 'api.anthropic.com',
+          method: 'POST',
+          path: `/v1/${id}`,
+          is_sse: false,
+          status_code: statusCode ?? undefined,
+          timestamp: new Date().toISOString(),
+          flow_integrity: 'complete',
+        },
+      }));
+    };
+
+    holdPage = true;
+    await page.getByRole('button', { name: 'Next page' }).click();
+    await expect.poll(() => heldPage !== null).toBe(true);
+
+    emitFlow('new-flow', null);
+    await expect(page.locator('.flow-count')).toContainText('101');
+
+    serverTotal = 101;
+    await heldPage!();
+    await expect.poll(() => heldCounts.length).toBe(1);
+
+    // Server already saved second-flow and third-flow (count = 103); notifications arrive across refreshes 1 and 2
+    serverTotal = 103;
+    emitFlow('second-flow', null);
+    await heldCounts[0]();
+    await expect.poll(() => heldCounts.length).toBe(2);
+
+    emitFlow('third-flow', null);
+    await heldCounts[1]();
+
+    // Quiet recovery refresh (countRequests === 3) settles at 103 and stays 103 after completions
+    await expect.poll(() => countRequests).toBe(3);
+    emitFlow('new-flow', 200);
+    emitFlow('second-flow', 200);
+    emitFlow('third-flow', 200);
+    await expect(page.locator('.flow-count')).toContainText('Showing 51–100 of 103 flows');
+  });
 });

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { TaskSummary } from '../types'
 import { formatTime, formatCost, formatDuration } from '../utils'
 import { TimeRangeSelect } from '../components/TimeRangeSelect'
@@ -12,6 +13,12 @@ interface TasksViewProps {
 }
 
 export function TasksView({ tasks, selectedIndex, timeRange, onTimeRangeChange, onTaskSelect, loading }: TasksViewProps) {
+  const selectedRowRef = useRef<HTMLTableRowElement | null>(null)
+
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [selectedIndex])
+
   return (
     <div className="tasks-view">
       <div className="filters">
@@ -36,6 +43,7 @@ export function TasksView({ tasks, selectedIndex, timeRange, onTimeRangeChange, 
             <th>Cost</th>
             <th>Duration</th>
             <th>Last Seen</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -53,11 +61,7 @@ export function TasksView({ tasks, selectedIndex, timeRange, onTimeRangeChange, 
                   onTaskSelect(task.task_id)
                 }
               }}
-              ref={el => {
-                if (index === selectedIndex && el) {
-                  el.scrollIntoView({ block: 'nearest' })
-                }
-              }}
+              ref={index === selectedIndex ? selectedRowRef : null}
             >
               <td className="task-id" title={task.task_id}>{task.task_id}</td>
               <td>{task.flow_count}</td>
@@ -66,6 +70,7 @@ export function TasksView({ tasks, selectedIndex, timeRange, onTimeRangeChange, 
               <td className="cost">{formatCost(task.total_cost)}</td>
               <td>{formatDuration(task.duration_ms)}</td>
               <td>{formatTime(task.last_seen)}</td>
+              <td className="row-action-cue" aria-hidden="true">View flows &rarr;</td>
             </tr>
           ))}
         </tbody>

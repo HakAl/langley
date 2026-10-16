@@ -22,26 +22,32 @@ export function AnalyticsView({ stats, dailyCosts, timeRange, onTimeRangeChange,
           <div className="stat-card">
             <div className="stat-value">{stats.total_flows}</div>
             <div className="stat-label">Total Flows</div>
+            <div className="stat-sublabel">Requests captured</div>
           </div>
           <div className="stat-card">
             <div className="stat-value">${stats.total_cost.toFixed(2)}</div>
             <div className="stat-label">Total Cost</div>
+            <div className="stat-sublabel">USD estimated</div>
           </div>
           <div className="stat-card">
             <div className="stat-value">{(stats.total_tokens_in + stats.total_tokens_out).toLocaleString()}</div>
             <div className="stat-label">Total Tokens</div>
+            <div className="stat-sublabel">↓ {stats.total_tokens_in.toLocaleString()} in · ↑ {stats.total_tokens_out.toLocaleString()} out</div>
           </div>
           <div className="stat-card">
             <div className="stat-value">{stats.total_tasks}</div>
-            <div className="stat-label">Tasks</div>
+            <div className="stat-label">Total Tasks</div>
+            <div className="stat-sublabel">Grouped sessions</div>
           </div>
           <div className="stat-card">
             <div className="stat-value">{stats.total_tool_calls}</div>
             <div className="stat-label">Tool Calls</div>
+            <div className="stat-sublabel">Invocations tracked</div>
           </div>
           <div className="stat-card">
             <div className="stat-value">${stats.avg_cost_per_flow.toFixed(4)}</div>
             <div className="stat-label">Avg Cost/Flow</div>
+            <div className="stat-sublabel">USD per request</div>
           </div>
         </div>
       )}
@@ -54,7 +60,7 @@ export function AnalyticsView({ stats, dailyCosts, timeRange, onTimeRangeChange,
             <p className="chart-empty-hint">Cost tracking requires LLM API traffic with token usage</p>
           </div>
         ) : (
-          <div className="chart-bars">
+          <div className="chart-bars" tabIndex={0} role="region" aria-label="Daily cost chart">
             {dailyCosts.map((day, i) => {
               const maxCost = Math.max(...dailyCosts.map(d => d.total_cost), 0.01)
               const height = (day.total_cost / maxCost) * 100

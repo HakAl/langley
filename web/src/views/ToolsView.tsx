@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { ToolStats, ToolInvocation } from '../types'
 import { TimeRangeSelect } from '../components/TimeRangeSelect'
 import { formatTime, formatDate, formatDuration } from '../utils'
@@ -24,6 +25,21 @@ export function ToolsView({
   selectedTool, invocations, invocationsTotal, invocationsLoading, invocationSelectedIndex,
   onBack, onInvocationSelect,
 }: ToolsViewProps) {
+  const selectedToolRowRef = useRef<HTMLTableRowElement | null>(null)
+  const selectedInvocationRowRef = useRef<HTMLTableRowElement | null>(null)
+
+  useEffect(() => {
+    if (!selectedTool) {
+      selectedToolRowRef.current?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [selectedIndex, selectedTool])
+
+  useEffect(() => {
+    if (selectedTool) {
+      selectedInvocationRowRef.current?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [invocationSelectedIndex, selectedTool])
+
   // Invocations list mode
   if (selectedTool) {
     return (
@@ -66,11 +82,7 @@ export function ToolsView({
                     tabIndex={index === invocationSelectedIndex ? 0 : -1}
                     aria-selected={index === invocationSelectedIndex}
                     onClick={() => onInvocationSelect(inv)}
-                    ref={el => {
-                      if (index === invocationSelectedIndex && el) {
-                        el.scrollIntoView({ block: 'nearest' })
-                      }
-                    }}
+                    ref={index === invocationSelectedIndex ? selectedInvocationRowRef : null}
                   >
                     <td className="tool-use-id">{inv.tool_use_id ? inv.tool_use_id.slice(0, 12) + '\u2026' : '\u2014'}</td>
                     <td className={statusClass}>{statusLabel}</td>
@@ -120,11 +132,7 @@ export function ToolsView({
                 tabIndex={index === selectedIndex ? 0 : -1}
                 aria-selected={index === selectedIndex}
                 onClick={() => onToolSelect(tool.tool_name)}
-                ref={el => {
-                  if (index === selectedIndex && el) {
-                    el.scrollIntoView({ block: 'nearest' })
-                  }
-                }}
+                ref={index === selectedIndex ? selectedToolRowRef : null}
               >
                 <td className="tool-name">{tool.tool_name}</td>
                 <td>{tool.invocation_count}</td>

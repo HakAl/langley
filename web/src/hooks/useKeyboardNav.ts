@@ -47,8 +47,15 @@ export function useKeyboardNav({
     }
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) {
         if (e.key === 'Escape') (e.target as HTMLElement).blur()
+        return
+      }
+
+      // Enter/Space on a focused control activates that control, never the selected row
+      if ((e.key === 'Enter' || e.key === ' ') &&
+          e.target instanceof HTMLElement &&
+          e.target.closest('button, a, select, [role="button"]')) {
         return
       }
 

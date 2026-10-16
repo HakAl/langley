@@ -1,23 +1,48 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { ApiResult, Settings } from '../types'
 
 interface SettingsViewProps {
   settings: Settings | null
   onSave: (settings: Partial<Settings>) => Promise<ApiResult<Settings>>
+  loading?: boolean
+  draftIdleGap?: number | null
+  onDraftChange?: (value: number | null) => void
 }
 
-export function SettingsView({ settings, onSave }: SettingsViewProps) {
-  const [idleGapInput, setIdleGapInput] = useState(5)
+export function SettingsView({ settings, onSave, loading, draftIdleGap, onDraftChange }: SettingsViewProps) {
+  const [idleGapInput, setIdleGapInput] = useState(draftIdleGap ?? settings?.idle_gap_minutes ?? 5)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const savedTimeoutRef = useRef<number | null>(null)
 
   useEffect(() => {
-    if (settings) setIdleGapInput(settings.idle_gap_minutes)
-  }, [settings])
+    if (draftIdleGap != null) {
+      setIdleGapInput(draftIdleGap)
+    } else if (settings) {
+      setIdleGapInput(settings.idle_gap_minutes)
+    }
+  }, [settings, draftIdleGap])
+
+  useEffect(() => {
+    return () => {
+      if (savedTimeoutRef.current !== null) {
+        clearTimeout(savedTimeoutRef.current)
+      }
+    }
+  }, [])
 
   const isValid = idleGapInput >= 1 && idleGapInput <= 60
-  const isDirty = idleGapInput !== settings?.idle_gap_minutes
+  const isDirty = settings != null && idleGapInput !== settings.idle_gap_minutes
+
+  const updateInput = (nextVal: number) => {
+    setIdleGapInput(nextVal)
+    if (settings && nextVal !== settings.idle_gap_minutes) {
+      onDraftChange?.(nextVal)
+    } else {
+      onDraftChange?.(null)
+    }
+  }
 
   const handleSave = async () => {
     setSaving(true)
@@ -25,10 +50,25 @@ export function SettingsView({ settings, onSave }: SettingsViewProps) {
     const { data, error } = await onSave({ idle_gap_minutes: idleGapInput })
     setSaving(false)
     if (data) {
+      onDraftChange?.(null)
       setSaved(true)
-      setTimeout(() => setSaved(false), 3000)
+      if (savedTimeoutRef.current !== null) {
+        clearTimeout(savedTimeoutRef.current)
+      }
+      savedTimeoutRef.current = window.setTimeout(() => {
+        setSaved(false)
+        savedTimeoutRef.current = null
+      }, 3000)
     }
     if (error) setSaveError(error)
+  }
+
+  if (loading && !settings) {
+    return (
+      <div className="settings-view">
+        <div className="view-loading">Loading settings&hellip;</div>
+      </div>
+    )
   }
 
   return (
@@ -51,7 +91,7 @@ export function SettingsView({ settings, onSave }: SettingsViewProps) {
               min={1}
               max={60}
               value={idleGapInput}
-              onChange={(e) => setIdleGapInput(parseInt(e.target.value) || 1)}
+              onChange={(e) => updateInput(parseInt(e.target.value) || 1)}
             />
             <span className="setting-hint">1-60 minutes</span>
             {!isValid && <span className="setting-error" role="alert">Value must be between 1 and 60</span>}
@@ -75,7 +115,7 @@ export function SettingsView({ settings, onSave }: SettingsViewProps) {
         {isDirty && (
           <button
             className="secondary-btn"
-            onClick={() => setIdleGapInput(settings?.idle_gap_minutes ?? 5)}
+            onClick={() => updateInput(settings?.idle_gap_minutes ?? 5)}
           >
             Reset
           </button>

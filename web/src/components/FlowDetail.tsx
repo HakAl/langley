@@ -5,10 +5,11 @@ import { BodyViewer } from './BodyViewer'
 
 interface FlowDetailProps {
   flow: Flow
+  loading?: boolean
   onClose: () => void
 }
 
-export function FlowDetail({ flow, onClose }: FlowDetailProps) {
+export function FlowDetail({ flow, loading, onClose }: FlowDetailProps) {
   const closeRef = useRef<HTMLButtonElement>(null)
   useEffect(() => { closeRef.current?.focus() }, [])
 
@@ -18,6 +19,9 @@ export function FlowDetail({ flow, onClose }: FlowDetailProps) {
         <h2>{flow.method} {flow.path}</h2>
         <button ref={closeRef} className="close-btn" onClick={onClose} aria-label="Close flow detail">×</button>
       </div>
+      {loading && (
+        <div className="detail-loading" role="status">Loading flow details&hellip;</div>
+      )}
 
       <div className="detail-grid">
         <div className="detail-section">

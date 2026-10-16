@@ -48,10 +48,13 @@ type MITMProxy struct {
 	onUpdate func(*store.Flow)
 	onEvent  func(*store.Event)
 
-	// Graceful shutdown: track hijacked passthrough tunnels (langley-ga3l)
-	tunnelMu    sync.Mutex
-	tunnelConns map[net.Conn]struct{}
-	tunnelWg    sync.WaitGroup
+	// Graceful shutdown: own hijacked sessions from admission through cleanup.
+	tunnelMu     sync.Mutex
+	tunnelConns  map[net.Conn]struct{}
+	tunnelWg     sync.WaitGroup
+	shuttingDown bool
+	shutdownCh   chan struct{}
+	dialHook     func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	// insecureSkipVerifyUpstream is for testing only
 	insecureSkipVerifyUpstream bool
@@ -406,27 +409,108 @@ func matchConfigHosts(host string, interceptHosts []string) bool {
 	return false
 }
 
-// trackConn registers a hijacked connection for graceful shutdown (langley-ga3l).
-func (p *MITMProxy) trackConn(c net.Conn) {
+// beginHijackedSession admits sessions atomically with shutdown.
+func (p *MITMProxy) beginHijackedSession(conns ...net.Conn) bool {
 	p.tunnelMu.Lock()
+	if p.shuttingDown {
+		p.tunnelMu.Unlock()
+		for _, c := range conns {
+			if c != nil {
+				c.Close()
+			}
+		}
+		return false
+	}
+	p.tunnelWg.Add(1)
+	for _, c := range conns {
+		if c != nil {
+			p.tunnelConns[c] = struct{}{}
+		}
+	}
+	p.tunnelMu.Unlock()
+	return true
+}
+
+func (p *MITMProxy) registerSessionConn(c net.Conn) bool {
+	p.tunnelMu.Lock()
+	if c == nil {
+		accepting := !p.shuttingDown
+		p.tunnelMu.Unlock()
+		return accepting
+	}
+	if p.shuttingDown {
+		p.tunnelMu.Unlock()
+		c.Close()
+		return false
+	}
 	p.tunnelConns[c] = struct{}{}
 	p.tunnelMu.Unlock()
+	return true
 }
 
-// untrackConn removes a hijacked connection from tracking (langley-ga3l).
-func (p *MITMProxy) untrackConn(c net.Conn) {
+// endHijackedSession releases ownership only after transport cleanup finishes.
+func (p *MITMProxy) endHijackedSession(closers []io.Closer, tracked ...net.Conn) {
+	for _, c := range closers {
+		if c != nil {
+			c.Close()
+		}
+	}
 	p.tunnelMu.Lock()
-	delete(p.tunnelConns, c)
+	for _, c := range tracked {
+		if c != nil {
+			delete(p.tunnelConns, c)
+		}
+	}
 	p.tunnelMu.Unlock()
+	p.tunnelWg.Done()
 }
 
-// closeTunnels closes all tracked passthrough tunnel connections (langley-ga3l).
 func (p *MITMProxy) closeTunnels() {
 	p.tunnelMu.Lock()
+	defer p.tunnelMu.Unlock()
+	if p.shutdownCh == nil {
+		p.shutdownCh = make(chan struct{})
+	}
+	if !p.shuttingDown {
+		p.shuttingDown = true
+		close(p.shutdownCh)
+	}
 	for c := range p.tunnelConns {
 		c.Close()
 	}
+}
+
+func (p *MITMProxy) dialUpstreamTCP(host string, timeout time.Duration) (net.Conn, error) {
+	p.tunnelMu.Lock()
+	if p.shutdownCh == nil {
+		p.shutdownCh = make(chan struct{})
+	}
+	ch := p.shutdownCh
+	shuttingDown := p.shuttingDown
+	dialFn := p.dialHook
 	p.tunnelMu.Unlock()
+
+	if shuttingDown {
+		return nil, net.ErrClosed
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ch:
+			cancel()
+		case <-done:
+		}
+	}()
+
+	if dialFn != nil {
+		return dialFn(ctx, "tcp", host)
+	}
+	var d net.Dialer
+	return d.DialContext(ctx, "tcp", host)
 }
 
 // handleConnectPassthrough tunnels the connection transparently without MITM.
@@ -439,7 +523,7 @@ func (p *MITMProxy) handleConnectPassthrough(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Dial upstream BEFORE sending 200 OK — so we can report errors properly
-	upstreamConn, err := net.DialTimeout("tcp", host, 10*time.Second)
+	upstreamConn, err := p.dialUpstreamTCP(host, 10*time.Second)
 	if err != nil {
 		p.logger.Error("passthrough: failed to connect to upstream", "host", host, "error", err)
 		http.Error(w, "Bad gateway", http.StatusBadGateway)
@@ -462,22 +546,20 @@ func (p *MITMProxy) handleConnectPassthrough(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if !p.beginHijackedSession(clientConn, upstreamConn) {
+		return
+	}
+
 	// Send 200 OK — upstream is reachable
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		p.logger.Error("failed to write tunnel response", "error", err)
-		clientConn.Close()
-		upstreamConn.Close()
+		p.endHijackedSession([]io.Closer{clientConn, upstreamConn}, clientConn, upstreamConn)
 		return
 	}
 
 	// Hand off to bidirectional tunnel with idle timeout (langley-ga3l)
-	p.trackConn(clientConn)
-	p.trackConn(upstreamConn)
-	p.tunnelWg.Add(1)
 	go func() {
-		defer p.tunnelWg.Done()
-		defer p.untrackConn(clientConn)
-		defer p.untrackConn(upstreamConn)
+		defer p.endHijackedSession([]io.Closer{clientConn, upstreamConn}, clientConn, upstreamConn)
 		tunnel(clientConn, upstreamConn, p.logger, r.Host)
 	}()
 }
@@ -498,6 +580,13 @@ func (p *MITMProxy) handleConnectMITM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !p.beginHijackedSession(clientConn) {
+		return
+	}
+	closers := []io.Closer{clientConn}
+	tracked := []net.Conn{clientConn}
+	defer func() { p.endHijackedSession(closers, tracked...) }()
+
 	// Send 200 OK
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		p.logger.Error("failed to write tunnel response", "error", err)
@@ -512,6 +601,7 @@ func (p *MITMProxy) handleConnectMITM(w http.ResponseWriter, r *http.Request) {
 		NextProtos:     []string{"http/1.1"},
 	}
 	tlsConn := tls.Server(clientConn, tlsConfig)
+	closers = append(closers, tlsConn)
 	if err := tlsConn.Handshake(); err != nil {
 		p.logger.Debug("TLS handshake failed", "host", r.Host, "error", err)
 		clientConn.Close()
@@ -528,26 +618,58 @@ func (p *MITMProxy) handleConnectMITM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Connect to upstream - force HTTP/1.1 to match client negotiation (langley-a4m)
-	upstreamConn, err := tls.Dial("tcp", host, &tls.Config{
+	rawUpstream, err := p.dialUpstreamTCP(host, 10*time.Second)
+	if err != nil {
+		p.logger.Error("failed to connect to upstream", "host", host, "error", err)
+		return
+	}
+	if !p.registerSessionConn(rawUpstream) {
+		return
+	}
+	closers = append(closers, rawUpstream)
+	tracked = append(tracked, rawUpstream)
+	serverName, _, err := net.SplitHostPort(host)
+	if err != nil {
+		return
+	}
+	upstreamConn := tls.Client(rawUpstream, &tls.Config{
+		ServerName:         serverName,
 		InsecureSkipVerify: p.insecureSkipVerifyUpstream, // Only skip for testing (langley-vu5)
 		NextProtos:         []string{"http/1.1"},
 	})
-	if err != nil {
-		p.logger.Error("failed to connect to upstream", "host", host, "error", err)
-		tlsConn.Close()
+	closers = append(closers, upstreamConn)
+	if err := upstreamConn.Handshake(); err != nil {
+		p.logger.Error("failed to handshake with upstream", "host", host, "error", err)
 		return
 	}
 
 	// Handle requests on this connection
-	p.handleTLSConnection(tlsConn, upstreamConn, r.Host)
+	p.serveTLSConnection(tlsConn, upstreamConn, r.Host)
+}
+
+// underlyingConn returns the raw net.Conn beneath a *tls.Conn so shutdown
+// can close the transport directly without blocking on TLS closeNotify writes.
+func underlyingConn(c *tls.Conn) net.Conn {
+	if nc := c.NetConn(); nc != nil {
+		return nc
+	}
+	return c
 }
 
 // handleTLSConnection handles HTTP requests over an established TLS connection.
 func (p *MITMProxy) handleTLSConnection(clientConn *tls.Conn, upstreamConn *tls.Conn, host string) {
-	defer clientConn.Close()
-	defer upstreamConn.Close()
+	rawClient := underlyingConn(clientConn)
+	rawUpstream := underlyingConn(upstreamConn)
+	if !p.beginHijackedSession(rawClient, rawUpstream) {
+		return
+	}
+	defer p.endHijackedSession([]io.Closer{rawClient, rawUpstream, clientConn, upstreamConn}, rawClient, rawUpstream)
+	p.serveTLSConnection(clientConn, upstreamConn, host)
+}
 
+func (p *MITMProxy) serveTLSConnection(clientConn *tls.Conn, upstreamConn *tls.Conn, host string) {
 	clientReader := bufio.NewReader(clientConn)
+	upstreamReader := bufio.NewReader(upstreamConn)
 
 	for {
 		// Read request from client
@@ -565,12 +687,12 @@ func (p *MITMProxy) handleTLSConnection(clientConn *tls.Conn, upstreamConn *tls.
 		req.URL.Host = host
 
 		// Handle this request
-		p.handleTLSRequest(req, clientConn, upstreamConn, host)
+		p.handleTLSRequest(req, clientConn, upstreamConn, upstreamReader, host)
 	}
 }
 
 // handleTLSRequest handles a single HTTP request over TLS.
-func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstreamConn *tls.Conn, host string) {
+func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstreamConn *tls.Conn, upstreamReader *bufio.Reader, host string) {
 	startTime := time.Now()
 	flowID := uuid.New().String()
 
@@ -670,7 +792,6 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 	}
 
 	// Read response from upstream
-	upstreamReader := bufio.NewReader(upstreamConn)
 	resp, err := http.ReadResponse(upstreamReader, outReq)
 	if err != nil {
 		p.logger.Error("failed to read upstream response", "error", err)
@@ -802,6 +923,51 @@ func (p *MITMProxy) sendError(conn net.Conn, status int, message string) {
 	_, _ = conn.Write([]byte(response))
 }
 
+const oversizedRedactedPlaceholder = "[REDACTED: payload exceeds max redaction size]"
+
+// redactOptionalString applies redaction rules to an optional string payload.
+// Returns nil if the input is nil or body storage is disabled.
+func (p *MITMProxy) redactOptionalString(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	if p.redactor == nil {
+		return s
+	}
+	if !p.redactor.ShouldStoreBody() {
+		return nil
+	}
+	if len(*s) > redact.MaxRedactionInputSize {
+		placeholder := oversizedRedactedPlaceholder
+		return &placeholder
+	}
+	redacted := p.redactor.RedactBody(*s)
+	return &redacted
+}
+
+// redactEventData applies redaction rules to parsed SSE event data before storage or broadcast.
+func (p *MITMProxy) redactEventData(data map[string]interface{}) map[string]interface{} {
+	if data == nil || p.redactor == nil {
+		return data
+	}
+	if !p.redactor.ShouldStoreBody() {
+		return nil
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return map[string]interface{}{"redacted": true, "error": "marshal_failed"}
+	}
+	if len(raw) > redact.MaxRedactionInputSize {
+		return map[string]interface{}{"redacted": true, "truncated": true, "reason": oversizedRedactedPlaceholder}
+	}
+	redacted := p.redactor.RedactBody(string(raw))
+	var out map[string]interface{}
+	if err := json.Unmarshal([]byte(redacted), &out); err != nil {
+		return map[string]interface{}{"raw": redacted}
+	}
+	return out
+}
+
 // correlateToolResults parses request bodies for tool_result blocks and updates
 // the matching tool invocations with success/failure and duration (langley-io4).
 func (p *MITMProxy) correlateToolResults(reqBody []byte) {
@@ -816,13 +982,14 @@ func (p *MITMProxy) correlateToolResults(reqBody []byte) {
 
 	now := time.Now()
 	for _, result := range results {
+		content := p.redactOptionalString(result.Content)
 		// errorMsg is only set when the tool reported an error
 		var errorMsg *string
 		if result.IsError {
-			errorMsg = result.Content
+			errorMsg = content
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		if err := p.store.UpdateToolResult(ctx, result.ToolUseID, !result.IsError, errorMsg, result.Content, now); err != nil {
+		if err := p.store.UpdateToolResult(ctx, result.ToolUseID, !result.IsError, errorMsg, content, now); err != nil {
 			p.logger.Error("failed to update tool result", "tool_use_id", result.ToolUseID, "error", err)
 		} else {
 			p.logger.Debug("correlated tool result", "tool_use_id", result.ToolUseID, "success", !result.IsError)
@@ -867,11 +1034,11 @@ func (p *MITMProxy) saveToolInvocations(flowID string, taskID *string, tools []*
 			Timestamp: time.Now(),
 		}
 
-		// Serialize tool input to JSON for storage
+		// Serialize tool input to JSON for storage, applying redaction rules (langley-e9ui)
 		if len(tool.Input) > 0 {
 			if inputJSON, err := json.Marshal(tool.Input); err == nil {
 				s := string(inputJSON)
-				inv.ToolInput = &s
+				inv.ToolInput = p.redactOptionalString(&s)
 			}
 		}
 
@@ -973,7 +1140,10 @@ func (p *MITMProxy) streamSSEWithParser(flowID string, taskID *string, reader io
 	go func() {
 		defer eventWg.Done()
 		for event := range eventsCh {
-			collectedEvents = append(collectedEvents, event)
+			rawEvent := *event
+			collectedEvents = append(collectedEvents, &rawEvent)
+
+			event.EventData = p.redactEventData(event.EventData)
 
 			if p.store != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

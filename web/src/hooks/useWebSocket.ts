@@ -24,7 +24,8 @@ export function useWebSocket({ onFlowUpdate, onConnectedChange, onError, onRecon
       reconnectTimeoutRef.current = null
     }
 
-    const ws = new WebSocket(`ws://${window.location.host}/ws`)
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`)
 
     ws.onopen = () => {
       onConnectedChange(true)
