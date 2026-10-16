@@ -723,5 +723,115 @@ test.describe('Flow Inspector & Time Range UX (langley-63xq)', () => {
     expect(dimensions.content).toBeGreaterThan(dimensions.viewport);
     await expect(page.getByRole('button', { name: /Show all/ })).toHaveCount(0);
   });
+
+  test('preserves selected body tab across flow selections and toggles <summary> with Enter', async ({ page }) => {
+    await page.route('**/api/flows/flow-1', route => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...mockFlows[0],
+        request_body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          system: 'Long system prompt. '.repeat(45),
+          messages: [{ role: 'user', content: 'First flow question' }],
+        }),
+        response_body: 'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-4-20250514"}}\n\nevent: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Partial answer"}}\n\nevent: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n',
+      }),
+    }));
+    await page.route('**/api/flows/flow-2', route => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ...mockFlows[1],
+        request_body: JSON.stringify({
+          model: 'gpt-4o',
+          messages: [{ role: 'user', content: [{ type: { toString: null } }, { type: 'text', text: 'Second flow question' }] }],
+        }),
+        response_body: JSON.stringify({
+          model: 'gpt-4o',
+          choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'Second flow answer' } }],
+        }),
+      }),
+    }));
+
+    await page.locator('.flow-item').first().click();
+    await expect(page.locator('.detail-alert.error')).toContainText('Stream error: overloaded_error: Overloaded');
+
+    // Long system prompt starts collapsed; pressing Enter on <summary> opens it
+    const systemDetails = page.locator('details.llm-system');
+    await expect(systemDetails).not.toHaveJSProperty('open', true);
+    const summary = systemDetails.locator('summary');
+    await summary.focus();
+    await page.keyboard.press('Enter');
+    await expect(systemDetails).toHaveJSProperty('open', true);
+
+    // Switch to Response tab, then select flow-2; Response tab remains selected
+    await page.getByRole('tab', { name: 'Response', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'Response', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await page.locator('.flow-item').nth(1).click();
+    await expect(page.getByRole('tab', { name: 'Response', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('.body-content pre')).toContainText('Second flow answer');
+
+    // Malformed discriminator object in flow-2 does not crash Formatted or Request views
+    await page.getByRole('tab', { name: 'Formatted', exact: true }).click();
+    await expect(page.getByText('Second flow question')).toBeVisible();
+    await expect(page.getByText('[unknown]')).toBeVisible();
+  });
+
+  test('live time window expires aged-out rows and rejects out-of-window WebSocket completions', async ({ page }) => {
+    const now = Date.now();
+    await page.clock.install({ time: new Date(now) });
+    await page.addInitScript(() => {
+      (window as unknown as { __sockets: unknown[] }).__sockets = [];
+      class FakeSocket {
+        static OPEN = 1;
+        readyState = 1;
+        onopen?: (ev: unknown) => void;
+        onmessage?: (ev: { data: string }) => void;
+        constructor() {
+          (window as unknown as { __sockets: FakeSocket[] }).__sockets.push(this);
+          setTimeout(() => this.onopen?.({}), 0);
+        }
+        close() { this.readyState = 3; }
+        send() {}
+      }
+      (window as unknown as { WebSocket: unknown }).WebSocket = FakeSocket;
+    });
+
+    const recentFlow = {
+      ...mockFlows[0],
+      id: 'flow-recent',
+      timestamp: new Date(now - 270_000).toISOString(), // 4.5m old
+    };
+    const oldFlow = {
+      ...mockFlows[1],
+      id: 'flow-old',
+      timestamp: new Date(now - 600_000).toISOString(), // 10m old
+    };
+
+    await page.route('**/api/flows?*', route => {
+      const url = new URL(route.request().url());
+      const start = Date.parse(url.searchParams.get('start_time') ?? '1970-01-01T00:00:00Z');
+      const filtered = [recentFlow, oldFlow].filter(f => Date.parse(f.timestamp) >= start);
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ flows: filtered, total: filtered.length, limit: 50, offset: 0 }),
+      });
+    });
+
+    await page.goto('/');
+    await authenticate(page);
+    await page.getByLabel('Time range').selectOption('5m');
+    await expect(page.locator('.flow-item')).toHaveCount(1);
+
+    // Advance clock by 60s so recentFlow becomes 5.5m old and expires from the 5m window
+    await page.clock.fastForward(60_000);
+    await expect(page.locator('.flow-item')).toHaveCount(0);
+
+    // Emit a WebSocket flow_complete for the 10m-old flow; it must be ignored under the 5m filter
+    await page.evaluate(f => {
+      const sockets = (window as unknown as { __sockets: Array<{ readyState: number; onmessage?: (ev: { data: string }) => void }> }).__sockets;
+      sockets.filter(s => s.readyState === 1).forEach(s => s.onmessage?.({ data: JSON.stringify({ type: 'flow_complete', data: f }) }));
+    }, oldFlow);
+    await expect(page.locator('.flow-item')).toHaveCount(0);
+  });
 });
 

@@ -225,6 +225,25 @@ describe('applyFlowUpdate', () => {
     const completed = applyFlowUpdate(page, flow({ id: 'new-flow', status_code: 200 }), 1, filter, known)
     expect(completed.totalDelta).toBe(1)
   })
+
+  it('filters out WebSocket updates older than the active time window and prunes expired rows', () => {
+    const nowMs = Date.parse('2026-10-16T12:00:00Z')
+    const fiveMinDays = 5 / 1440
+    const recent = flow({ id: 'recent', timestamp: new Date(nowMs - 270_000).toISOString(), status_code: 200 })
+    const oldCompleting = flow({ id: 'old', timestamp: new Date(nowMs - 600_000).toISOString(), status_code: 200 })
+    const known = new Set([recent.id])
+
+    // Old completion outside the 5m window is ignored
+    const step1 = applyFlowUpdate([recent], oldCompleting, 0, { days: fiveMinDays, nowMs }, known)
+    expect(step1.flows).toEqual([recent])
+    expect(step1.totalDelta).toBe(0)
+
+    // Advance 60s so `recent` (now 5.5m old) expires out of the 5m window
+    const step2 = applyFlowUpdate(step1.flows, oldCompleting, 0, { days: fiveMinDays, nowMs: nowMs + 60_000 }, known)
+    expect(step2.flows).toEqual([])
+    expect(step2.totalDelta).toBe(-1)
+    expect(known.has(recent.id)).toBe(false)
+  })
 })
 
 describe('reconcileFlowPage', () => {

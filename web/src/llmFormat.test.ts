@@ -223,4 +223,81 @@ describe('parseLLMResponse (SSE)', () => {
   it('returns null for SSE with no recognized LLM events', () => {
     expect(parseLLMResponse('event: ping\ndata: {"hello":1}\n\n')).toBeNull()
   })
+
+  it('safely handles non-primitive discriminator objects without throwing', () => {
+    const req = parseLLMRequest('{"messages":[{"role":"user","content":[{"type":{"toString":null}}]}]}')
+    expect(req).not.toBeNull()
+    expect(req!.messages).toEqual([
+      { role: 'user', blocks: [{ kind: 'other', label: 'unknown' }] },
+    ])
+
+    const control = parseLLMRequest('{"messages":[{"role":"user","content":[{"type":"unknown_content"}]}]}')
+    expect(control!.messages).toEqual([
+      { role: 'user', blocks: [{ kind: 'other', label: 'unknown_content' }] },
+    ])
+  })
+
+  it('preserves independent streamed and JSON Chat Completion choices without concatenating them', () => {
+    const body = sse([
+      [null, {
+        model: 'gpt-4o',
+        choices: [
+          { index: 0, delta: { content: 'Answer A', tool_calls: [{ index: 0, id: 'call-a', function: { name: 'alpha', arguments: '{"a":1}' } }] } },
+          { index: 1, delta: { content: 'Answer B', tool_calls: [{ index: 0, id: 'call-b', function: { name: 'beta', arguments: '{"b":2}' } }] } },
+        ],
+      }],
+      [null, '[DONE]'],
+    ])
+    const res = parseLLMResponse(body)
+    expect(res).toEqual({
+      model: 'gpt-4o',
+      stopReason: undefined,
+      streamed: true,
+      blocks: [
+        { kind: 'other', label: 'choice 0' },
+        { kind: 'text', text: 'Answer A' },
+        { kind: 'tool_use', id: 'call-a', name: 'alpha', input: '{\n  "a": 1\n}' },
+        { kind: 'other', label: 'choice 1' },
+        { kind: 'text', text: 'Answer B' },
+        { kind: 'tool_use', id: 'call-b', name: 'beta', input: '{\n  "b": 2\n}' },
+      ],
+    })
+
+    const jsonRes = parseLLMResponse(JSON.stringify({
+      model: 'gpt-4o',
+      choices: [
+        { index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: 'Answer A', tool_calls: [{ id: 'call-a', function: { name: 'alpha', arguments: '{"a":1}' } }] } },
+        { index: 1, finish_reason: 'tool_calls', message: { role: 'assistant', content: 'Answer B', tool_calls: [{ id: 'call-b', function: { name: 'beta', arguments: '{"b":2}' } }] } },
+      ],
+    }))
+    expect(jsonRes!.blocks).toEqual(res!.blocks)
+  })
+
+  it('retains explicit stream errors from Anthropic error events and OpenAI response.failed events', () => {
+    const anthropicFailed = parseLLMResponse(sse([
+      ['message_start', { type: 'message_start', message: { model: 'claude-sonnet-4-6', role: 'assistant', content: [] } }],
+      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Partial answer' } }],
+      ['error', { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }],
+    ]))
+    expect(anthropicFailed).toEqual({
+      model: 'claude-sonnet-4-6',
+      stopReason: 'error',
+      error: 'overloaded_error: Overloaded',
+      streamed: true,
+      blocks: [{ kind: 'text', text: 'Partial answer' }],
+    })
+
+    const responsesFailed = parseLLMResponse(sse([
+      [null, { type: 'response.created', response: { model: 'gpt-4.1' } }],
+      [null, { type: 'response.output_text.delta', item_id: 'message', delta: 'Partial answer' }],
+      [null, { type: 'response.failed', response: { status: 'failed', error: { code: 'server_error', message: 'Synthetic failure' } } }],
+    ]))
+    expect(responsesFailed).toEqual({
+      model: 'gpt-4.1',
+      stopReason: 'failed',
+      error: 'server_error: Synthetic failure',
+      streamed: true,
+      blocks: [{ kind: 'text', text: 'Partial answer' }],
+    })
+  })
 })

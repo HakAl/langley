@@ -32,12 +32,13 @@ export function SettingsView({ settings, onSave, loading, draftIdleGap, onDraftC
     }
   }, [])
 
+  const baseline = settings?.idle_gap_minutes ?? 5
   const isValid = idleGapInput >= 1 && idleGapInput <= 60
   const isDirty = settings != null && idleGapInput !== settings.idle_gap_minutes
 
   const updateInput = (nextVal: number) => {
     setIdleGapInput(nextVal)
-    if (settings && nextVal !== settings.idle_gap_minutes) {
+    if (nextVal !== baseline) {
       onDraftChange?.(nextVal)
     } else {
       onDraftChange?.(null)

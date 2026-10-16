@@ -127,6 +127,11 @@ function FormattedView({ request, response, truncated }: { request: LLMRequest |
             {response.streamed && <span className="badge sse">SSE</span>}
             {response.stopReason && <span className="llm-meta">stop: {response.stopReason}</span>}
           </h4>
+          {response.error && (
+            <div className="detail-alert error" role="alert">
+              Stream error: {response.error}
+            </div>
+          )}
           <Message message={{ role: 'assistant', blocks: response.blocks }} />
         </section>
       )}

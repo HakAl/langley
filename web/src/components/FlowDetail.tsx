@@ -92,7 +92,6 @@ export function FlowDetail({ flow, loading, anomalies = [], onClose }: FlowDetai
       )}
 
       <BodyViewer
-        key={flow.id}
         requestBody={flow.request_body}
         responseBody={flow.response_body}
         requestTruncated={flow.request_body_truncated}

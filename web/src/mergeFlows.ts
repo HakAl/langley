@@ -35,10 +35,14 @@ export function mergeFlows(current: Flow[], incoming: Flow[]): Flow[] {
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
 }
 
+const MS_PER_DAY = 86_400_000
+
 export interface FlowFilterCriteria {
   host?: string
   taskId?: string
   status?: 'all' | 'success' | 'error'
+  days?: number | null
+  nowMs?: number
 }
 
 export function matchesFlowFilter(flow: Flow, filter?: FlowFilterCriteria): boolean {
@@ -50,6 +54,13 @@ export function matchesFlowFilter(flow: Flow, filter?: FlowFilterCriteria): bool
   if (filter.taskId && (flow.task_id ?? '') !== filter.taskId) {
     return false
   }
+  if (filter.days != null) {
+    const flowMs = Date.parse(flow.timestamp)
+    const cutoffMs = (filter.nowMs ?? Date.now()) - filter.days * MS_PER_DAY
+    if (!Number.isNaN(flowMs) && flowMs < cutoffMs) {
+      return false
+    }
+  }
   if (filter.status === 'success') {
     return flow.status_code != null && flow.status_code < 400
   }
@@ -57,6 +68,41 @@ export function matchesFlowFilter(flow: Flow, filter?: FlowFilterCriteria): bool
     return flow.status_code != null && flow.status_code >= 400
   }
   return true
+}
+
+export interface PruneExpiredFlowsResult {
+  flows: Flow[]
+  removedIds: string[]
+  totalDelta: number
+}
+
+/**
+ * Remove displayed flows that have aged out of the active time-range window.
+ */
+export function pruneExpiredFlows(
+  currentFlows: Flow[],
+  filter?: FlowFilterCriteria,
+  knownIds?: Set<string>,
+  excludeId?: string,
+): PruneExpiredFlowsResult {
+  if (!filter || filter.days == null || currentFlows.length === 0) {
+    return { flows: currentFlows, removedIds: [], totalDelta: 0 }
+  }
+  const removedIds: string[] = []
+  const kept = currentFlows.filter(f => {
+    if (f.id === excludeId || matchesFlowFilter(f, filter)) return true
+    removedIds.push(f.id)
+    knownIds?.delete(f.id)
+    return false
+  })
+  if (removedIds.length === 0) {
+    return { flows: currentFlows, removedIds, totalDelta: 0 }
+  }
+  return {
+    flows: kept,
+    removedIds,
+    totalDelta: -removedIds.length,
+  }
 }
 
 export interface ApplyFlowUpdateResult {
@@ -67,7 +113,7 @@ export interface ApplyFlowUpdateResult {
 /**
  * Apply a single real-time WebSocket flow event to the current flow list.
  * Prevents double-counting when flow_start is followed by flow_complete/flow_update,
- * respects active filters, and handles non-zero pagination pages cleanly.
+ * respects active filters (including time-range windows), and handles non-zero pagination pages cleanly.
  */
 export function applyFlowUpdate(
   currentFlows: Flow[],
@@ -76,7 +122,9 @@ export function applyFlowUpdate(
   filter?: FlowFilterCriteria,
   knownIds?: Set<string>,
 ): ApplyFlowUpdateResult {
-  const idx = currentFlows.findIndex(f => f.id === incoming.id)
+  const pruned = pruneExpiredFlows(currentFlows, filter, knownIds, incoming.id)
+  const baseFlows = pruned.flows
+  const idx = baseFlows.findIndex(f => f.id === incoming.id)
   const matches = matchesFlowFilter(incoming, filter)
   const alreadyKnown = idx >= 0 || (knownIds?.has(incoming.id) ?? false)
 
@@ -84,40 +132,40 @@ export function applyFlowUpdate(
     if (idx >= 0) {
       knownIds?.delete(incoming.id)
       return {
-        flows: currentFlows.filter(f => f.id !== incoming.id),
-        totalDelta: -1,
+        flows: baseFlows.filter(f => f.id !== incoming.id),
+        totalDelta: pruned.totalDelta - 1,
       }
     }
-    return { flows: currentFlows, totalDelta: 0 }
+    return { flows: baseFlows, totalDelta: pruned.totalDelta }
   }
 
   knownIds?.add(incoming.id)
 
   if (page !== 0) {
     if (idx >= 0) {
-      const updated = [...currentFlows]
+      const updated = [...baseFlows]
       updated[idx] = incoming
-      return { flows: updated, totalDelta: 0 }
+      return { flows: updated, totalDelta: pruned.totalDelta }
     }
     // Without a status filter, a completed flow was already counted at
     // flow_start or by an intervening REST page fetch's total.
     const hasStatusFilter = filter?.status === 'success' || filter?.status === 'error'
     const isCompletionOfStartedFlow = !hasStatusFilter && incoming.status_code != null
     return {
-      flows: currentFlows,
-      totalDelta: alreadyKnown || isCompletionOfStartedFlow ? 0 : 1,
+      flows: baseFlows,
+      totalDelta: pruned.totalDelta + (alreadyKnown || isCompletionOfStartedFlow ? 0 : 1),
     }
   }
 
   if (idx >= 0) {
-    const updated = [...currentFlows]
+    const updated = [...baseFlows]
     updated[idx] = incoming
-    return { flows: updated, totalDelta: 0 }
+    return { flows: updated, totalDelta: pruned.totalDelta }
   }
 
   return {
-    flows: [incoming, ...currentFlows],
-    totalDelta: alreadyKnown ? 0 : 1,
+    flows: [incoming, ...baseFlows],
+    totalDelta: pruned.totalDelta + (alreadyKnown ? 0 : 1),
   }
 }
 
