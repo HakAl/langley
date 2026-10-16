@@ -1129,5 +1129,82 @@ test.describe('Flow Inspector & Time Range UX (langley-63xq)', () => {
     await expect(page.locator('.flow-item')).toHaveCount(0);
     await expect(page.locator('.flow-count')).toHaveText('Showing 0 of 0 flows');
   });
+
+  test('background flow-page clamp during Tasks load does not block Tasks loading settlement', async ({ page }) => {
+    const now = Date.now();
+    await page.clock.install({ time: new Date(now) });
+    await page.addInitScript(() => {
+      const sockets: unknown[] = [];
+      (window as unknown as { __sockets: unknown[] }).__sockets = sockets;
+      class FakeSocket {
+        static OPEN = 1;
+        readyState = 1;
+        onopen?: (ev: unknown) => void;
+        onmessage?: (ev: { data: string }) => void;
+        constructor() {
+          sockets.push(this);
+          setTimeout(() => this.onopen?.({}), 0);
+        }
+        close() { this.readyState = 3; }
+        send() {}
+      }
+      (window as unknown as { WebSocket: unknown }).WebSocket = FakeSocket;
+    });
+
+    const dataset = Array.from({ length: 51 }, (_, i) => ({
+      ...mockFlows[0],
+      id: `f-${i}`,
+      timestamp: new Date(now - (i < 50 ? 120_000 : 240_000)).toISOString(),
+    }));
+    const oldFlow = {
+      ...mockFlows[1],
+      id: 'flow-ancient',
+      timestamp: new Date(now - 600_000).toISOString(),
+    };
+
+    let releaseTasksFetch: (() => void) | null = null;
+    let tasksRequested = false;
+
+    await page.route('**/api/flows?*', route => {
+      const url = new URL(route.request().url());
+      const start = Date.parse(url.searchParams.get('start_time') ?? '1970-01-01T00:00:00Z');
+      const filtered = dataset.filter(f => Date.parse(f.timestamp) >= start);
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ flows: filtered.slice(offset, offset + 50), total: filtered.length, limit: 50, offset }),
+      });
+    });
+
+    await page.route('**/api/analytics/tasks*', async route => {
+      tasksRequested = true;
+      await new Promise<void>(resolve => { releaseTasksFetch = resolve; });
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify([]),
+      });
+    });
+
+    await page.goto('/');
+    await authenticate(page);
+    await page.getByLabel('Time range').selectOption('5m');
+    await page.getByRole('button', { name: 'Page 2' }).click();
+    await expect(page.locator('.flow-count')).toHaveText('Showing 51–51 of 51 flows');
+
+    // Switch to Tasks and hold its request
+    await page.getByRole('button', { name: 'Tasks' }).click();
+    await expect.poll(() => tasksRequested).toBe(true);
+
+    // Advance 61s and deliver an old WS completion so background flow page 2 clamps to page 1
+    await page.clock.fastForward(61_000);
+    await page.evaluate(f => {
+      const sockets = (window as unknown as { __sockets: Array<{ readyState: number; onmessage?: (ev: { data: string }) => void }> }).__sockets;
+      sockets.filter(s => s.readyState === 1).forEach(s => s.onmessage?.({ data: JSON.stringify({ type: 'flow_complete', data: f }) }));
+    }, oldFlow);
+
+    // Release Tasks response and verify loading clears to empty state
+    releaseTasksFetch?.();
+    await expect(page.getByText('No tasks tracked yet')).toBeVisible();
+  });
 });
 

@@ -124,9 +124,11 @@ function App() {
   const clampPageToTotal = useCallback((total: number): boolean => {
     const maxPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1)
     if (pageRef.current > maxPage) {
-      foregroundNavIdRef.current += 1
       pageRef.current = maxPage
-      setViewLoading(true)
+      if (viewRef.current === 'flows') {
+        foregroundNavIdRef.current += 1
+        setViewLoading(true)
+      }
       setPage(maxPage)
       setSelectedIndex(0)
       return true
@@ -326,45 +328,56 @@ function App() {
   // Reset page to 0 on filter change; ignore no-op selections so viewLoading never gets stuck
   const handleHostFilterChange = useCallback((v: string) => {
     if (v === filterCriteriaRef.current.host && pageRef.current === 0) return
-    foregroundNavIdRef.current += 1
     filterCriteriaRef.current = { ...filterCriteriaRef.current, host: v }
     pageRef.current = 0
-    setViewLoading(true)
+    if (viewRef.current === 'flows') {
+      foregroundNavIdRef.current += 1
+      setViewLoading(true)
+    }
     setHostFilter(v)
     setPage(0)
   }, [])
   const handleTaskFilterChange = useCallback((v: string) => {
     if (v === filterCriteriaRef.current.taskId && pageRef.current === 0) return
-    foregroundNavIdRef.current += 1
     filterCriteriaRef.current = { ...filterCriteriaRef.current, taskId: v }
     pageRef.current = 0
-    setViewLoading(true)
+    if (viewRef.current === 'flows') {
+      foregroundNavIdRef.current += 1
+      setViewLoading(true)
+    }
     setTaskFilter(v)
     setPage(0)
   }, [])
   const handleStatusFilterChange = useCallback((v: 'all' | 'success' | 'error') => {
     if (v === filterCriteriaRef.current.status && pageRef.current === 0) return
-    foregroundNavIdRef.current += 1
     filterCriteriaRef.current = { ...filterCriteriaRef.current, status: v }
     pageRef.current = 0
-    setViewLoading(true)
+    if (viewRef.current === 'flows') {
+      foregroundNavIdRef.current += 1
+      setViewLoading(true)
+    }
     setStatusFilter(v)
     setPage(0)
   }, [])
   const handleTimeRangeChange = useCallback((days: number | null) => {
-    if (days === filterCriteriaRef.current.days && pageRef.current === 0) return
-    foregroundNavIdRef.current += 1
+    const daysChanged = days !== filterCriteriaRef.current.days
+    if (!daysChanged && pageRef.current === 0) return
     filterCriteriaRef.current = { ...filterCriteriaRef.current, days }
     pageRef.current = 0
-    setViewLoading(true)
+    if (daysChanged || viewRef.current === 'flows') {
+      foregroundNavIdRef.current += 1
+      setViewLoading(true)
+    }
     setTimeRange(days)
     setPage(0)
   }, [])
   const handlePageChange = useCallback((newPage: number) => {
     if (newPage === pageRef.current) return
-    foregroundNavIdRef.current += 1
     pageRef.current = newPage
-    setViewLoading(true)
+    if (viewRef.current === 'flows') {
+      foregroundNavIdRef.current += 1
+      setViewLoading(true)
+    }
     setPage(newPage)
     setSelectedIndex(0)
   }, [])
