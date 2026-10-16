@@ -627,13 +627,13 @@ mode = sys.argv[1]
 if mode == 'raw-read':
     old = termios.tcgetattr(0)
     tty.setraw(0)
-    print('READY', flush=True)
+    os.write(1, b'READY')
     b = os.read(0, 1)
     termios.tcsetattr(0, termios.TCSANOW, old)
-    print('READ_OK ' + b.hex(), flush=True)
+    os.write(1, b'READ_OK ' + b.hex().encode('ascii'))
 else:
-    signal.signal(signal.SIGINT, lambda *a: (print('ONE_INT', flush=True), sys.exit(0)))
-    print('READY', flush=True)
+    signal.signal(signal.SIGINT, lambda *a: (os.write(1, b'ONE_INT'), os._exit(0)))
+    os.write(1, b'READY')
     while True:
         time.sleep(0.05)
 """
