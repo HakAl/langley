@@ -3,16 +3,40 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
+	"syscall"
 	"time"
 )
 
+func isTerminalFD(fd uintptr) bool {
+	var mode uint32
+	err := syscall.GetConsoleMode(syscall.Handle(fd), &mode)
+	return err == nil
+}
+
+func isProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	return err == nil && p != nil
+}
+
+func lockFile(f *os.File) error {
+	return nil
+}
+
+func unlockFile(f *os.File) error {
+	return nil
+}
+
 // runProcess starts the command and waits with signal handling.
 // On Windows, Ctrl+C is typically forwarded to child processes automatically.
-func runProcess(cmd *exec.Cmd) int {
+func runProcess(ctx context.Context, cmd *exec.Cmd) int {
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to start %q: %v\n", cmd.Path, err)
 		return 1
@@ -43,6 +67,12 @@ func runProcess(cmd *exec.Cmd) int {
 				err := <-waitCh
 				return getExitCode(err)
 			}
+		case <-ctx.Done():
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			err := <-waitCh
+			return getExitCode(err)
 		case err := <-waitCh:
 			return getExitCode(err)
 		}

@@ -28,17 +28,25 @@ make build
 # 2. Trust the CA certificate (one-time)
 ./langley setup
 
-# 3. Start proxy + dashboard server (serves UI at http://localhost:9091)
+# 3. Start Langley — proxy, dashboard, and a proxied shell in this terminal
 ./langley
 
-# 4. In another terminal, run your agent through the proxy
-./langley run claude
-./langley run python script.py
+# 4. Run your agent right there
+claude
+python script.py
+exit            # (or Ctrl+D) stops Langley
 ```
 
 `make build` produces `langley` on Unix (macOS/Linux) and `langley.exe` on Windows.
 
-Open `http://localhost:9091` and enter the auth token shown at startup (no separate web server is needed — the dashboard is embedded in the `langley` binary).
+In an interactive terminal, `./langley` is a single-terminal session:
+
+- Starts the proxy (`:9090`) and the embedded dashboard (`:9091`) in-process, and opens the dashboard in your browser. Enter the auth token shown in the startup banner (no separate web server is needed).
+- Drops you into your `$SHELL` with the proxy environment already set, plus `LANGLEY_ACTIVE=1`.
+- Installs a temporary hook in `~/.zshrc` / `~/.bashrc` (between `# >>> langley hook >>>` markers) that sources `~/.config/langley/active.env`, so new terminal tabs opened while Langley runs are proxied too. The env file only applies while the Langley process is alive, and both are removed on exit.
+- Writes server logs to `~/.config/langley/langley.log` so they don't interfere with interactive tools.
+
+Use `-no-shell` to run as a foreground server instead (logs to the terminal; use `langley run <cmd>` from another terminal), `-no-open` to skip opening the browser, and `-no-hook` to leave your RC files alone. The `LANGLEY_NO_SHELL`, `LANGLEY_NO_OPEN`, and `LANGLEY_NO_HOOK` environment variables do the same. Non-interactive runs (no TTY) always use foreground server mode and never touch RC files.
 
 `langley run` sets `HTTPS_PROXY`, `HTTP_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, and `REQUESTS_CA_BUNDLE` automatically. Or set them yourself:
 
@@ -108,6 +116,9 @@ OPTIONS:
   -api <addr>         API server address (default: localhost:9091)
   -version            Show version information
   -show-ca            Show CA certificate path and trust instructions
+  -no-shell           Run as a foreground server (no interactive subshell)
+  -no-open            Do not open the dashboard in a browser on startup
+  -no-hook            Do not install the temporary shell hook for new tabs
   -help               Show help
 ```
 

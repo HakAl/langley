@@ -60,6 +60,9 @@ func main() {
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	showCA := flag.Bool("show-ca", false, "Show CA certificate path and exit")
 	showHelp := flag.Bool("help", false, "Show help")
+	noShell := flag.Bool("no-shell", false, "Run in foreground server mode without launching an interactive subshell")
+	noOpen := flag.Bool("no-open", false, "Do not open the dashboard in a browser on startup")
+	noHook := flag.Bool("no-hook", false, "Do not install the temporary shell hook for new terminal tabs")
 	flag.Parse()
 
 	if *showHelp {
@@ -81,6 +84,18 @@ func main() {
 		Level: logLevel,
 	}))
 	slog.SetDefault(logger)
+
+	// Interactive single-terminal mode (langley-cup3): launch a proxied subshell
+	// in this terminal. Skipped when nested inside an active Langley shell.
+	shellDetector := NewOSShellDetector()
+	interactiveTTY := shellDetector.IsInteractiveTTY()
+	shellMode := !*noShell && os.Getenv("LANGLEY_NO_SHELL") == "" &&
+		os.Getenv("LANGLEY_ACTIVE") == "" && interactiveTTY
+	// The hook only touches ~/.zshrc / ~/.bashrc for interactive top-level
+	// sessions, so non-TTY runs (CI, test/e2e) never modify the user's RC files.
+	hookEnabled := !*noHook && os.Getenv("LANGLEY_NO_HOOK") == "" &&
+		os.Getenv("LANGLEY_ACTIVE") == "" && interactiveTTY && runtime.GOOS != "windows"
+	openBrowser := !*noOpen && os.Getenv("LANGLEY_NO_OPEN") == "" && !*showCA
 
 	// Determine actual config path for reload support
 	actualConfigPath := *configPath
@@ -114,6 +129,23 @@ func main() {
 		printError("Failed to create config directory", err, caPermissionFix(configDir))
 	}
 
+	// In shell mode, route server logs to a file so they don't scribble over
+	// interactive TUIs running in the subshell.
+	logPath := filepath.Join(configDir, "langley.log")
+	var logFile *os.File
+	if shellMode {
+		logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			printError("Failed to open log file", err, caPermissionFix(configDir))
+		}
+		_ = logFile.Chmod(0600)
+		defer func() { _ = logFile.Close() }()
+		logger = slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{
+			Level: logLevel,
+		}))
+		slog.SetDefault(logger)
+	}
+
 	// Load or create CA
 	certsDir := filepath.Join(configDir, "certs")
 	ca, err := langleytls.LoadOrCreateCA(certsDir)
@@ -145,6 +177,7 @@ func main() {
 	if err != nil {
 		printError("Failed to bind API server", err, portInUseFix(*apiAddr, maxPortAttempts))
 	}
+	actualAPIAddr = clientConnectAddr(actualAPIAddr)
 	slog.Info("API server bound", "addr", actualAPIAddr)
 
 	// Create proxy listener with fallback (langley-rla)
@@ -153,6 +186,7 @@ func main() {
 		apiListener.Close()
 		printError("Failed to bind proxy server", err, portInUseFix(cfg.Proxy.ListenAddr(), maxPortAttempts))
 	}
+	actualProxyAddr = clientConnectAddr(actualProxyAddr)
 	slog.Info("proxy server bound", "addr", actualProxyAddr)
 
 	// Set CRL URL for Windows compatibility (langley-2qj)
@@ -210,9 +244,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle shutdown signals
+	// Handle shutdown signals. In shellMode, SIGINT is owned by the
+	// interactive subshell rather than tearing down the proxy server.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	if shellMode {
+		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGHUP)
+	} else {
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	}
 	go func() {
 		sig := <-sigCh
 		slog.Info("received shutdown signal", "signal", sig)
@@ -254,6 +293,7 @@ func main() {
 		slog.Info("API server starting", "addr", actualAPIAddr)
 		if err := apiSrv.Serve(apiListener); err != nil && err != http.ErrServerClosed {
 			slog.Error("API server error", "error", err)
+			cancel()
 		}
 	}()
 
@@ -314,17 +354,19 @@ func main() {
 	)
 	caPath := filepath.Join(certsDir, "ca.crt")
 
-	fmt.Fprintf(os.Stderr, "\n")
-	fmt.Fprintf(os.Stderr, "  Proxy:     http://%s\n", actualProxyAddr)
-	fmt.Fprintf(os.Stderr, "  API:       http://%s\n", actualAPIAddr)
-	fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", actualAPIAddr)
-	fmt.Fprintf(os.Stderr, "  CA:        %s\n", caPath)
-	fmt.Fprintf(os.Stderr, "  DB:        %s\n", cfg.Persistence.DBPath)
-	fmt.Fprintf(os.Stderr, "  Token:     %s\n", cfg.Auth.Token)
-	fmt.Fprintf(os.Stderr, "\n")
+	if !shellMode {
+		fmt.Fprintf(os.Stderr, "\n")
+		fmt.Fprintf(os.Stderr, "  Proxy:     http://%s\n", actualProxyAddr)
+		fmt.Fprintf(os.Stderr, "  API:       http://%s\n", actualAPIAddr)
+		fmt.Fprintf(os.Stderr, "  WebSocket: ws://%s/ws\n", actualAPIAddr)
+		fmt.Fprintf(os.Stderr, "  CA:        %s\n", caPath)
+		fmt.Fprintf(os.Stderr, "  DB:        %s\n", cfg.Persistence.DBPath)
+		fmt.Fprintf(os.Stderr, "  Token:     %s\n", cfg.Auth.Token)
+		fmt.Fprintf(os.Stderr, "\n")
 
-	// Print copy-paste environment variables (OS-aware syntax)
-	fmt.Fprint(os.Stderr, formatEnvVars(actualProxyAddr, caPath, runtime.GOOS))
+		// Print copy-paste environment variables (OS-aware syntax)
+		fmt.Fprint(os.Stderr, formatEnvVars(actualProxyAddr, caPath, runtime.GOOS))
+	}
 
 	// Write state file for 'langley run' command (langley-5i2).
 	// Written AFTER apiSrv.Serve() goroutine is launched so the health
@@ -345,10 +387,63 @@ func main() {
 		}
 	}
 
-	// Start proxy using the pre-created listener (langley-rla)
-	if err := mitmProxy.ServeListener(ctx, proxyListener); err != nil && err != context.Canceled {
-		slog.Error("proxy error", "error", err)
-		os.Exit(1)
+	// Temporary shell hook so new terminal tabs are proxied too (langley-cup3).
+	var hookMgr ShellHookManager = NoopShellHookManager{}
+	if hookEnabled {
+		if home, err := os.UserHomeDir(); err != nil {
+			slog.Warn("shell hook disabled: cannot determine home directory", "error", err)
+		} else {
+			hookMgr = NewFileShellHookManager(configDir, home, os.Getenv("SHELL"))
+		}
+	}
+	if err := hookMgr.Activate(actualProxyAddr, caPath, os.Getpid()); err != nil {
+		slog.Warn("failed to activate shell hook", "error", err)
+	}
+	defer func() { _ = hookMgr.Deactivate() }()
+
+	// Start proxy using the pre-created listener (langley-rla). Whichever ends
+	// first — proxy (signal/error) or interactive subshell — stops the other.
+	proxyErrCh := make(chan error, 1)
+	go func() {
+		proxyErrCh <- mitmProxy.ServeListener(ctx, proxyListener)
+		cancel()
+	}()
+
+	dashboardURL := "http://" + actualAPIAddr
+	if openBrowser {
+		if err := NewOSBrowserOpener().Open(dashboardURL); err != nil {
+			slog.Debug("failed to open browser", "url", dashboardURL, "error", err)
+		}
+	}
+
+	if shellMode {
+		fmt.Fprintf(os.Stderr, "\n")
+		fmt.Fprintf(os.Stderr, "  Langley active — intercepting LLM traffic in this shell (and new tabs)\n")
+		fmt.Fprintf(os.Stderr, "  Dashboard: %s\n", dashboardURL)
+		fmt.Fprintf(os.Stderr, "  Token:     %s\n", cfg.Auth.Token)
+		fmt.Fprintf(os.Stderr, "  Proxy:     http://%s\n", actualProxyAddr)
+		fmt.Fprintf(os.Stderr, "  CA:        %s\n", caPath)
+		fmt.Fprintf(os.Stderr, "  Log:       %s\n", logPath)
+		fmt.Fprintf(os.Stderr, "\n")
+		fmt.Fprintf(os.Stderr, "  Run 'claude', 'codex', etc. directly in this terminal.\n")
+		fmt.Fprintf(os.Stderr, "  Type 'exit' (or Ctrl+D) to stop Langley.\n")
+		fmt.Fprintf(os.Stderr, "\n")
+
+		shell, shellArgs := shellDetector.UserShell()
+		env := (&ProxyEnvBuilder{}).Build(actualProxyAddr, caPath)
+		exitCode := (&ExecProcessRunner{}).Run(ctx, shell, shellArgs, env)
+		slog.Info("interactive shell exited", "shell", shell, "exit_code", exitCode)
+		cancel()
+	}
+
+	proxyErr := <-proxyErrCh
+	if proxyErr != nil && proxyErr != context.Canceled {
+		slog.Error("proxy error", "error", proxyErr)
+	}
+
+	// Remove the hook before anything slow so new tabs stop sourcing it promptly.
+	if err := hookMgr.Deactivate(); err != nil {
+		slog.Warn("failed to deactivate shell hook", "error", err)
 	}
 
 	// Graceful shutdown of API server
@@ -366,7 +461,29 @@ func main() {
 		_ = stateStore.Delete()
 	}
 
+	if proxyErr != nil && proxyErr != context.Canceled {
+		shutdownCancel()
+		_ = dataStore.Close()
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+		os.Exit(1)
+	}
+
 	slog.Info("langley shutdown complete")
+}
+
+// clientConnectAddr normalizes a listen address so clients and browsers can
+// connect to it (converting empty or wildcard bind hosts to "localhost").
+func clientConnectAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return net.JoinHostPort("localhost", port)
+	}
+	return addr
 }
 
 // runRetention deletes expired data
@@ -453,6 +570,13 @@ USAGE:
     langley [OPTIONS]
     langley <command> [options]
 
+    In an interactive terminal, 'langley' starts the proxy and dashboard,
+    opens the dashboard in your browser, and drops you into a proxied
+    subshell in the same terminal. Run 'claude', 'codex', etc. directly;
+    type 'exit' (or Ctrl+D) to stop Langley. Terminal tabs opened while
+    Langley runs are proxied too via a temporary hook in ~/.zshrc / ~/.bashrc
+    that is removed on exit. Server logs go to ~/.config/langley/langley.log.
+
 COMMANDS:
     run <cmd> [args]  Run a command with proxy environment configured
     setup             Install CA certificate to system trust store
@@ -465,10 +589,14 @@ OPTIONS:
     -api <addr>       API/WebSocket server address (default: localhost:9091)
     -version          Show version information
     -show-ca          Show CA certificate path and trust instructions
+    -no-shell         Run as a foreground server (no interactive subshell)
+    -no-open          Do not open the dashboard in a browser on startup
+    -no-hook          Do not install the temporary shell hook for new tabs
     -help             Show this help message
 
 EXAMPLES:
-    langley                     Start with default config
+    langley                     Start proxy + dashboard and open a proxied shell
+    langley -no-shell           Run as a foreground server only
     langley run claude          Run claude with proxy env configured
     langley setup               Install CA certificate (first-time setup)
     langley -listen :8080       Start proxy on port 8080
@@ -487,6 +615,11 @@ CONFIGURATION:
     - LANGLEY_LISTEN             Proxy listen address
     - LANGLEY_AUTH_TOKEN         API authentication token
     - LANGLEY_DB_PATH            Database path
+    - LANGLEY_NO_SHELL           Same as -no-shell when set
+    - LANGLEY_NO_OPEN            Same as -no-open when set
+    - LANGLEY_NO_HOOK            Same as -no-hook when set
+    - LANGLEY_ACTIVE             Set inside Langley shells; a nested 'langley'
+                                 runs as a foreground server without a hook
 
 DASHBOARD:
     Access the web dashboard at http://localhost:9091 (or your -api address)
