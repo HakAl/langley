@@ -21,24 +21,24 @@ Your App  --HTTPS-->  Langley Proxy  --HTTPS-->  LLM API
 **Prerequisites:** Go 1.24+ and Node 20.19+ or 22.12+ (`^20.19.0 || >=22.12.0`).
 
 ```bash
-# 1. Build (the dashboard is embedded into the binary, so build the frontend first)
-cd web && npm install && npm run build && cd ..
-go build -o langley ./cmd/langley
+# 1. Build (installs frontend deps, builds the embedded dashboard, and compiles the binary)
+make build
+# (Or manually: cd web && npm install && npm run build && cd .. && go build -o langley ./cmd/langley)
 
 # 2. Trust the CA certificate (one-time)
 ./langley setup
 
-# 3. Start
+# 3. Start proxy + dashboard server (serves UI at http://localhost:9091)
 ./langley
 
-# 4. Run your agent through the proxy
+# 4. In another terminal, run your agent through the proxy
 ./langley run claude
 ./langley run python script.py
 ```
 
-Alternatively, `make build` builds the frontend and backend in the correct order (it produces `langley.exe`).
+`make build` produces `langley` on Unix (macOS/Linux) and `langley.exe` on Windows.
 
-Open `http://localhost:9091` and enter the auth token shown at startup.
+Open `http://localhost:9091` and enter the auth token shown at startup (no separate web server is needed — the dashboard is embedded in the `langley` binary).
 
 `langley run` sets `HTTPS_PROXY`, `HTTP_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, and `REQUESTS_CA_BUNDLE` automatically. Or set them yourself:
 

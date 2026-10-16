@@ -651,7 +651,8 @@ Examples:
 // handleSetupCommand handles the "setup" subcommand for CA installation
 func handleSetupCommand(args []string) {
 	setupFlags := flag.NewFlagSet("setup", flag.ExitOnError)
-	skipMkcert := setupFlags.Bool("no-mkcert", false, "Skip mkcert detection and show manual instructions")
+	manualOnly := setupFlags.Bool("manual", false, "Show manual instructions without installing")
+	skipMkcert := setupFlags.Bool("no-mkcert", false, "Show manual instructions without installing (alias for --manual)")
 	showHelp := setupFlags.Bool("help", false, "Show help")
 	_ = setupFlags.Parse(args)
 
@@ -684,38 +685,19 @@ func handleSetupCommand(args []string) {
 	fmt.Printf("CA certificate: %s\n", caPath)
 	fmt.Println()
 
-	if !*skipMkcert && hasMkcert() {
-		runMkcertInstall(caPath)
+	if !*manualOnly && !*skipMkcert {
+		installSystemCA(caPath)
 	} else {
 		printManualInstructions(caPath)
 	}
 }
 
-// hasMkcert checks if mkcert is available in PATH
-func hasMkcert() bool {
-	_, err := exec.LookPath("mkcert")
-	return err == nil
-}
-
-// runMkcertInstall uses mkcert to install the CA certificate
-func runMkcertInstall(caPath string) {
-	fmt.Println("✓ mkcert detected - using it to install CA certificate")
-	fmt.Println()
-
-	// Set CAROOT to langley's cert directory so mkcert uses our CA
-	// Actually, we need to install OUR CA, not mkcert's
-	// mkcert -install uses its own CA, so we need a different approach
-
-	// Option 1: Check if mkcert's CA is already installed and offer to use it
-	// Option 2: Use mkcert's -install to manage trust stores, but for OUR cert
-
-	// For now, we'll use the platform-specific trust store commands
-	// but through mkcert's known trust store locations
-
+// installSystemCA installs the CA certificate into the OS system trust store
+func installSystemCA(caPath string) {
 	fmt.Println("Installing Langley CA to system trust store...")
 	fmt.Println()
 
-	// Detect platform and provide instructions
+	// Detect platform and install
 	switch os := detectOS(); os {
 	case "darwin":
 		installMacOS(caPath)
@@ -885,7 +867,7 @@ func printPostInstall() {
 	fmt.Println("  3. Open the dashboard:")
 	fmt.Println("     http://localhost:9091")
 	fmt.Println()
-	fmt.Println("Note: Firefox uses its own certificate store. See 'langley setup --no-mkcert'")
+	fmt.Println("Note: Firefox uses its own certificate store. See 'langley setup --manual'")
 	fmt.Println("      for Firefox-specific instructions.")
 }
 
@@ -897,7 +879,8 @@ Installs the Langley CA certificate to your system's trust store.
 This allows Langley to intercept HTTPS traffic to Claude and other LLM APIs.
 
 Options:
-    --no-mkcert    Skip mkcert detection and show manual instructions
+    --manual       Show manual installation instructions without installing
+    --no-mkcert    Alias for --manual
     --help         Show this help message
 
 The setup wizard will:
@@ -907,7 +890,7 @@ The setup wizard will:
   4. Provide manual instructions if automatic installation fails
 
 Examples:
-    langley setup              Auto-detect and install CA
-    langley setup --no-mkcert  Show manual installation instructions
+    langley setup           Auto-detect and install CA
+    langley setup --manual  Show manual installation instructions
 `)
 }

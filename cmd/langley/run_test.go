@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -437,5 +441,268 @@ func TestGetExitCode_NilError(t *testing.T) {
 func TestGetExitCode_GenericError(t *testing.T) {
 	if code := getExitCode(errors.New("something")); code != 1 {
 		t.Errorf("expected 1, got %d", code)
+	}
+}
+
+func TestRunProcess_WrapperHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_RUN_WRAPPER_HELPER") != "1" {
+		return
+	}
+	args := flag.Args()
+	if len(args) == 0 {
+		os.Exit(2)
+	}
+	runner := &ExecProcessRunner{}
+	os.Exit(runner.Run(context.Background(), args[0], args[1:], os.Environ()))
+}
+
+func TestRunProcess_DirectPIDSignals(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix signal forwarding test")
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		sig  syscall.Signal
+	}{
+		{name: "SIGINT", sig: syscall.SIGINT},
+		{name: "SIGTERM", sig: syscall.SIGTERM},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			readyFile := filepath.Join(dir, "ready")
+			receivedFile := filepath.Join(dir, "received")
+
+			script := `trap 'echo got > "$2"; exit 0' INT TERM; echo $$ > "$1"; while :; do sleep 0.05; done`
+			wrapper := exec.Command(exe, "-test.run=^TestRunProcess_WrapperHelper$", "--", "sh", "-c", script, "sh", readyFile, receivedFile)
+			wrapper.Env = append(os.Environ(), "GO_WANT_RUN_WRAPPER_HELPER=1")
+
+			if err := wrapper.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if wrapper.Process != nil {
+					_ = wrapper.Process.Kill()
+				}
+			}()
+
+			deadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat(readyFile); err == nil {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if _, err := os.Stat(readyFile); err != nil {
+				t.Fatalf("child did not become ready: %v", err)
+			}
+
+			if err := wrapper.Process.Signal(tc.sig); err != nil {
+				t.Fatalf("failed to signal wrapper: %v", err)
+			}
+
+			waitCh := make(chan error, 1)
+			go func() { waitCh <- wrapper.Wait() }()
+
+			select {
+			case err := <-waitCh:
+				if err != nil {
+					t.Fatalf("expected clean wrapper exit after %s, got %v", tc.name, err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("wrapper did not exit after direct %s", tc.name)
+			}
+
+			if _, err := os.Stat(receivedFile); err != nil {
+				t.Fatalf("expected child to receive %s, but marker missing: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestRunProcess_TerminatesDescendants(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix descendant process group test")
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	parentReady := filepath.Join(dir, "parent.ready")
+	grandReady := filepath.Join(dir, "grand.ready")
+	parentDone := filepath.Join(dir, "parent.done")
+	grandDone := filepath.Join(dir, "grand.done")
+
+	script := `
+sh -c 'trap "echo TERM > \"$2\"; exit 0" TERM; echo $$ > "$1"; while :; do sleep 0.05; done' sh "$2" "$4" &
+trap 'echo TERM > "$3"; exit 0' TERM
+echo $$ > "$1"
+while :; do sleep 0.05; done
+`
+	wrapper := exec.Command(exe, "-test.run=^TestRunProcess_WrapperHelper$", "--", "sh", "-c", script, "sh", parentReady, grandReady, parentDone, grandDone)
+	wrapper.Env = append(os.Environ(), "GO_WANT_RUN_WRAPPER_HELPER=1")
+
+	if err := wrapper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if wrapper.Process != nil {
+			_ = wrapper.Process.Kill()
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		_, err1 := os.Stat(parentReady)
+		_, err2 := os.Stat(grandReady)
+		if err1 == nil && err2 == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(grandReady); err != nil {
+		t.Fatalf("grandchild did not become ready: %v", err)
+	}
+
+	if err := wrapper.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("failed to signal wrapper: %v", err)
+	}
+
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- wrapper.Wait() }()
+
+	select {
+	case err := <-waitCh:
+		if err != nil {
+			t.Fatalf("expected clean wrapper exit, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("wrapper did not exit after SIGTERM")
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, err1 := os.Stat(parentDone)
+		_, err2 := os.Stat(grandDone)
+		if err1 == nil && err2 == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected both parent and grandchild to receive SIGTERM (parentDone=%v, grandDone=%v)",
+		fileExists(parentDone), fileExists(grandDone))
+}
+
+func TestRunProcess_PTYForegroundRawReadAndCtrlC(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix PTY foreground test")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available for PTY harness")
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pyHarness := `
+import errno, os, pty, select, signal, sys, time
+
+exe = sys.argv[1]
+mode = sys.argv[2]
+
+child_code = """
+import os, signal, sys, termios, time, tty
+mode = sys.argv[1]
+if mode == 'raw-read':
+    old = termios.tcgetattr(0)
+    tty.setraw(0)
+    print('READY', flush=True)
+    b = os.read(0, 1)
+    termios.tcsetattr(0, termios.TCSANOW, old)
+    print('READ_OK ' + b.hex(), flush=True)
+else:
+    signal.signal(signal.SIGINT, lambda *a: (print('ONE_INT', flush=True), sys.exit(0)))
+    print('READY', flush=True)
+    while True:
+        time.sleep(0.05)
+"""
+
+pid, fd = pty.fork()
+if pid == 0:
+    env = dict(os.environ)
+    env["GO_WANT_RUN_WRAPPER_HELPER"] = "1"
+    args = [exe, "-test.run=^TestRunProcess_WrapperHelper$", "--", sys.executable, "-c", child_code, mode]
+    os.execve(exe, args, env)
+
+output = b""
+sent = False
+reaped = False
+end = time.monotonic() + 3.0
+try:
+    while time.monotonic() < end:
+        if select.select([fd], [], [], 0.03)[0]:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError as e:
+                if e.errno == errno.EIO:
+                    break
+                raise
+            if not chunk:
+                break
+            output += chunk
+        if b"READY" in output and not sent:
+            os.write(fd, b"x" if mode == "raw-read" else b"\x03")
+            sent = True
+        done, _ = os.waitpid(pid, os.WNOHANG)
+        if done:
+            reaped = True
+            break
+    if not reaped:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            done, _ = os.waitpid(pid, os.WNOHANG)
+            if done:
+                reaped = True
+                break
+            time.sleep(0.01)
+finally:
+    if not reaped:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        os.waitpid(pid, 0)
+    os.close(fd)
+
+text = output.decode(errors="replace")
+if mode == "raw-read":
+    if "READ_OK 78" not in text or not reaped:
+        sys.stderr.write(f"raw-read failed: reaped={reaped} output={text!r}\n")
+        sys.exit(1)
+else:
+    if text.count("ONE_INT") != 1 or not reaped:
+        sys.stderr.write(f"terminal-int failed: count={text.count('ONE_INT')} reaped={reaped} output={text!r}\n")
+        sys.exit(1)
+`
+
+	for _, mode := range []string{"raw-read", "terminal-int"} {
+		t.Run(mode, func(t *testing.T) {
+			cmd := exec.Command(python, "-c", pyHarness, exe, mode)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("PTY %s failed: %v\n%s", mode, err, string(out))
+			}
+		})
 	}
 }

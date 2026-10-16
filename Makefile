@@ -3,6 +3,12 @@
 
 .PHONY: all build build-backend build-frontend run dev dev-debug dev-backend dev-backend-debug dev-frontend test test-backend test-frontend test-cover clean clean-all help install-deps lint check stop stop-frontend stop-backend
 
+ifeq ($(OS),Windows_NT)
+BINARY := langley.exe
+else
+BINARY := langley
+endif
+
 # Default target
 all: build
 
@@ -14,12 +20,14 @@ build: build-frontend ## Build everything (frontend first so assets are embedded
 	$(MAKE) build-backend
 
 build-backend: web/dist/index.html ## Build Go binary
-	go build -o langley.exe ./cmd/langley
+	go build -o $(BINARY) ./cmd/langley
 
 build-frontend: ## Build frontend (production)
+	@if [ ! -d web/node_modules ]; then cd web && npm install; fi
 	cd web && npm run build
 
 web/dist/index.html:
+	@if [ ! -d web/node_modules ]; then cd web && npm install; fi
 	cd web && npm run build
 
 #---------------------------------------------------------------------------
@@ -59,7 +67,7 @@ stop-backend: ## Kill orphaned langley process
 	npx --yes kill-port 9090
 
 run: build ## Build and run production binary
-	./langley.exe
+	./$(BINARY)
 
 #---------------------------------------------------------------------------
 # Testing
@@ -109,7 +117,7 @@ install-deps: ## Install all dependencies
 #---------------------------------------------------------------------------
 
 clean: ## Remove build artifacts
-	rm -f langley.exe
+	rm -f langley langley.exe
 	rm -f coverage.out coverage.html
 	rm -rf web/dist
 
