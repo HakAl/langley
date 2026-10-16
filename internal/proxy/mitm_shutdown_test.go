@@ -171,8 +171,12 @@ func TestShutdownDrainsMITMTLSConnections(t *testing.T) {
 	serverConfig := &tls.Config{Certificates: certServer.TLS.Certificates}
 	tlsClient := tls.Server(pc, serverConfig)
 	tlsUpstream := tls.Client(pu, &tls.Config{InsecureSkipVerify: true})
-	c.SetDeadline(time.Now().Add(2 * time.Second))
-	u.SetDeadline(time.Now().Add(2 * time.Second))
+	if err := c.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	handshakes := make(chan error, 2)
 	go func() { handshakes <- tls.Client(c, &tls.Config{InsecureSkipVerify: true}).Handshake() }()
 	go func() { handshakes <- tls.Server(u, serverConfig).Handshake() }()
@@ -187,8 +191,12 @@ func TestShutdownDrainsMITMTLSConnections(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c.SetDeadline(time.Time{})
-	u.SetDeadline(time.Time{})
+	if err := c.SetDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.SetDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
 
 	started := make(chan struct{})
 	go func() {
@@ -323,7 +331,9 @@ func TestShutdownInterruptsHijackedHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	client.SetDeadline(time.Now().Add(2 * time.Second))
+	if err := client.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := io.WriteString(client, "CONNECT api.example.test:443 HTTP/1.1\r\nHost: api.example.test:443\r\n\r\n"); err != nil {
 		t.Fatal(err)
 	}

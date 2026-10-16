@@ -1613,6 +1613,9 @@ func TestMITMProxy_Redaction_EventsAndTools(t *testing.T) {
 			t.Fatal(err)
 		}
 		ms := newMockStore()
+		if err := ms.SaveFlow(context.Background(), &store.Flow{ID: "large"}); err != nil {
+			t.Fatal(err)
+		}
 		capture := &flowCapture{}
 		p := &MITMProxy{cfg: testConfig(), logger: testLogger(), redactor: redactor, store: ms, onEvent: capture.OnEvent}
 		for _, size := range []int{redact.MaxRedactionInputSize, redact.MaxRedactionInputSize + 1} {

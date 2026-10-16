@@ -1196,7 +1196,10 @@ func (l *limitedBuffer) Write(p []byte) (n int, err error) {
 	remaining := l.max - l.buf.Len()
 	if len(p) > remaining {
 		l.truncated = true
-		return l.buf.Write(p[:remaining])
+		if _, err := l.buf.Write(p[:remaining]); err != nil {
+			return 0, err
+		}
+		return len(p), nil
 	}
 	return l.buf.Write(p)
 }
