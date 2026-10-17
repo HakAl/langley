@@ -201,6 +201,9 @@ func main() {
 		}
 	}
 	slog.Info("CA loaded", "path", filepath.Join(certsDir, "ca.crt"))
+	if _, err := ca.EnsureCombinedBundle(certsDir); err != nil {
+		slog.Warn("combined CA bundle unavailable; preserving existing system trust environment", "error", err)
+	}
 
 	if *showCA {
 		fmt.Printf("CA certificate: %s\n", filepath.Join(certsDir, "ca.crt"))
@@ -305,6 +308,8 @@ func main() {
 	wsHub.SetAPIAddr(actualAPIAddr)
 	go wsHub.Run(ctx)
 
+	instanceID := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
+
 	// Create MITM proxy so it can be wired into the API server as CaptureController
 	mitmProxy, err := proxy.NewMITMProxy(proxy.MITMProxyConfig{
 		Config:             cfg,
@@ -334,6 +339,7 @@ func main() {
 			wsHub.BroadcastEvent(event)
 		},
 		OnCaptureStateChange: func(status proxy.CaptureStatus) {
+			status.InstanceID = instanceID
 			wsHub.BroadcastCaptureState(status)
 		},
 	})
@@ -341,8 +347,6 @@ func main() {
 		slog.Error("failed to create proxy", "error", err)
 		os.Exit(1)
 	}
-
-	instanceID := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
 
 	// Create API server with reload and capture controller support
 	apiServer := api.NewServer(cfg, dataStore, logger,
@@ -459,9 +463,7 @@ func main() {
 		slog.Warn("failed to activate shell hook", "error", err)
 	}
 	if daemonMode {
-		if activeData, err := os.ReadFile(filepath.Join(configDir, "active.env")); err == nil {
-			_ = writeFileAtomic(filepath.Join(configDir, "shell.env"), activeData, 0600)
-		}
+		_ = writeFileAtomic(filepath.Join(configDir, "shell.env"), []byte(renderActiveEnv(actualProxyAddr, caPath, os.Getpid())), 0600)
 	} else {
 		defer func() { _ = hookMgr.Deactivate() }()
 	}
@@ -508,8 +510,10 @@ func main() {
 	}
 
 	// Remove the hook before anything slow so new tabs stop sourcing it promptly.
-	if err := hookMgr.Deactivate(); err != nil {
-		slog.Warn("failed to deactivate shell hook", "error", err)
+	if !daemonMode {
+		if err := hookMgr.Deactivate(); err != nil {
+			slog.Warn("failed to deactivate shell hook", "error", err)
+		}
 	}
 
 	// Graceful shutdown of API server

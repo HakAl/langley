@@ -166,11 +166,11 @@ func TestCaptureKeepAliveSwitch(t *testing.T) {
 	if n := flowCount(t, data); n != 0 {
 		t.Fatalf("passthrough saved %d flows", n)
 	}
-	// Allow the completed response's TLS bytes to become idle before enabling.
-	time.Sleep(150 * time.Millisecond)
-	if s := p.SetCapture(true, false); s.State != CaptureStateCapturing {
-		t.Fatalf("enable: %+v", s)
+	if s := p.SetCapture(true, false); s.State != CaptureStateEnabling || s.DrainingPassthroughTunnels != 1 {
+		t.Fatalf("enable with open passthrough tunnel: %+v", s)
 	}
+	client.CloseIdleConnections()
+	waitCapture(t, p, CaptureStateCapturing)
 	if cert := fetch(); bytes.Equal(cert, upstreamCert) {
 		t.Fatal("capture retained upstream certificate")
 	}
@@ -181,13 +181,14 @@ func TestCaptureKeepAliveSwitch(t *testing.T) {
 	if n := flowCount(t, data); n != 1 {
 		t.Fatalf("capture saved %d flows", n)
 	}
-	select {
-	case s := <-changes:
-		if s.State != CaptureStateCapturing {
-			t.Fatalf("callback: %+v", s)
+	foundCapturing := false
+	for !foundCapturing {
+		select {
+		case s := <-changes:
+			foundCapturing = s.State == CaptureStateCapturing
+		case <-time.After(time.Second):
+			t.Fatal("missing enable notification")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("missing enable notification")
 	}
 	if s := p.SetCapture(false, false); s.State != CaptureStatePassthrough && s.State != CaptureStateStopping {
 		t.Fatalf("pause: %+v", s)
@@ -616,4 +617,66 @@ func TestCaptureStateNotificationsSerializedAndMonotonic(t *testing.T) {
 	if observed[len(observed)-1].State != final.State || observed[len(observed)-1].Revision != final.Revision {
 		t.Fatalf("last notification %+v != final status %+v", observed[len(observed)-1], final)
 	}
+}
+
+func TestEnableDuringThinkPausePreservesStream(t *testing.T) {
+	release := make(chan struct{})
+	time.AfterFunc(900*time.Millisecond, func() { close(release) })
+	p, c, _, _, _ := captureFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: first\n\n")
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = io.WriteString(w, "data: last\n\n")
+	}), true)
+	p.passthroughIdleThreshold = 500 * time.Millisecond
+	resp, err := c.Get("https://api.openai.com/v1/chat/completions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	time.Sleep(600 * time.Millisecond)
+	s := p.SetCapture(true, false)
+	if s.State != CaptureStateEnabling || s.DrainingPassthroughTunnels != 1 {
+		t.Fatalf("SetCapture(true, false) during think pause = %+v, want enabling/1", s)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || string(body) != "data: first\n\ndata: last\n\n" {
+		t.Fatalf("non-force enable aborted streaming response: body=%q err=%v", string(body), err)
+	}
+}
+
+type shortDeadlineConn struct{ net.Conn }
+
+func (c shortDeadlineConn) SetReadDeadline(_ time.Time) error {
+	return c.Conn.SetReadDeadline(time.Now().Add(120 * time.Millisecond))
+}
+
+func TestOneWayStreamUsesSharedActivity(t *testing.T) {
+	clientPeer, client := net.Pipe()
+	upstream, upstreamPeer := net.Pipe()
+	defer clientPeer.Close()
+	defer client.Close()
+	defer upstream.Close()
+	defer upstreamPeer.Close()
+
+	p := &MITMProxy{passthroughIdleThreshold: 500 * time.Millisecond}
+	tunnel := &captureTunnel{client: shortDeadlineConn{client}, upstream: upstream, draining: true}
+	tunnel.lastActivity.Store(time.Now().UnixNano())
+	done := make(chan struct{})
+	go func() {
+		p.tunnelCapture(tunnel)
+		close(done)
+	}()
+	go func() { _, _ = io.Copy(io.Discard, clientPeer) }()
+
+	start := time.Now()
+	for time.Since(start) < 300*time.Millisecond {
+		if _, err := upstreamPeer.Write([]byte("x")); err != nil {
+			t.Fatalf("active downstream stream closed early after %v: %v", time.Since(start), err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = upstreamPeer.Close()
+	<-done
 }

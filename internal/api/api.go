@@ -1480,10 +1480,16 @@ func requestHostname(addr string) string {
 }
 
 func (s *Server) captureStatus() CaptureStatus {
+	var status CaptureStatus
 	if s.captureController != nil {
-		return s.captureController.CaptureStatus()
+		status = s.captureController.CaptureStatus()
+	} else {
+		status = CaptureStatus{State: proxy.CaptureStatePassthrough, InterceptHosts: []string{}}
 	}
-	return CaptureStatus{State: proxy.CaptureStatePassthrough, InterceptHosts: []string{}}
+	if status.InstanceID == "" && s.daemonMeta.InstanceID != "" {
+		status.InstanceID = s.daemonMeta.InstanceID
+	}
+	return status
 }
 
 func (s *Server) getCapture(w http.ResponseWriter, r *http.Request) {
@@ -1509,5 +1515,9 @@ func (s *Server) setCapture(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid capture request", http.StatusBadRequest)
 		return
 	}
-	s.writeJSON(w, s.captureController.SetCapture(*body.Enabled, body.Force))
+	status := s.captureController.SetCapture(*body.Enabled, body.Force)
+	if status.InstanceID == "" && s.daemonMeta.InstanceID != "" {
+		status.InstanceID = s.daemonMeta.InstanceID
+	}
+	s.writeJSON(w, status)
 }

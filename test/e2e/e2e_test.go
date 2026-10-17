@@ -969,7 +969,6 @@ func TestE2E_CaptureControlKeepAlive(t *testing.T) {
 	if err != nil || count != 0 {
 		t.Fatalf("passthrough flows=%d: %v", count, err)
 	}
-	time.Sleep(550 * time.Millisecond)
 	request, err := http.NewRequest("POST", control.URL+"/api/capture", strings.NewReader(`{"enabled":true}`))
 	if err != nil {
 		t.Fatal(err)
@@ -982,8 +981,22 @@ func TestE2E_CaptureControlKeepAlive(t *testing.T) {
 	var status proxy.CaptureStatus
 	err = json.NewDecoder(response.Body).Decode(&status)
 	_ = response.Body.Close()
-	if err != nil || response.StatusCode != 200 || status.State != "capturing" {
-		t.Fatalf("capture API: %+v, HTTP %d: %v", status, response.StatusCode, err)
+	if err != nil || response.StatusCode != 200 || status.State != "enabling" || status.DrainingPassthroughTunnels != 1 {
+		t.Fatalf("capture API (non-force): %+v, HTTP %d: %v", status, response.StatusCode, err)
+	}
+	forceReq, err := http.NewRequest("POST", control.URL+"/api/capture", strings.NewReader(`{"enabled":true,"force":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	forceReq.Header.Set("Authorization", "Bearer "+cfg.Auth.Token)
+	forceResp, err := http.DefaultClient.Do(forceReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = json.NewDecoder(forceResp.Body).Decode(&status)
+	_ = forceResp.Body.Close()
+	if err != nil || forceResp.StatusCode != 200 || status.State != "capturing" || status.DrainingPassthroughTunnels != 0 {
+		t.Fatalf("capture API (force): %+v, HTTP %d: %v", status, forceResp.StatusCode, err)
 	}
 	if bytes.Equal(fetch(), first) {
 		t.Fatal("same client retained upstream certificate after enable")

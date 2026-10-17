@@ -466,13 +466,24 @@ function App() {
 
   // Every authoritative capture update or user mutation bumps the version; a
   // response from a GET issued before a newer update or POST is stale and must
-  // not overwrite or invalidate the newer state.
+  // not overwrite or invalidate the newer state. Revision high-water marks are
+  // scoped to the daemon instance epoch and reset when a reconnect snapshot
+  // observes a fresh daemon.
   const captureVersionRef = useRef(0)
   const captureRevisionRef = useRef(0)
-  const applyCaptureStatus = useCallback((status: CaptureStatus) => {
-    if (typeof status.revision === 'number') {
+  const captureInstanceRef = useRef<string | undefined>(undefined)
+  const applyCaptureStatus = useCallback((status: CaptureStatus, resetEpoch = false) => {
+    const instanceChanged =
+      Boolean(status.instance_id) &&
+      Boolean(captureInstanceRef.current) &&
+      status.instance_id !== captureInstanceRef.current
+    if (resetEpoch || instanceChanged) {
+      captureInstanceRef.current = status.instance_id
+      captureRevisionRef.current = typeof status.revision === 'number' ? status.revision : 0
+    } else if (typeof status.revision === 'number') {
       if (status.revision < captureRevisionRef.current) return
       captureRevisionRef.current = status.revision
+      if (status.instance_id) captureInstanceRef.current = status.instance_id
     }
     captureVersionRef.current += 1
     setCaptureStatus(status)
@@ -481,7 +492,9 @@ function App() {
   const refreshCaptureStatus = useCallback(async () => {
     const version = captureVersionRef.current
     const { data } = await api.fetchCaptureStatus()
-    if (data && captureVersionRef.current === version) applyCaptureStatus(data)
+    if (data && captureVersionRef.current === version) {
+      applyCaptureStatus(data, true)
+    }
   }, [api.fetchCaptureStatus, applyCaptureStatus])
 
   const captureActionPendingRef = useRef(false)
@@ -490,12 +503,11 @@ function App() {
     captureActionPendingRef.current = true
     setCaptureActionPending(true)
     captureVersionRef.current += 1
-    const version = captureVersionRef.current
     try {
       const { data, error } = await api.setCaptureMode(enabled, force)
       if (error) {
         setError(error)
-      } else if (data && captureVersionRef.current === version) {
+      } else if (data) {
         applyCaptureStatus(data)
       }
     } finally {

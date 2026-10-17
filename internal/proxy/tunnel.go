@@ -78,6 +78,7 @@ func (p *MITMProxy) tunnelCapture(t *captureTunnel) {
 		defer func() { _ = t.upstream.Close() }()
 		buf := make([]byte, 32*1024)
 		for {
+			readStart := time.Now().UnixNano()
 			_ = src.SetReadDeadline(time.Now().Add(defaultIdleTimeout))
 			n, err := src.Read(buf)
 			if n > 0 {
@@ -87,6 +88,9 @@ func (p *MITMProxy) tunnelCapture(t *captureTunnel) {
 				}
 			}
 			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() && t.lastActivity.Load() > readStart {
+					continue
+				}
 				return
 			}
 		}

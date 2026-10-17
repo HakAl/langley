@@ -522,7 +522,20 @@ func (c *DaemonCLI) DefaultStart(ctx context.Context, force, openBrowser, startP
 		}
 		fmt.Fprintln(c.stdout, captureSummary(cs))
 	} else {
-		fmt.Fprintln(c.stdout, captureSummary(&CaptureStatus{State: capturePassthrough}))
+		var cs *CaptureStatus
+		if !started && c.capture != nil {
+			cs, err = c.capture.SetCapture(ctx, st.APIAddr, c.token(), false, force)
+			if err != nil {
+				fmt.Fprintf(c.stderr, "Error: failed to pause capture: %v\n", err)
+				return 1
+			}
+		} else if c.capture != nil {
+			cs, _ = c.capture.GetCapture(ctx, st.APIAddr, c.token())
+		}
+		if cs == nil || cs.State == "" {
+			cs = &CaptureStatus{State: capturePassthrough}
+		}
+		fmt.Fprintln(c.stdout, captureSummary(cs))
 	}
 	url := "http://" + st.APIAddr
 	fmt.Fprintf(c.stdout, "Proxy:     http://%s\nDashboard: %s\n", st.ProxyAddr, url)
@@ -794,6 +807,11 @@ func (c *DaemonCLI) installServiceUnit(manual bool) error {
   </dict>
   <key>RunAtLoad</key>
   <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>StandardOutPath</key>
   <string>%s</string>
   <key>StandardErrorPath</key>
@@ -816,15 +834,71 @@ Restart=on-failure
 [Install]
 WantedBy=default.target
 `, exe)
-		loadCmd = []string{"systemctl", "--user", "enable", "langley.service"}
+		loadCmd = []string{"systemctl", "--user", "enable", "--now", "langley.service"}
 	}
 	if err := writeFileAtomic(path, []byte(content), 0644); err != nil {
 		return err
 	}
 	if !manual && c.runner != nil && len(loadCmd) > 0 {
-		_ = c.runner.Run(loadCmd[0], loadCmd[1:]...) // best effort: user session bus may not be active
+		if err := c.runner.Run(loadCmd[0], loadCmd[1:]...); err != nil {
+			return fmt.Errorf("activating user service (%s): %w", strings.Join(loadCmd, " "), err)
+		}
 	}
 	return nil
+}
+
+func (c *DaemonCLI) waitForServiceStart(ctx context.Context) *ServerState {
+	if st := c.daemon.Running(ctx); st != nil {
+		return st
+	}
+	pdc, ok := c.daemon.(*ProcessDaemonController)
+	if !ok {
+		return nil
+	}
+	timeout := pdc.readyTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	poll := pdc.poll
+	if poll <= 0 {
+		poll = 25 * time.Millisecond
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if st := pdc.Running(ctx); st != nil {
+			return st
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(poll):
+		}
+	}
+	return nil
+}
+
+func (c *DaemonCLI) unresolvedLiveDaemonPID(stoppedPIDs []int) int {
+	stopped := make(map[int]bool, len(stoppedPIDs))
+	for _, pid := range stoppedPIDs {
+		stopped[pid] = true
+	}
+	var states []ServerState
+	aliveFn := isProcessAlive
+	if pdc, ok := c.daemon.(*ProcessDaemonController); ok {
+		states = candidateStates(pdc.states)
+		if pdc.alive != nil {
+			aliveFn = pdc.alive
+		}
+	} else if c.configDir != "" {
+		store := NewFileStateStoreWithPath(filepath.Join(c.configDir, "state.json"))
+		states = candidateStates(store)
+	}
+	for _, st := range states {
+		if st.PID > 0 && !stopped[st.PID] && aliveFn(st.PID) {
+			return st.PID
+		}
+	}
+	return 0
 }
 
 // Setup generates the CA and combined bundle, installs system trust (unless
@@ -846,9 +920,13 @@ func (c *DaemonCLI) Setup(ctx context.Context, args []string) int {
 
 	certsDir := filepath.Join(c.configDir, "certs")
 	caPath := filepath.Join(certsDir, "ca.crt")
-	if _, err := langleytls.LoadOrCreateCA(certsDir); err != nil {
+	ca, err := langleytls.LoadOrCreateCA(certsDir)
+	if err != nil {
 		fmt.Fprintf(c.stderr, "Error loading/creating CA: %v\n", err)
 		return 1
+	}
+	if _, err := ca.EnsureCombinedBundle(certsDir); err != nil {
+		fmt.Fprintf(c.stderr, "Warning: combined CA bundle unavailable (%v); preserving existing system trust environment\n", err)
 	}
 
 	fmt.Fprintln(c.stdout, "Langley Setup - CA, Daemon & Shell Integration")
@@ -868,17 +946,42 @@ func (c *DaemonCLI) Setup(ctx context.Context, args []string) int {
 	}
 
 	if err := c.installServiceUnit(manual); err != nil {
-		fmt.Fprintf(c.stderr, "Warning: could not write user service unit: %v\n", err)
-	} else if svcPath, _ := c.serviceFile(); svcPath != "" && fileExists(svcPath) {
+		fmt.Fprintf(c.stderr, "Error installing user service unit: %v\n", err)
+		return 1
+	}
+	svcPath, _ := c.serviceFile()
+	if svcPath != "" && fileExists(svcPath) {
 		fmt.Fprintf(c.stdout, "  ✓ Installed service unit %s\n", svcPath)
 	}
 
-	st, _, err := c.daemon.Start(ctx)
-	if err != nil {
-		fmt.Fprintf(c.stderr, "Error starting daemon: %v\n", err)
-		return 1
+	var (
+		st      *ServerState
+		started bool
+	)
+	if !manual && svcPath != "" && c.runner != nil {
+		if st = c.waitForServiceStart(ctx); st != nil {
+			started = true
+		}
 	}
-	fmt.Fprintf(c.stdout, "  ✓ Daemon running in passthrough mode (PID %d, proxy http://%s)\n", st.PID, st.ProxyAddr)
+	if st == nil {
+		st, started, err = c.daemon.Start(ctx)
+		if err != nil {
+			fmt.Fprintf(c.stderr, "Error starting daemon: %v\n", err)
+			return 1
+		}
+	}
+	mode := capturePassthrough
+	if !started && c.capture != nil {
+		cs, err := c.capture.SetCapture(ctx, st.APIAddr, c.token(), false, false)
+		if err != nil {
+			fmt.Fprintf(c.stderr, "Error transitioning daemon to passthrough: %v\n", err)
+			return 1
+		}
+		if cs != nil && cs.State != "" {
+			mode = cs.State
+		}
+	}
+	fmt.Fprintf(c.stdout, "  ✓ Daemon running in %s mode (PID %d, proxy http://%s)\n", mode, st.PID, st.ProxyAddr)
 
 	hookMgr := NewFileShellHookManager(c.configDir, c.homeDir, c.shellPath)
 	if err := hookMgr.Activate(st.ProxyAddr, caPath, st.PID); err != nil {
@@ -931,8 +1034,9 @@ func (c *DaemonCLI) Uninstall(ctx context.Context, args []string) int {
 		}
 	}
 
-	// 1. Stop the daemon. Abort immediately if the daemon cannot be stopped so
-	// state.json and runtime discovery files are never deleted for a live daemon.
+	// 1. Stop the daemon. Abort immediately if the daemon cannot be stopped or if
+	// a recorded live PID could not be verified, so state.json and runtime
+	// discovery files are never deleted for a still-live daemon.
 	pids, err := c.daemon.Stop(ctx)
 	for _, pid := range pids {
 		fmt.Fprintf(c.stdout, "  ✓ Daemon stopped (PID %d)\n", pid)
@@ -945,6 +1049,11 @@ func (c *DaemonCLI) Uninstall(ctx context.Context, args []string) int {
 	if st := c.daemon.Running(ctx); st != nil {
 		report(fmt.Errorf("daemon (PID %d) is still running", st.PID))
 		fmt.Fprintln(c.stderr, "Langley uninstall aborted: daemon is still running")
+		return 1
+	}
+	if unresolvedPID := c.unresolvedLiveDaemonPID(pids); unresolvedPID > 0 {
+		report(fmt.Errorf("recorded daemon (PID %d) is still alive but its health/identity could not be verified", unresolvedPID))
+		fmt.Fprintln(c.stderr, "Langley uninstall aborted: refusing to delete state for an unverified live process")
 		return 1
 	}
 

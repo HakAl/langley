@@ -357,5 +357,31 @@ test.describe('Capture control bar', () => {
     await expect(control(page)).toHaveAttribute('data-state', 'capturing');
     await expect(control(page).locator('.capture-label')).toHaveText('Capturing');
   });
+
+  test('daemon restart with lower revision resets epoch on reconnect and applies subsequent broadcasts', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    const mock = await mockCapture(
+      page,
+      status('capturing', { revision: 5, instance_id: 'daemon-old' }),
+      () => ({ body: status('capturing', { revision: 6, instance_id: 'daemon-old' }) }),
+    );
+
+    await page.goto('/');
+    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+
+    // Simulate daemon restart: new instance starts in passthrough at revision 0.
+    mock.setGet(status('passthrough', { revision: 0, instance_id: 'daemon-new' }));
+    ws().close();
+    await expect(page.getByText('Disconnected')).toBeVisible();
+
+    await expect(control(page)).toHaveAttribute('data-state', 'passthrough', { timeout: 5000 });
+    await expect(page.getByText('Connected')).toBeVisible();
+
+    // New daemon's first WebSocket broadcast has revision 1 (< old revision 5) and must be applied.
+    sendCaptureState(ws(), status('capturing', { revision: 1, instance_id: 'daemon-new' }));
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+  });
 });
+
 

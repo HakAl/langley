@@ -24,10 +24,12 @@ func formatEnvVars(proxyAddr, caPath, goos string) string {
 		sb.WriteString("  # Python (httpx, OpenAI SDK)\n")
 		fmt.Fprintf(&sb, "  $env:HTTPS_PROXY = \"http://%s\"\n", proxyAddr)
 		fmt.Fprintf(&sb, "  $env:HTTP_PROXY = \"http://%s\"\n", proxyAddr)
-		fmt.Fprintf(&sb, "  $env:SSL_CERT_FILE = \"%s\"\n", bundle)
-		sb.WriteString("\n")
-		sb.WriteString("  # Python (requests)\n")
-		fmt.Fprintf(&sb, "  $env:REQUESTS_CA_BUNDLE = \"%s\"\n", bundle)
+		if bundle != "" {
+			fmt.Fprintf(&sb, "  $env:SSL_CERT_FILE = \"%s\"\n", bundle)
+			sb.WriteString("\n")
+			sb.WriteString("  # Python (requests)\n")
+			fmt.Fprintf(&sb, "  $env:REQUESTS_CA_BUNDLE = \"%s\"\n", bundle)
+		}
 	} else {
 		// Unix syntax (Linux, macOS, etc.)
 		sb.WriteString("  # Node.js (Claude CLI, Codex)\n")
@@ -39,10 +41,12 @@ func formatEnvVars(proxyAddr, caPath, goos string) string {
 		sb.WriteString("  # Python (httpx, OpenAI SDK)\n")
 		fmt.Fprintf(&sb, "  export HTTPS_PROXY=http://%s\n", proxyAddr)
 		fmt.Fprintf(&sb, "  export HTTP_PROXY=http://%s\n", proxyAddr)
-		fmt.Fprintf(&sb, "  export SSL_CERT_FILE=%s\n", bundle)
-		sb.WriteString("\n")
-		sb.WriteString("  # Python (requests)\n")
-		fmt.Fprintf(&sb, "  export REQUESTS_CA_BUNDLE=%s\n", bundle)
+		if bundle != "" {
+			fmt.Fprintf(&sb, "  export SSL_CERT_FILE=%s\n", bundle)
+			sb.WriteString("\n")
+			sb.WriteString("  # Python (requests)\n")
+			fmt.Fprintf(&sb, "  export REQUESTS_CA_BUNDLE=%s\n", bundle)
+		}
 	}
 
 	sb.WriteString("\n")

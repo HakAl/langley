@@ -799,8 +799,27 @@ func TestBundlePathForCA(t *testing.T) {
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.crt")
 	if got := bundlePathForCA(caPath); got != caPath {
-		t.Errorf("without bundle = %q, want ca.crt fallback", got)
+		t.Errorf("without bundle (non-existent path) = %q, want synthetic path fallback", got)
 	}
+	if err := os.WriteFile(caPath, []byte("ca-only"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := bundlePathForCA(caPath); got != "" {
+		t.Errorf("real ca.crt without ca-bundle.pem = %q, want empty string so SSL_CERT_FILE/REQUESTS_CA_BUNDLE are omitted", got)
+	}
+	noBundleEnv := strings.Join((&ProxyEnvBuilder{}).Build("127.0.0.1:9090", caPath), "\n")
+	if strings.Contains(noBundleEnv, "SSL_CERT_FILE=") || strings.Contains(noBundleEnv, "REQUESTS_CA_BUNDLE=") {
+		t.Errorf("ProxyEnvBuilder exported CA-only bundle when ca-bundle.pem is missing:\n%s", noBundleEnv)
+	}
+	noBundleActive := string(renderActiveEnv("127.0.0.1:9090", caPath, 1))
+	if strings.Contains(noBundleActive, "SSL_CERT_FILE=") || strings.Contains(noBundleActive, "REQUESTS_CA_BUNDLE=") {
+		t.Errorf("renderActiveEnv exported CA-only bundle when ca-bundle.pem is missing:\n%s", noBundleActive)
+	}
+	noBundlePrinted := formatEnvVars("127.0.0.1:9090", caPath, "linux")
+	if strings.Contains(noBundlePrinted, "SSL_CERT_FILE=") || strings.Contains(noBundlePrinted, "REQUESTS_CA_BUNDLE=") {
+		t.Errorf("formatEnvVars exported CA-only bundle when ca-bundle.pem is missing:\n%s", noBundlePrinted)
+	}
+
 	if got := bundlePathForCA(""); got != "" {
 		t.Errorf("empty = %q", got)
 	}
@@ -1070,6 +1089,22 @@ func TestDefaultStart_StartsDaemonEnablesCaptureAndOpensBrowser(t *testing.T) {
 	}
 }
 
+func TestDefaultStart_PassthroughTransitionsExistingCapturingDaemon(t *testing.T) {
+	tc := newTestCLI(t)
+	tc.daemon.running = testState
+	tc.capture.status = &CaptureStatus{State: captureStopping, DrainingMITMRequests: 1}
+
+	if code := tc.DefaultStart(context.Background(), false, false, true); code != 0 {
+		t.Fatalf("DefaultStart(--passthrough) exit = %d, stderr = %s", code, tc.errOut.String())
+	}
+	if len(tc.capture.calls) != 1 || !tc.capture.calls[0].isSet || tc.capture.calls[0].enabled {
+		t.Fatalf("expected SetCapture(enabled=false) when --passthrough reuses running daemon, got %+v", tc.capture.calls)
+	}
+	if !strings.Contains(tc.out.String(), "Stopping capture — finishing 1 active request(s)…") {
+		t.Fatalf("expected truthful stopping status output, got %q", tc.out.String())
+	}
+}
+
 func TestSetup_CreatesCombinedBundleServiceAndStartsPassthroughDaemon(t *testing.T) {
 	tc := newTestCLI(t)
 	zshrc := filepath.Join(tc.homeDir, ".zshrc")
@@ -1101,6 +1136,24 @@ func TestSetup_CreatesCombinedBundleServiceAndStartsPassthroughDaemon(t *testing
 	}
 }
 
+type failingRunner struct {
+	err error
+}
+
+func (f *failingRunner) Run(string, ...string) error { return f.err }
+
+func TestSetup_PropagatesServiceActivationFailure(t *testing.T) {
+	tc := newTestCLI(t)
+	tc.runner = &fakeRunner{}
+	tc.DaemonCLI.runner = &failingRunner{err: errors.New("systemctl --user failed")}
+	if code := tc.Setup(context.Background(), []string{"--manual"}); code != 1 {
+		t.Fatalf("Setup exit = %d, want 1 when service activation fails", code)
+	}
+	if !strings.Contains(tc.errOut.String(), "service installation failed") {
+		t.Fatalf("stderr = %q, want service installation failed", tc.errOut.String())
+	}
+}
+
 func TestUninstall_AbortsWhenDaemonStopFails(t *testing.T) {
 	tc := newTestCLI(t)
 	tc.daemon.running = testState
@@ -1122,5 +1175,40 @@ func TestUninstall_AbortsWhenDaemonStopFails(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(f.zshrc); !strings.Contains(string(got), hookStartMarker) {
 		t.Error("Uninstall stripped .zshrc hook despite daemon still running")
+	}
+}
+
+func TestUninstall_PreservesUnverifiableLiveDaemon(t *testing.T) {
+	tc := newTestCLI(t)
+	f := setupUninstall(t, tc)
+
+	// Write a valid ServerState whose PID is alive (current process PID), while
+	// daemon.Stop() returns 0 stopped PIDs and nil error (simulating an unreachable/unverified /api/health).
+	store := NewFileStateStoreWithPath(filepath.Join(f.configDir, "state.json"))
+	if err := store.Write(ServerState{
+		InstanceID: "unverified-live",
+		ProxyAddr:  "127.0.0.1:9090",
+		APIAddr:    "127.0.0.1:9091",
+		PID:        os.Getpid(),
+		StartedAt:  time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := tc.Execute(context.Background(), "uninstall", []string{"--yes"}); code != 1 {
+		t.Fatalf("Uninstall exit = %d, want 1 when a live daemon PID could not be verified/stopped", code)
+	}
+	for _, path := range []string{
+		f.service,
+		filepath.Join(f.configDir, "state.json"),
+		filepath.Join(f.configDir, "certs", "ca.crt"),
+		filepath.Join(f.configDir, "active.env"),
+	} {
+		if !fileExists(path) {
+			t.Errorf("Uninstall deleted %s despite unverifiable live daemon PID", path)
+		}
+	}
+	if got, _ := os.ReadFile(f.zshrc); !strings.Contains(string(got), hookStartMarker) {
+		t.Error("Uninstall stripped .zshrc hook despite unverifiable live daemon PID")
 	}
 }

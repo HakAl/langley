@@ -41,17 +41,16 @@ stateDiagram-v2
 | Capture State | Proxy Behavior on New `CONNECT` | Existing Connections | UI / CLI Status Label |
 |---|---|---|---|
 | **`passthrough`** | Raw TCP tunnel for all hosts. TLS payloads are not decrypted, parsed, or stored. | Only raw TCP tunnels exist (`active_mitm_requests == 0`, persistence queue idle). | `Passthrough — TLS payloads are not decrypted, parsed, or stored` |
-| **`enabling`** | Target hosts (`intercept_hosts`) are MITM-intercepted; non-target hosts tunnel untouched. | Idle target passthrough tunnels were closed immediately; `draining_passthrough_tunnels > 0` active tunnels are finishing their current transfer before closing on idle. | `Capturing (N active connection(s) will switch after current request)` + `[Force switch now]` |
+| **`enabling`** | Target hosts (`intercept_hosts`) are MITM-intercepted; non-target hosts tunnel untouched. | Existing target passthrough tunnels (`draining_passthrough_tunnels > 0`) are preserved as draining so active streams (including quiet think pauses) never abort mid-turn. | `Capturing (N active connection(s) will switch after current request)` + `[Force switch now]` |
 | **`capturing`** | Target hosts (`intercept_hosts`) are MITM-intercepted; non-target hosts tunnel untouched. | `draining_passthrough_tunnels == 0`. All target connections are MITM-intercepted. | `Capturing — intercepting configured LLM hosts` |
 | **`stopping`** | Raw TCP tunnel for all new `CONNECT` requests immediately. | Idle MITM keep-alive sockets closed immediately; `draining_mitm_requests > 0` in-flight MITM requests/streams are finishing and flushing to SQLite, then their sockets close. | `Stopping capture — finishing N active request(s)…` + `[Abort active requests]` |
 
 ### 2.3 Connection Draining Mechanics
 - **Passthrough → Capture (`enabling` → `capturing`):**
-  - The proxy tracks open passthrough tunnels whose `host` matches `intercept_hosts`, recording `lastActivity` timestamps on every directional byte copy.
-  - When capture is enabled:
-    1. Any target passthrough tunnel already idle for `>= 500ms` at the time capture is enabled is closed immediately so the client's HTTP keep-alive pool reconnects through MITM on its next request.
-    2. Any target passthrough tunnel with recent traffic (`< 500ms` since last byte) is marked `draining` (`enabling` state) and allowed to complete without sub-second read-deadline termination (so model think pauses never abort an in-flight stream) until natural connection closure.
-    3. Clicking **Force switch now** (or `langley --force`) closes remaining `draining` target passthrough tunnels immediately.
+  - The proxy tracks open passthrough tunnels whose `host` matches `intercept_hosts`, recording shared `lastActivity` timestamps across both directions so one-way SSE streams never time out on the quiet direction while the opposite direction is active.
+  - Because opaque passthrough TLS tunnels have no HTTP framing visibility to distinguish an idle keep-alive socket from an active SSE stream during a multi-second model think pause, when capture is enabled:
+    1. With `force=false` (`SetCapture(true, false)`), any open target passthrough tunnel is marked `draining` (`enabling` state with `draining_passthrough_tunnels > 0`) and preserved until natural closure (or shared idle timeout across both directions), guaranteeing that an active streamed turn is never aborted regardless of think-pause duration.
+    2. Clicking **Force switch now** (or `langley --force` / `SetCapture(true, true)`) closes remaining `draining` target passthrough tunnels immediately and transitions to `capturing`.
 - **Capture → Passthrough (`stopping` → `passthrough`):**
   - In MITM mode (`internal/proxy/mitm.go`), Langley demarcates individual HTTP request/response lifecycles on each TLS connection:
     1. Idle MITM keep-alive connections (not currently between request start and response/SSE completion) are closed immediately when pause is requested.

@@ -49,13 +49,29 @@ type CaptureStatus struct {
 	DrainingMITMRequests       int      `json:"draining_mitm_requests"`
 	InterceptHosts             []string `json:"intercept_hosts"`
 	ProxyAddr                  string   `json:"proxy_addr,omitempty"`
-	Revision                   uint64   `json:"revision,omitempty"`
+	InstanceID                 string   `json:"instance_id,omitempty"`
+	Revision                   uint64   `json:"revision"`
 }
 
 // captureSession owns the raw transports; busy spans processing and persistence.
 type captureSession struct {
-	client, upstream net.Conn
-	busy             bool
+	client, upstream  net.Conn
+	busy              bool
+	awaitingFirstByte bool
+}
+
+type captureAdmissionReader struct {
+	r       io.Reader
+	p       *MITMProxy
+	session *captureSession
+}
+
+func (a *captureAdmissionReader) Read(b []byte) (int, error) {
+	n, err := a.r.Read(b)
+	if n > 0 {
+		a.p.admitMITMFirstByte(a.session)
+	}
+	return n, err
 }
 
 type captureTunnel struct {
@@ -809,34 +825,76 @@ func (p *MITMProxy) serveTLSConnection(clientConn *tls.Conn, upstreamConn *tls.C
 	p.serveTLSCaptureSession(clientConn, upstreamConn, host, session)
 }
 
+func (p *MITMProxy) admitMITMFirstByte(session *captureSession) {
+	p.captureMu.Lock()
+	if session.awaitingFirstByte && p.captureWanted {
+		session.awaitingFirstByte = false
+		session.busy = true
+		p.inFlightMITMRequests++
+	}
+	p.captureMu.Unlock()
+}
+
+func (p *MITMProxy) cancelMITMAdmission(session *captureSession) {
+	p.captureMu.Lock()
+	session.awaitingFirstByte = false
+	wasBusy := session.busy
+	if wasBusy {
+		before := p.captureStatusLocked()
+		session.busy = false
+		p.inFlightMITMRequests--
+		_ = p.recordTransitionLocked(before)
+	}
+	p.captureMu.Unlock()
+	if wasBusy {
+		p.flushCaptureNotifications()
+	}
+}
+
 func (p *MITMProxy) serveTLSCaptureSession(clientConn, upstreamConn *tls.Conn, host string, session *captureSession) {
-	clientReader := bufio.NewReader(clientConn)
+	clientReader := bufio.NewReader(&captureAdmissionReader{r: clientConn, p: p, session: session})
 	upstreamReader := bufio.NewReader(upstreamConn)
 
 	for {
-		if !p.isCaptureWanted() {
-			_ = session.client.Close()
-			_ = session.upstream.Close()
-			return
-		}
-		// Wait for the first byte of a request while session.busy is false so
-		// genuinely idle keep-alive sessions can be closed immediately on pause.
-		if _, err := clientReader.Peek(1); err != nil {
-			if err != io.EOF {
-				p.logger.Debug("error awaiting request from TLS connection", "host", host, "error", err)
-			}
-			return
-		}
 		p.captureMu.Lock()
 		if !p.captureWanted {
 			p.captureMu.Unlock()
 			_ = session.client.Close()
-			_ = session.upstream.Close()
+			if session.upstream != nil {
+				_ = session.upstream.Close()
+			}
 			return
 		}
-		session.busy = true
-		p.inFlightMITMRequests++
+		if clientReader.Buffered() > 0 {
+			session.awaitingFirstByte = false
+			session.busy = true
+			p.inFlightMITMRequests++
+		} else {
+			session.awaitingFirstByte = true
+		}
 		p.captureMu.Unlock()
+
+		// Wait for the first byte of a request while session.busy is false so
+		// genuinely idle keep-alive sessions can be closed immediately on pause.
+		// captureAdmissionReader marks session.busy = true inside Read() as soon
+		// as the first byte arrives, before Peek(1) returns.
+		if _, err := clientReader.Peek(1); err != nil {
+			if err != io.EOF {
+				p.logger.Debug("error awaiting request from TLS connection", "host", host, "error", err)
+			}
+			p.cancelMITMAdmission(session)
+			return
+		}
+		p.captureMu.Lock()
+		admitted := session.busy
+		p.captureMu.Unlock()
+		if !admitted {
+			_ = session.client.Close()
+			if session.upstream != nil {
+				_ = session.upstream.Close()
+			}
+			return
+		}
 
 		// Read full request headers from client now that the session is marked busy.
 		req, err := http.ReadRequest(clientReader)
@@ -1456,9 +1514,13 @@ func (p *MITMProxy) CaptureStatus() CaptureStatus {
 
 func (p *MITMProxy) captureStatusLocked() CaptureStatus {
 	hosts := []string{"api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "bedrock-runtime.*.amazonaws.com"}
+	var configured []string
+	if p.cfg != nil {
+		configured = p.cfg.Proxy.InterceptHosts
+	}
 	seen := make(map[string]bool)
-	result := make([]string, 0, len(hosts)+len(p.cfg.Proxy.InterceptHosts))
-	for _, h := range append(hosts, p.cfg.Proxy.InterceptHosts...) {
+	result := make([]string, 0, len(hosts)+len(configured))
+	for _, h := range append(hosts, configured...) {
 		if !seen[h] {
 			seen[h] = true
 			result = append(result, h)
@@ -1535,8 +1597,7 @@ func (p *MITMProxy) SetCapture(enabled bool, force bool) CaptureStatus {
 			t.draining = false
 			continue
 		}
-		last := t.lastActivity.Load()
-		if force || last == 0 || time.Since(time.Unix(0, last)) >= p.passthroughIdleThreshold {
+		if force {
 			_ = t.client.Close()
 			_ = t.upstream.Close()
 			delete(p.captureTunnels, t)
@@ -1547,6 +1608,7 @@ func (p *MITMProxy) SetCapture(enabled bool, force bool) CaptureStatus {
 	if !enabled {
 		for session := range p.captureSessions {
 			if force || !session.busy {
+				session.awaitingFirstByte = false
 				_ = session.client.Close()
 				if session.upstream != nil {
 					_ = session.upstream.Close()

@@ -42,6 +42,7 @@ export interface CaptureStatus {
   draining_mitm_requests: number
   intercept_hosts: string[]
   proxy_addr?: string
+  instance_id?: string
   revision?: number
 }
 

@@ -331,7 +331,10 @@ const noProxyHosts = "localhost,127.0.0.1,::1,.local"
 
 // bundlePathForCA returns the combined system+Langley ca-bundle.pem next to
 // caPath when it exists, so OpenSSL/Python clients keep trusting public CAs on
-// non-intercepted connections. Falls back to caPath otherwise.
+// non-intercepted connections. When caPath is an actual file on disk without a
+// sibling ca-bundle.pem (e.g. system roots were unavailable), it returns "" so
+// callers preserve the client's existing SSL_CERT_FILE / REQUESTS_CA_BUNDLE
+// instead of replacing system trust with a CA-only certificate.
 func bundlePathForCA(caPath string) string {
 	if caPath == "" {
 		return caPath
@@ -339,6 +342,9 @@ func bundlePathForCA(caPath string) string {
 	bundle := filepath.Join(filepath.Dir(caPath), "ca-bundle.pem")
 	if fileExists(bundle) {
 		return bundle
+	}
+	if fileExists(caPath) {
+		return ""
 	}
 	return caPath
 }
@@ -360,9 +366,11 @@ func (b *ProxyEnvBuilder) Build(proxyAddr, caPath string) []string {
 		"NO_PROXY":            noProxyHosts,
 		"no_proxy":            noProxyHosts,
 		"NODE_EXTRA_CA_CERTS": caPath,
-		"SSL_CERT_FILE":       bundle,
-		"REQUESTS_CA_BUNDLE":  bundle,
 		"LANGLEY_ACTIVE":      "1",
+	}
+	if bundle != "" {
+		overrides["SSL_CERT_FILE"] = bundle
+		overrides["REQUESTS_CA_BUNDLE"] = bundle
 	}
 
 	// Build case-insensitive lookup for filtering.
@@ -571,10 +579,14 @@ func renderActiveEnv(proxyAddr, caPath string, pid int) []byte {
 		{"NO_PROXY", noProxyHosts},
 		{"no_proxy", noProxyHosts},
 		{"NODE_EXTRA_CA_CERTS", caPath},
-		{"SSL_CERT_FILE", bundle},
-		{"REQUESTS_CA_BUNDLE", bundle},
-		{"LANGLEY_ACTIVE", "1"},
 	}
+	if bundle != "" {
+		vars = append(vars,
+			struct{ k, v string }{"SSL_CERT_FILE", bundle},
+			struct{ k, v string }{"REQUESTS_CA_BUNDLE", bundle},
+		)
+	}
+	vars = append(vars, struct{ k, v string }{"LANGLEY_ACTIVE", "1"})
 	var b strings.Builder
 	b.WriteString(activeEnvHeader)
 	fmt.Fprintf(&b, "if kill -0 %d 2>/dev/null; then\n", pid)
