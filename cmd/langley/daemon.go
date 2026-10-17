@@ -431,6 +431,7 @@ type DaemonCLI struct {
 	browser   BrowserOpener
 	trust     TrustStoreUninstaller
 	runner    CommandRunner
+	installCA func(caPath string)
 	loadCfg   func() (*config.Config, error)
 	configDir string
 	homeDir   string
@@ -459,6 +460,7 @@ func NewDaemonCLI() (*DaemonCLI, error) {
 		browser:   NewOSBrowserOpener(),
 		trust:     NewOSTrustStoreUninstaller(runner),
 		runner:    runner,
+		installCA: installSystemCA,
 		loadCfg:   func() (*config.Config, error) { return config.Load("") },
 		configDir: configDir,
 		homeDir:   home,
@@ -940,7 +942,11 @@ func (c *DaemonCLI) Setup(ctx context.Context, args []string) int {
 
 	manual := *manualOnly || *skipMkcert
 	if !manual {
-		installSystemCA(caPath)
+		if c.installCA != nil {
+			c.installCA(caPath)
+		} else {
+			installSystemCA(caPath)
+		}
 	} else {
 		printManualInstructions(caPath)
 	}

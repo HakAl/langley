@@ -1143,14 +1143,19 @@ type failingRunner struct {
 func (f *failingRunner) Run(string, ...string) error { return f.err }
 
 func TestSetup_PropagatesServiceActivationFailure(t *testing.T) {
-	tc := newTestCLI(t)
-	tc.runner = &fakeRunner{}
-	tc.DaemonCLI.runner = &failingRunner{err: errors.New("systemctl --user failed")}
-	if code := tc.Setup(context.Background(), []string{"--manual"}); code != 1 {
-		t.Fatalf("Setup exit = %d, want 1 when service activation fails", code)
-	}
-	if !strings.Contains(tc.errOut.String(), "service installation failed") {
-		t.Fatalf("stderr = %q, want service installation failed", tc.errOut.String())
+	for _, platform := range []string{"linux", "darwin"} {
+		t.Run(platform, func(t *testing.T) {
+			tc := newTestCLI(t)
+			tc.goos = platform
+			tc.installCA = func(string) {}
+			tc.DaemonCLI.runner = &failingRunner{err: errors.New("synthetic service activation failure")}
+			if code := tc.Setup(context.Background(), nil); code != 1 {
+				t.Fatalf("Setup exit = %d, want 1 when service activation fails", code)
+			}
+			if !strings.Contains(tc.errOut.String(), "Error installing user service unit") {
+				t.Fatalf("stderr = %q, want Error installing user service unit", tc.errOut.String())
+			}
+		})
 	}
 }
 
