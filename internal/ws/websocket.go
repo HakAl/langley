@@ -22,26 +22,6 @@ import (
 // sessionCookieName must match the cookie name used in api package.
 const sessionCookieName = "langley_session"
 
-// isLocalhostOrigin checks if the Origin header indicates a localhost request.
-func isLocalhostOrigin(origin string) bool {
-	u, err := url.Parse(origin)
-	if err != nil || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return false
-	}
-	h := u.Hostname()
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
-}
-
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		// Only allow localhost origins
-		origin := r.Header.Get("Origin")
-		return origin == "" || isLocalhostOrigin(origin)
-	},
-}
-
 // Hub manages WebSocket connections and message broadcasting.
 type Hub struct {
 	apiAddr    string // protected by mu
@@ -220,6 +200,58 @@ func (h *Hub) ClientCount() int {
 	return len(h.clients)
 }
 
+func wsHostname(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return strings.ToLower(strings.Trim(host, "[]"))
+	}
+	return strings.ToLower(strings.Trim(addr, "[]"))
+}
+
+func (h *Hub) expectedAPIPort(reqHost string) string {
+	h.mu.RLock()
+	apiAddr := h.apiAddr
+	h.mu.RUnlock()
+	if _, port, err := net.SplitHostPort(apiAddr); err == nil && port != "" && port != "0" {
+		return port
+	}
+	if _, port, err := net.SplitHostPort(reqHost); err == nil && port != "" && port != "0" {
+		return port
+	}
+	return ""
+}
+
+func (h *Hub) isAllowedHost(reqHost string) bool {
+	host := wsHostname(reqHost)
+	h.mu.RLock()
+	apiAddr := h.apiAddr
+	h.mu.RUnlock()
+	allowed := wsHostname(apiAddr)
+	if host != "" && host != "localhost" && host != "127.0.0.1" && host != "::1" && host != allowed {
+		return false
+	}
+	if _, apiPort, err := net.SplitHostPort(apiAddr); err == nil && apiPort != "" && apiPort != "0" {
+		if _, reqPort, err := net.SplitHostPort(reqHost); err == nil && reqPort != "" && reqPort != apiPort {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Hub) isAllowedOrigin(origin, reqHost string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	h.mu.RLock()
+	allowedHost := wsHostname(h.apiAddr)
+	h.mu.RUnlock()
+	if host != "localhost" && host != "127.0.0.1" && host != "::1" && (allowedHost == "" || host != allowedHost) {
+		return false
+	}
+	return u.Port() == h.expectedAPIPort(reqHost)
+}
+
 // Handler returns an HTTP handler for WebSocket connections.
 // Uses constant-time comparison to prevent timing attacks.
 // NOTE: Token is read from h.cfg.Auth.Token to support hot-reload.
@@ -230,19 +262,7 @@ func (h *Hub) ClientCount() int {
 // 3. Token query param - for CLI (WebSocket can't set headers easily)
 func (h *Hub) Handler(authToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		host = strings.ToLower(strings.Trim(host, "[]"))
-		h.mu.RLock()
-		allowed := h.apiAddr
-		h.mu.RUnlock()
-		if a, _, err := net.SplitHostPort(allowed); err == nil {
-			allowed = a
-		}
-		allowed = strings.ToLower(strings.Trim(allowed, "[]"))
-		if host != "" && host != "localhost" && host != "127.0.0.1" && host != "::1" && host != allowed {
+		if !h.isAllowedHost(r.Host) {
 			http.Error(w, "Forbidden: invalid Host", http.StatusForbidden)
 			return
 		}
@@ -279,7 +299,7 @@ func (h *Hub) Handler(authToken string) http.HandlerFunc {
 
 		// Validate Origin if present (security check)
 		origin := r.Header.Get("Origin")
-		if origin != "" && !isLocalhostOrigin(origin) {
+		if origin != "" && !h.isAllowedOrigin(origin, r.Host) {
 			h.logger.Warn("rejected non-localhost WebSocket origin", "origin", origin)
 			http.Error(w, "Forbidden: non-localhost origin", http.StatusForbidden)
 			return
@@ -290,7 +310,15 @@ func (h *Hub) Handler(authToken string) http.HandlerFunc {
 			return
 		}
 
-		conn, err := upgrader.Upgrade(w, r, nil)
+		wsUpgrader := websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			CheckOrigin: func(req *http.Request) bool {
+				reqOrigin := req.Header.Get("Origin")
+				return reqOrigin == "" || h.isAllowedOrigin(reqOrigin, req.Host)
+			},
+		}
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
 		if err != nil {
 			h.logger.Error("failed to upgrade connection", "error", err)
 			return

@@ -65,6 +65,13 @@ func isLangleyEnvActive(reader StateReader) bool {
 	return false
 }
 
+func checkStateHealth(ctx context.Context, health HealthChecker, state ServerState) error {
+	if ih, ok := health.(InstanceHealthChecker); ok {
+		return ih.CheckInstance(ctx, state)
+	}
+	return health.Check(ctx, state.APIAddr)
+}
+
 // runningInstance checks both process ownership and HTTP readiness before attaching.
 func runningInstance(ctx context.Context, reader StateReader, health HealthChecker) *ServerState {
 	for _, state := range candidateStates(reader) {
@@ -72,7 +79,7 @@ func runningInstance(ctx context.Context, reader StateReader, health HealthCheck
 			continue
 		}
 		healthCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		err := health.Check(healthCtx, state.APIAddr)
+		err := checkStateHealth(healthCtx, health, state)
 		cancel()
 		if err == nil {
 			s := state
@@ -118,6 +125,13 @@ type StateWriter interface {
 // HealthChecker verifies the server is responding.
 type HealthChecker interface {
 	Check(ctx context.Context, apiAddr string) error
+}
+
+// InstanceHealthChecker verifies that the /api/health endpoint belongs to the
+// specific Langley ServerState record (PID, instance_id, addresses).
+type InstanceHealthChecker interface {
+	HealthChecker
+	CheckInstance(ctx context.Context, state ServerState) error
 }
 
 // EnvBuilder constructs the proxy environment.
@@ -244,11 +258,19 @@ type HTTPHealthChecker struct {
 	client *http.Client // nil uses http.DefaultClient
 }
 
-// Check verifies the server is healthy by hitting the health endpoint.
-func (h *HTTPHealthChecker) Check(ctx context.Context, apiAddr string) error {
+type healthPayload struct {
+	Status     string `json:"status"`
+	Service    string `json:"service"`
+	InstanceID string `json:"instance_id"`
+	PID        int    `json:"pid"`
+	ProxyAddr  string `json:"proxy_addr"`
+	APIAddr    string `json:"api_addr"`
+}
+
+func (h *HTTPHealthChecker) fetchHealth(ctx context.Context, apiAddr string) (*healthPayload, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://"+apiAddr+"/api/health", nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	client := h.client
 	if client == nil {
@@ -256,20 +278,49 @@ func (h *HTTPHealthChecker) Check(ctx context.Context, apiAddr string) error {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("health check returned %d", resp.StatusCode)
+		return nil, fmt.Errorf("health check returned %d", resp.StatusCode)
 	}
-	// Reject a different service that happens to own the port. Older Langley
-	// builds omit "service", so only a present, mismatched value fails.
-	var body struct {
-		Service string `json:"service"`
+	var body healthPayload
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("health check: invalid JSON: %w", err)
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err == nil &&
-		body.Service != "" && body.Service != "langley" {
-		return fmt.Errorf("health check: unexpected service %q", body.Service)
+	if body.Service != "" && body.Service != "langley" {
+		return nil, fmt.Errorf("health check: unexpected service %q", body.Service)
+	}
+	return &body, nil
+}
+
+// Check verifies the server is healthy by hitting the health endpoint.
+func (h *HTTPHealthChecker) Check(ctx context.Context, apiAddr string) error {
+	_, err := h.fetchHealth(ctx, apiAddr)
+	return err
+}
+
+// CheckInstance verifies that /api/health belongs to the specific Langley
+// instance described by state before attaching or signaling its PID.
+func (h *HTTPHealthChecker) CheckInstance(ctx context.Context, state ServerState) error {
+	body, err := h.fetchHealth(ctx, state.APIAddr)
+	if err != nil {
+		return err
+	}
+	if body.Service != "langley" {
+		return fmt.Errorf("health check: missing or unexpected service %q", body.Service)
+	}
+	if state.PID > 0 && body.PID != state.PID {
+		return fmt.Errorf("health check: PID mismatch (got %d, want %d)", body.PID, state.PID)
+	}
+	if state.InstanceID != "" && body.InstanceID != state.InstanceID {
+		return fmt.Errorf("health check: instance_id mismatch (got %q, want %q)", body.InstanceID, state.InstanceID)
+	}
+	if state.ProxyAddr != "" && body.ProxyAddr != "" && body.ProxyAddr != state.ProxyAddr {
+		return fmt.Errorf("health check: proxy_addr mismatch (got %q, want %q)", body.ProxyAddr, state.ProxyAddr)
+	}
+	if state.APIAddr != "" && body.APIAddr != "" && body.APIAddr != state.APIAddr {
+		return fmt.Errorf("health check: api_addr mismatch (got %q, want %q)", body.APIAddr, state.APIAddr)
 	}
 	return nil
 }

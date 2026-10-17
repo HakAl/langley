@@ -653,3 +653,70 @@ func TestLocalhostOriginExactHostname(t *testing.T) {
 		}
 	}
 }
+
+func TestLoopbackAuth_PortBoundAndCookieBootstrap(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Token = "test-token"
+	ctrl := &captureStub{status: CaptureStatus{State: "passthrough"}}
+	srv := NewServer(cfg, &mockStore{}, nil,
+		WithCaptureController(ctrl),
+		WithDaemonMeta(DaemonMeta{InstanceID: "inst-1", PID: 100, ProxyAddr: "127.0.0.1:9090", APIAddr: "127.0.0.1:9091"}),
+	)
+
+	// 1. Cross-port Origin must not bootstrap a cookie or mutate capture state.
+	req := httptest.NewRequest(http.MethodPost, "/api/capture", strings.NewReader(`{"enabled":true}`))
+	req.Host = "127.0.0.1:9091"
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Sec-Fetch-Site", "same-site")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK || ctrl.status.State == "capturing" {
+		t.Fatalf("cross-port Origin POST succeeded (status=%d, state=%s)", rec.Code, ctrl.status.State)
+	}
+
+	// 2. Cross-port Sec-Fetch-Site: same-site GET must not mint a session cookie.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/capture", nil)
+	getReq.Host = "localhost:9091"
+	getReq.Header.Set("Origin", "http://localhost:3000")
+	getReq.Header.Set("Sec-Fetch-Site", "same-site")
+	getRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRec, getReq)
+	if getRec.Code == http.StatusOK {
+		t.Fatalf("cross-port same-site GET succeeded with status %d", getRec.Code)
+	}
+
+	// 3. Mismatched Host port is rejected with 403.
+	wrongPortReq := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	wrongPortReq.Host = "127.0.0.1:9999"
+	wrongPortRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(wrongPortRec, wrongPortReq)
+	if wrongPortRec.Code != http.StatusForbidden {
+		t.Fatalf("mismatched Host port status = %d, want 403", wrongPortRec.Code)
+	}
+
+	// 4. Same-origin GET on exact API port bootstraps cookie, which then works on same-origin POST.
+	bootReq := httptest.NewRequest(http.MethodGet, "/api/capture", nil)
+	bootReq.Host = "127.0.0.1:9091"
+	bootReq.Header.Set("Sec-Fetch-Site", "same-origin")
+	bootRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(bootRec, bootReq)
+	if bootRec.Code != http.StatusOK {
+		t.Fatalf("same-origin GET status = %d, want 200", bootRec.Code)
+	}
+	cookies := bootRec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("expected session cookie on same-origin GET")
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/capture", strings.NewReader(`{"enabled":true}`))
+	postReq.Host = "127.0.0.1:9091"
+	postReq.Header.Set("Origin", "http://127.0.0.1:9091")
+	for _, c := range cookies {
+		postReq.AddCookie(c)
+	}
+	postRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusOK || ctrl.status.State != "capturing" {
+		t.Fatalf("same-origin POST with session cookie failed: status=%d state=%s", postRec.Code, ctrl.status.State)
+	}
+}

@@ -49,6 +49,7 @@ type CaptureStatus struct {
 	DrainingMITMRequests       int      `json:"draining_mitm_requests"`
 	InterceptHosts             []string `json:"intercept_hosts"`
 	ProxyAddr                  string   `json:"proxy_addr,omitempty"`
+	Revision                   uint64   `json:"revision,omitempty"`
 }
 
 // captureSession owns the raw transports; busy spans processing and persistence.
@@ -73,6 +74,9 @@ type MITMProxy struct {
 	passthroughIdleThreshold time.Duration
 	proxyAddr                string
 	onCaptureStateChange     func(CaptureStatus)
+	captureRevision          uint64
+	notifyQueue              []CaptureStatus
+	notifying                bool
 
 	cfg          *config.Config
 	logger       *slog.Logger
@@ -815,18 +819,17 @@ func (p *MITMProxy) serveTLSCaptureSession(clientConn, upstreamConn *tls.Conn, h
 			_ = session.upstream.Close()
 			return
 		}
-		// Read request from client
-		req, err := http.ReadRequest(clientReader)
-		if err != nil {
+		// Wait for the first byte of a request while session.busy is false so
+		// genuinely idle keep-alive sessions can be closed immediately on pause.
+		if _, err := clientReader.Peek(1); err != nil {
 			if err != io.EOF {
-				p.logger.Debug("error reading request from TLS connection", "host", host, "error", err)
+				p.logger.Debug("error awaiting request from TLS connection", "host", host, "error", err)
 			}
 			return
 		}
 		p.captureMu.Lock()
 		if !p.captureWanted {
 			p.captureMu.Unlock()
-			_ = req.Body.Close()
 			_ = session.client.Close()
 			_ = session.upstream.Close()
 			return
@@ -834,6 +837,16 @@ func (p *MITMProxy) serveTLSCaptureSession(clientConn, upstreamConn *tls.Conn, h
 		session.busy = true
 		p.inFlightMITMRequests++
 		p.captureMu.Unlock()
+
+		// Read full request headers from client now that the session is marked busy.
+		req, err := http.ReadRequest(clientReader)
+		if err != nil {
+			if err != io.EOF {
+				p.logger.Debug("error reading request from TLS connection", "host", host, "error", err)
+			}
+			p.finishMITMRequest(session, true)
+			return
+		}
 		p.logger.Debug("read request from TLS connection", "host", host, "method", req.Method, "path", req.URL.Path)
 
 		// Fix up the request URL
@@ -842,18 +855,7 @@ func (p *MITMProxy) serveTLSCaptureSession(clientConn, upstreamConn *tls.Conn, h
 
 		// Handle this request
 		p.handleTLSRequest(req, clientConn, upstreamConn, upstreamReader, host)
-		p.captureMu.Lock()
-		p.inFlightMITMRequests--
-		session.busy = false
-		paused := !p.captureWanted
-		status := p.captureStatusLocked()
-		p.captureMu.Unlock()
-		if paused {
-			_ = session.client.Close()
-			_ = session.upstream.Close()
-			if status.DrainingMITMRequests == 0 {
-				p.notifyCapture(status)
-			}
+		if p.finishMITMRequest(session, false) {
 			return
 		}
 	}
@@ -1462,7 +1464,12 @@ func (p *MITMProxy) captureStatusLocked() CaptureStatus {
 			result = append(result, h)
 		}
 	}
-	status := CaptureStatus{State: CaptureStatePassthrough, InterceptHosts: result, ProxyAddr: p.proxyAddr}
+	status := CaptureStatus{
+		State:          CaptureStatePassthrough,
+		InterceptHosts: result,
+		ProxyAddr:      p.proxyAddr,
+		Revision:       p.captureRevision,
+	}
 	if p.captureWanted {
 		status.State = CaptureStateCapturing
 		for t := range p.captureTunnels {
@@ -1482,10 +1489,41 @@ func (p *MITMProxy) captureStatusLocked() CaptureStatus {
 	return status
 }
 
-func (p *MITMProxy) notifyCapture(status CaptureStatus) {
-	if p.onCaptureStateChange != nil {
-		p.onCaptureStateChange(status)
+func captureStatusChanged(before, after CaptureStatus) bool {
+	return before.State != after.State ||
+		before.DrainingPassthroughTunnels != after.DrainingPassthroughTunnels ||
+		before.DrainingMITMRequests != after.DrainingMITMRequests
+}
+
+func (p *MITMProxy) recordTransitionLocked(before CaptureStatus) CaptureStatus {
+	after := p.captureStatusLocked()
+	if captureStatusChanged(before, after) {
+		p.captureRevision++
+		after.Revision = p.captureRevision
+		p.notifyQueue = append(p.notifyQueue, after)
 	}
+	return after
+}
+
+func (p *MITMProxy) flushCaptureNotifications() {
+	p.captureMu.Lock()
+	if p.notifying || len(p.notifyQueue) == 0 {
+		p.captureMu.Unlock()
+		return
+	}
+	p.notifying = true
+	for len(p.notifyQueue) > 0 {
+		next := p.notifyQueue[0]
+		p.notifyQueue = p.notifyQueue[1:]
+		cb := p.onCaptureStateChange
+		p.captureMu.Unlock()
+		if cb != nil {
+			cb(next)
+		}
+		p.captureMu.Lock()
+	}
+	p.notifying = false
+	p.captureMu.Unlock()
 }
 
 func (p *MITMProxy) SetCapture(enabled bool, force bool) CaptureStatus {
@@ -1495,8 +1533,6 @@ func (p *MITMProxy) SetCapture(enabled bool, force bool) CaptureStatus {
 	for t := range p.captureTunnels {
 		if !enabled {
 			t.draining = false
-			_ = t.client.SetReadDeadline(time.Time{})
-			_ = t.upstream.SetReadDeadline(time.Time{})
 			continue
 		}
 		last := t.lastActivity.Load()
@@ -1506,9 +1542,6 @@ func (p *MITMProxy) SetCapture(enabled bool, force bool) CaptureStatus {
 			delete(p.captureTunnels, t)
 		} else {
 			t.draining = true
-			deadline := time.Unix(0, last).Add(p.passthroughIdleThreshold)
-			_ = t.client.SetReadDeadline(deadline)
-			_ = t.upstream.SetReadDeadline(deadline)
 		}
 	}
 	if !enabled {
@@ -1521,11 +1554,9 @@ func (p *MITMProxy) SetCapture(enabled bool, force bool) CaptureStatus {
 			}
 		}
 	}
-	status := p.captureStatusLocked()
+	status := p.recordTransitionLocked(before)
 	p.captureMu.Unlock()
-	if status.State != before.State || status.DrainingPassthroughTunnels != before.DrainingPassthroughTunnels || status.DrainingMITMRequests != before.DrainingMITMRequests {
-		p.notifyCapture(status)
-	}
+	p.flushCaptureNotifications()
 	return status
 }
 
@@ -1533,9 +1564,25 @@ func (p *MITMProxy) finishCaptureTunnel(t *captureTunnel) {
 	p.captureMu.Lock()
 	before := p.captureStatusLocked()
 	delete(p.captureTunnels, t)
-	status := p.captureStatusLocked()
+	_ = p.recordTransitionLocked(before)
 	p.captureMu.Unlock()
-	if before.State != status.State {
-		p.notifyCapture(status)
+	p.flushCaptureNotifications()
+}
+
+func (p *MITMProxy) finishMITMRequest(session *captureSession, forceClose bool) bool {
+	p.captureMu.Lock()
+	before := p.captureStatusLocked()
+	p.inFlightMITMRequests--
+	session.busy = false
+	paused := !p.captureWanted
+	_ = p.recordTransitionLocked(before)
+	p.captureMu.Unlock()
+	if paused || forceClose {
+		_ = session.client.Close()
+		if session.upstream != nil {
+			_ = session.upstream.Close()
+		}
 	}
+	p.flushCaptureNotifications()
+	return paused || forceClose
 }

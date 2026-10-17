@@ -309,4 +309,53 @@ test.describe('Capture control bar', () => {
     await expect(page.locator('.flow-item').first()).toBeVisible();
     await expect(control(page)).toHaveCount(0);
   });
+
+  test('stale in-flight reconnect GET /api/capture does not overwrite newer POST /api/capture state', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    let getCount = 0;
+    let releaseStaleGet!: () => void;
+    const staleGetHeld = new Promise<void>((resolve) => { releaseStaleGet = resolve; });
+    let notifyStaleGetInFlight!: () => void;
+    const staleGetInFlight = new Promise<void>((resolve) => { notifyStaleGetInFlight = resolve; });
+
+    await page.route('**/api/capture', async (route) => {
+      if (route.request().method() === 'GET') {
+        getCount += 1;
+        if (getCount === 2) {
+          notifyStaleGetInFlight();
+          await staleGetHeld;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('passthrough', { revision: 1 })),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(status('capturing', { revision: 2 })),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
+
+    // Trigger WebSocket disconnect + reconnect so a second GET /api/capture starts and hangs.
+    ws().close();
+    await staleGetInFlight;
+
+    // While the reconnect GET is still in flight, click Start Capture.
+    await page.getByRole('button', { name: 'Start capture' }).click();
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+
+    // Release the stale GET(passthrough); UI must remain in 'capturing'.
+    releaseStaleGet();
+    await page.waitForTimeout(100);
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+    await expect(control(page).locator('.capture-label')).toHaveText('Capturing');
+  });
 });
+

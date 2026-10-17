@@ -80,12 +80,15 @@ func (f *fakeDaemon) Start(context.Context) (*ServerState, bool, error) {
 
 func (f *fakeDaemon) Stop(context.Context) ([]int, error) {
 	f.ops = append(f.ops, "stop")
+	if f.stopErr != nil {
+		return f.stopPIDs, f.stopErr
+	}
 	pids := f.stopPIDs
 	if f.running != nil && pids == nil {
 		pids = []int{f.running.PID}
 	}
 	f.running = nil
-	return pids, f.stopErr
+	return pids, nil
 }
 
 type fakeBrowser struct{ urls []string }
@@ -981,5 +984,143 @@ func TestDaemonCLI_LiveSubprocessLifecycle(t *testing.T) {
 	}
 	if controller.Running(ctx) != nil {
 		t.Fatal("expected daemon to be stopped after 'daemon stop'")
+	}
+}
+
+func TestDaemonStop_RefusesForeignPIDAndMismatchedInstance(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStateStoreWithPath(filepath.Join(dir, "state.json"))
+	sig := &fakeSignaler{dead: map[int]bool{}}
+
+	victim := exec.Command("sleep", "60")
+	if err := victim.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = victim.Process.Kill()
+		_ = victim.Wait()
+	}()
+	victimPID := victim.Process.Pid
+
+	checker := &HTTPHealthChecker{
+		client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"status":"ok","service":"langley","instance_id":"inst-real","pid":12345,"proxy_addr":"127.0.0.1:9090","api_addr":"127.0.0.1:9091"}`), nil
+		})},
+	}
+	d := &ProcessDaemonController{
+		states:      store,
+		remover:     store,
+		health:      checker,
+		signaler:    sig,
+		alive:       sig.alive,
+		stopTimeout: 500 * time.Millisecond,
+		poll:        5 * time.Millisecond,
+	}
+
+	// Forged state file pointing at victimPID while health reports PID 12345.
+	if err := store.Write(ServerState{
+		ProxyAddr:  "127.0.0.1:9090",
+		APIAddr:    "127.0.0.1:9091",
+		PID:        victimPID,
+		InstanceID: "inst-real",
+		StartedAt:  time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	pids, err := d.Stop(context.Background())
+	if err != nil || len(pids) != 0 || len(sig.sent) != 0 {
+		t.Fatalf("Stop signaled foreign PID: pids=%v err=%v sent=%v", pids, err, sig.sent)
+	}
+
+	// Forged state file with matching PID but mismatched InstanceID.
+	if err := store.Write(ServerState{
+		ProxyAddr:  "127.0.0.1:9090",
+		APIAddr:    "127.0.0.1:9091",
+		PID:        12345,
+		InstanceID: "inst-stale",
+		StartedAt:  time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pids, err = d.Stop(context.Background())
+	if err != nil || len(pids) != 0 || len(sig.sent) != 0 {
+		t.Fatalf("Stop signaled mismatched instance: pids=%v err=%v sent=%v", pids, err, sig.sent)
+	}
+}
+
+func TestDefaultStart_StartsDaemonEnablesCaptureAndOpensBrowser(t *testing.T) {
+	tc := newTestCLI(t)
+	tc.capture.status = &CaptureStatus{State: captureCapturing, InterceptHosts: []string{"api.anthropic.com"}}
+
+	if code := tc.DefaultStart(context.Background(), false, true, false); code != 0 {
+		t.Fatalf("DefaultStart exit = %d, stderr = %s", code, tc.errOut.String())
+	}
+	if strings.Join(tc.daemon.ops, ",") != "start" {
+		t.Fatalf("daemon ops = %v, want [start]", tc.daemon.ops)
+	}
+	if len(tc.capture.calls) != 1 || !tc.capture.calls[0].isSet || !tc.capture.calls[0].enabled {
+		t.Fatalf("capture calls = %+v, want SetCapture(enabled=true)", tc.capture.calls)
+	}
+	if len(tc.browser.urls) != 1 || tc.browser.urls[0] != "http://127.0.0.1:9091" {
+		t.Fatalf("browser urls = %v, want [http://127.0.0.1:9091]", tc.browser.urls)
+	}
+	if !strings.Contains(tc.out.String(), "Capturing") {
+		t.Fatalf("stdout = %q, want Capturing status", tc.out.String())
+	}
+}
+
+func TestSetup_CreatesCombinedBundleServiceAndStartsPassthroughDaemon(t *testing.T) {
+	tc := newTestCLI(t)
+	zshrc := filepath.Join(tc.homeDir, ".zshrc")
+	if err := os.WriteFile(zshrc, []byte("# existing user rc\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := tc.Setup(context.Background(), []string{"--manual"}); code != 0 {
+		t.Fatalf("Setup exit = %d, stderr = %s", code, tc.errOut.String())
+	}
+	for _, rel := range []string{"certs/ca.crt", "certs/ca.key", "certs/ca-bundle.pem", "active.env", "shell.env"} {
+		if !fileExists(filepath.Join(tc.configDir, rel)) {
+			t.Errorf("Setup did not create %s", rel)
+		}
+	}
+	servicePath := filepath.Join(tc.homeDir, ".config", "systemd", "user", "langley.service")
+	if !fileExists(servicePath) {
+		t.Errorf("Setup did not create service unit %s", servicePath)
+	}
+	rcData, err := os.ReadFile(zshrc)
+	if err != nil || !strings.Contains(string(rcData), hookStartMarker) {
+		t.Errorf(".zshrc missing hook block: %q (%v)", string(rcData), err)
+	}
+	if strings.Join(tc.daemon.ops, ",") != "start" {
+		t.Errorf("daemon ops = %v, want [start]", tc.daemon.ops)
+	}
+	if len(tc.capture.calls) != 0 {
+		t.Errorf("Setup must keep daemon in passthrough without enabling capture, got calls = %+v", tc.capture.calls)
+	}
+}
+
+func TestUninstall_AbortsWhenDaemonStopFails(t *testing.T) {
+	tc := newTestCLI(t)
+	tc.daemon.running = testState
+	tc.daemon.stopErr = errors.New("daemon PID 4242 did not exit within 5s")
+	f := setupUninstall(t, tc)
+
+	if code := tc.Execute(context.Background(), "uninstall", []string{"--yes"}); code != 1 {
+		t.Fatalf("Uninstall exit = %d, want 1 when Stop fails", code)
+	}
+	for _, path := range []string{
+		f.service,
+		filepath.Join(f.configDir, "state.json"),
+		filepath.Join(f.configDir, "certs", "ca.crt"),
+		filepath.Join(f.configDir, "active.env"),
+	} {
+		if !fileExists(path) {
+			t.Errorf("Uninstall deleted %s despite daemon still running", path)
+		}
+	}
+	if got, _ := os.ReadFile(f.zshrc); !strings.Contains(string(got), hookStartMarker) {
+		t.Error("Uninstall stripped .zshrc hook despite daemon still running")
 	}
 }

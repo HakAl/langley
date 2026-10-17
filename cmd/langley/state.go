@@ -15,11 +15,12 @@ import (
 
 // ServerState holds the running server's configuration.
 type ServerState struct {
-	ProxyAddr string    `json:"proxy_addr"`
-	APIAddr   string    `json:"api_addr"`
-	CAPath    string    `json:"ca_path"`
-	PID       int       `json:"pid"`
-	StartedAt time.Time `json:"started_at"`
+	InstanceID string    `json:"instance_id,omitempty"`
+	ProxyAddr  string    `json:"proxy_addr"`
+	APIAddr    string    `json:"api_addr"`
+	CAPath     string    `json:"ca_path"`
+	PID        int       `json:"pid"`
+	StartedAt  time.Time `json:"started_at"`
 }
 
 // ErrServerNotRunning indicates no state file exists (server not started).

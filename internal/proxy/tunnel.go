@@ -78,36 +78,15 @@ func (p *MITMProxy) tunnelCapture(t *captureTunnel) {
 		defer func() { _ = t.upstream.Close() }()
 		buf := make([]byte, 32*1024)
 		for {
-			p.captureMu.Lock()
-			deadline := time.Now().Add(defaultIdleTimeout)
-			if t.draining {
-				deadline = time.Unix(0, t.lastActivity.Load()).Add(p.passthroughIdleThreshold)
-			}
-			_ = src.SetReadDeadline(deadline)
-			p.captureMu.Unlock()
+			_ = src.SetReadDeadline(time.Now().Add(defaultIdleTimeout))
 			n, err := src.Read(buf)
 			if n > 0 {
-				p.captureMu.Lock()
 				t.lastActivity.Store(time.Now().UnixNano())
-				if t.draining {
-					deadline := time.Now().Add(p.passthroughIdleThreshold)
-					_ = t.client.SetReadDeadline(deadline)
-					_ = t.upstream.SetReadDeadline(deadline)
-				}
-				p.captureMu.Unlock()
 				if _, werr := dst.Write(buf[:n]); werr != nil {
 					return
 				}
 			}
 			if err != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					p.captureMu.Lock()
-					keep := t.draining && time.Since(time.Unix(0, t.lastActivity.Load())) < p.passthroughIdleThreshold
-					p.captureMu.Unlock()
-					if keep {
-						continue
-					}
-				}
 				return
 			}
 		}

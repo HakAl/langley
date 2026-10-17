@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/HakAl/langley/internal/config"
+	langleytls "github.com/HakAl/langley/internal/tls"
 )
 
 // Capture states reported by GET/POST /api/capture.
@@ -259,7 +260,7 @@ func (d *ProcessDaemonController) Stop(ctx context.Context) ([]int, error) {
 			continue
 		}
 		healthCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-		err := d.health.Check(healthCtx, st.APIAddr)
+		err := checkStateHealth(healthCtx, d.health, st)
 		cancel()
 		if err != nil {
 			continue
@@ -492,11 +493,45 @@ func (c *DaemonCLI) Execute(ctx context.Context, name string, args []string) int
 		return c.Status(ctx)
 	case "daemon":
 		return c.Daemon(ctx, args)
+	case "setup":
+		return c.Setup(ctx, args)
 	case "uninstall":
 		return c.Uninstall(ctx, args)
 	}
 	fmt.Fprintf(c.stderr, "Unknown command: %s\n", name)
 	return 1
+}
+
+// DefaultStart implements the bare `langley` invocation: ensures the background
+// daemon is running, enables capture (unless startPassthrough is true), opens
+// the dashboard (when openBrowser is true), prints status, and returns immediately.
+func (c *DaemonCLI) DefaultStart(ctx context.Context, force, openBrowser, startPassthrough bool) int {
+	st, started, err := c.daemon.Start(ctx)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "Error: %v\n", err)
+		return 1
+	}
+	if started {
+		fmt.Fprintf(c.stdout, "Daemon started (PID %d)\n", st.PID)
+	}
+	if !startPassthrough {
+		cs, err := c.capture.SetCapture(ctx, st.APIAddr, c.token(), true, force)
+		if err != nil {
+			fmt.Fprintf(c.stderr, "Error: failed to enable capture: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(c.stdout, captureSummary(cs))
+	} else {
+		fmt.Fprintln(c.stdout, captureSummary(&CaptureStatus{State: capturePassthrough}))
+	}
+	url := "http://" + st.APIAddr
+	fmt.Fprintf(c.stdout, "Proxy:     http://%s\nDashboard: %s\n", st.ProxyAddr, url)
+	if openBrowser && c.browser != nil {
+		if err := c.browser.Open(url); err != nil {
+			fmt.Fprintf(c.stderr, "Could not open browser: %v\n", err)
+		}
+	}
+	return 0
 }
 
 func parseForce(name string, args []string, stderr io.Writer) (bool, bool) {
@@ -720,6 +755,143 @@ func (c *DaemonCLI) serviceFile() (path string, unload []string) {
 	return "", nil
 }
 
+func (c *DaemonCLI) installServiceUnit(manual bool) error {
+	path, _ := c.serviceFile()
+	if path == "" || c.homeDir == "" {
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		exe = "langley"
+	}
+	logPath := filepath.Join(c.configDir, "langley.log")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	var content string
+	var loadCmd []string
+	switch c.goos {
+	case "darwin":
+		content = fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.langley.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>%s</string>
+    <string>-no-shell</string>
+    <string>-no-open</string>
+    <string>-passthrough</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LANGLEY_DAEMON</key>
+    <string>1</string>
+    <key>LANGLEY_START_PASSTHROUGH</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>%s</string>
+  <key>StandardErrorPath</key>
+  <string>%s</string>
+</dict>
+</plist>
+`, exe, logPath, logPath)
+		loadCmd = []string{"launchctl", "bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), path}
+	case "linux":
+		content = fmt.Sprintf(`[Unit]
+Description=Langley LLM Proxy Daemon (Passthrough by default)
+
+[Service]
+Type=simple
+Environment=LANGLEY_DAEMON=1
+Environment=LANGLEY_START_PASSTHROUGH=1
+ExecStart=%s -no-shell -no-open -passthrough
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+`, exe)
+		loadCmd = []string{"systemctl", "--user", "enable", "langley.service"}
+	}
+	if err := writeFileAtomic(path, []byte(content), 0644); err != nil {
+		return err
+	}
+	if !manual && c.runner != nil && len(loadCmd) > 0 {
+		_ = c.runner.Run(loadCmd[0], loadCmd[1:]...) // best effort: user session bus may not be active
+	}
+	return nil
+}
+
+// Setup generates the CA and combined bundle, installs system trust (unless
+// --manual/--no-mkcert), writes the user service unit, starts the daemon in
+// passthrough mode, and installs the guarded shell hook in ~/.zshrc / ~/.bashrc.
+func (c *DaemonCLI) Setup(ctx context.Context, args []string) int {
+	setupFlags := flag.NewFlagSet("setup", flag.ContinueOnError)
+	setupFlags.SetOutput(c.stderr)
+	manualOnly := setupFlags.Bool("manual", false, "Show manual instructions without installing system trust")
+	skipMkcert := setupFlags.Bool("no-mkcert", false, "Show manual instructions without installing (alias for --manual)")
+	showHelp := setupFlags.Bool("help", false, "Show help")
+	if err := setupFlags.Parse(args); err != nil {
+		return 2
+	}
+	if *showHelp {
+		printSetupHelp()
+		return 0
+	}
+
+	certsDir := filepath.Join(c.configDir, "certs")
+	caPath := filepath.Join(certsDir, "ca.crt")
+	if _, err := langleytls.LoadOrCreateCA(certsDir); err != nil {
+		fmt.Fprintf(c.stderr, "Error loading/creating CA: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintln(c.stdout, "Langley Setup - CA, Daemon & Shell Integration")
+	fmt.Fprintln(c.stdout, "==============================================")
+	fmt.Fprintln(c.stdout)
+	fmt.Fprintf(c.stdout, "CA certificate: %s\n", caPath)
+	if bundle := langleytls.BundlePath(certsDir); fileExists(bundle) {
+		fmt.Fprintf(c.stdout, "CA bundle:      %s\n", bundle)
+	}
+	fmt.Fprintln(c.stdout)
+
+	manual := *manualOnly || *skipMkcert
+	if !manual {
+		installSystemCA(caPath)
+	} else {
+		printManualInstructions(caPath)
+	}
+
+	if err := c.installServiceUnit(manual); err != nil {
+		fmt.Fprintf(c.stderr, "Warning: could not write user service unit: %v\n", err)
+	} else if svcPath, _ := c.serviceFile(); svcPath != "" && fileExists(svcPath) {
+		fmt.Fprintf(c.stdout, "  ✓ Installed service unit %s\n", svcPath)
+	}
+
+	st, _, err := c.daemon.Start(ctx)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "Error starting daemon: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(c.stdout, "  ✓ Daemon running in passthrough mode (PID %d, proxy http://%s)\n", st.PID, st.ProxyAddr)
+
+	hookMgr := NewFileShellHookManager(c.configDir, c.homeDir, c.shellPath)
+	if err := hookMgr.Activate(st.ProxyAddr, caPath, st.PID); err != nil {
+		fmt.Fprintf(c.stderr, "Error installing shell hook: %v\n", err)
+		return 1
+	}
+	if activeData, err := os.ReadFile(filepath.Join(c.configDir, "active.env")); err == nil {
+		_ = writeFileAtomic(filepath.Join(c.configDir, "shell.env"), activeData, 0600)
+	}
+	fmt.Fprintln(c.stdout, "  ✓ Installed guarded shell hook in ~/.zshrc / ~/.bashrc")
+	return 0
+}
+
 // Uninstall stops the daemon and removes every artifact Langley created.
 func (c *DaemonCLI) Uninstall(ctx context.Context, args []string) int {
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
@@ -759,12 +931,22 @@ func (c *DaemonCLI) Uninstall(ctx context.Context, args []string) int {
 		}
 	}
 
-	// 1. Stop the daemon.
+	// 1. Stop the daemon. Abort immediately if the daemon cannot be stopped so
+	// state.json and runtime discovery files are never deleted for a live daemon.
 	pids, err := c.daemon.Stop(ctx)
 	for _, pid := range pids {
 		fmt.Fprintf(c.stdout, "  ✓ Daemon stopped (PID %d)\n", pid)
 	}
-	report(err)
+	if err != nil {
+		report(err)
+		fmt.Fprintln(c.stderr, "Langley uninstall aborted: daemon could not be stopped")
+		return 1
+	}
+	if st := c.daemon.Running(ctx); st != nil {
+		report(fmt.Errorf("daemon (PID %d) is still running", st.PID))
+		fmt.Fprintln(c.stderr, "Langley uninstall aborted: daemon is still running")
+		return 1
+	}
 
 	// 2. Remove the user service unit.
 	if path, unload := c.serviceFile(); path != "" && fileExists(path) {

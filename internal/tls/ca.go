@@ -8,12 +8,17 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
 	"time"
 )
+
+// ErrNoSystemRoots is returned when EnsureCombinedBundle cannot find any system
+// root certificates to combine with the Langley CA.
+var ErrNoSystemRoots = errors.New("no system root CA certificates found for combined bundle")
 
 const (
 	// CAKeySize is the RSA key size for the CA.
@@ -41,8 +46,7 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 
 	// Try to load existing CA
 	if ca, err := loadCA(certPath, keyPath); err == nil {
-		// Best effort: a missing bundle only degrades SSL_CERT_FILE consumers,
-		// which fall back to ca.crt (see bundlePathForCA in cmd/langley).
+		// Best effort: EnsureCombinedBundle writes ca-bundle.pem when system roots exist.
 		_, _ = ca.EnsureCombinedBundle(dir)
 		return ca, nil
 	}
@@ -88,27 +92,51 @@ func BundlePath(dir string) string {
 	return filepath.Join(dir, "ca-bundle.pem")
 }
 
+func hasPEMCertificate(data []byte) bool {
+	rest := data
+	for len(rest) > 0 {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type == "CERTIFICATE" {
+			if _, err := x509.ParseCertificate(block.Bytes); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // EnsureCombinedBundle writes ca-bundle.pem (first available system root
 // bundle + extraSystemPEM + Langley CA) to dir so SSL_CERT_FILE /
 // REQUESTS_CA_BUNDLE consumers keep trusting public CAs on non-intercepted
-// connections. The file is rewritten only when its content changes.
+// connections. Returns ErrNoSystemRoots without writing a Langley-only bundle
+// when no system root certificates are available.
 func (ca *CA) EnsureCombinedBundle(dir string, extraSystemPEM ...[]byte) (string, error) {
 	var b bytes.Buffer
 	for _, p := range systemBundlePaths {
 		data, err := os.ReadFile(p)
-		if err != nil || len(bytes.TrimSpace(data)) == 0 {
+		if err != nil || !hasPEMCertificate(data) {
 			continue
 		}
 		appendPEM(&b, data)
 		break
 	}
 	for _, extra := range extraSystemPEM {
-		appendPEM(&b, extra)
+		if hasPEMCertificate(extra) {
+			appendPEM(&b, extra)
+		}
+	}
+	path := BundlePath(dir)
+	if b.Len() == 0 {
+		_ = os.Remove(path)
+		return "", ErrNoSystemRoots
 	}
 	b.WriteString("\n# Langley CA\n")
 	b.Write(ca.certPEM)
 
-	path := BundlePath(dir)
 	if cur, err := os.ReadFile(path); err == nil && bytes.Equal(cur, b.Bytes()) {
 		return path, nil
 	}

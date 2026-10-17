@@ -761,7 +761,13 @@ func TestCA_EnsureCombinedBundle_IncludesFirstSystemBundle(t *testing.T) {
 }
 
 func TestLoadOrCreateCA_WritesBundleForNewAndExistingCA(t *testing.T) {
-	withSystemBundlePaths(t)
+	sysDir := t.TempDir()
+	rootPEM, _ := newTestRootAndLeaf(t, "system.example")
+	sysBundle := filepath.Join(sysDir, "system-roots.pem")
+	if err := os.WriteFile(sysBundle, rootPEM, 0644); err != nil {
+		t.Fatal(err)
+	}
+	withSystemBundlePaths(t, sysBundle)
 	dir := t.TempDir()
 	if _, err := LoadOrCreateCA(dir); err != nil {
 		t.Fatal(err)
@@ -787,6 +793,21 @@ func TestLoadOrCreateCA_WritesBundleForNewAndExistingCA(t *testing.T) {
 	}
 	if !strings.Contains(string(data), string(ca.CertPEM())) {
 		t.Error("bundle missing Langley CA")
+	}
+}
+
+func TestCA_EnsureCombinedBundle_RequiresSystemRoots(t *testing.T) {
+	withSystemBundlePaths(t, filepath.Join(t.TempDir(), "missing-system-roots.pem"))
+	dir := t.TempDir()
+	ca, err := LoadOrCreateCA(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(BundlePath(dir)); !os.IsNotExist(err) {
+		t.Fatalf("expected no ca-bundle.pem when system roots are unavailable, got err=%v", err)
+	}
+	if _, err := ca.EnsureCombinedBundle(dir); err == nil {
+		t.Fatal("expected EnsureCombinedBundle to fail when no system roots are available")
 	}
 }
 

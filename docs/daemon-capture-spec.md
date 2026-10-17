@@ -49,9 +49,9 @@ stateDiagram-v2
 - **Passthrough → Capture (`enabling` → `capturing`):**
   - The proxy tracks open passthrough tunnels whose `host` matches `intercept_hosts`, recording `lastActivity` timestamps on every directional byte copy.
   - When capture is enabled:
-    1. Any target passthrough tunnel idle for `>= 500ms` is closed immediately so the client's HTTP keep-alive pool reconnects through MITM on its next request.
-    2. Any target passthrough tunnel with active traffic (`< 500ms` since last byte) is marked `closeOnIdle`: as soon as no bytes flow in either direction for `500ms` (end of the current response turn), the proxy closes the tunnel so the next prompt reconnects through MITM.
-    3. Clicking **Force switch now** (or `langley --force`) closes remaining `closeOnIdle` target passthrough tunnels immediately.
+    1. Any target passthrough tunnel already idle for `>= 500ms` at the time capture is enabled is closed immediately so the client's HTTP keep-alive pool reconnects through MITM on its next request.
+    2. Any target passthrough tunnel with recent traffic (`< 500ms` since last byte) is marked `draining` (`enabling` state) and allowed to complete without sub-second read-deadline termination (so model think pauses never abort an in-flight stream) until natural connection closure.
+    3. Clicking **Force switch now** (or `langley --force`) closes remaining `draining` target passthrough tunnels immediately.
 - **Capture → Passthrough (`stopping` → `passthrough`):**
   - In MITM mode (`internal/proxy/mitm.go`), Langley demarcates individual HTTP request/response lifecycles on each TLS connection:
     1. Idle MITM keep-alive connections (not currently between request start and response/SSE completion) are closed immediately when pause is requested.

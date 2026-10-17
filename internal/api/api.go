@@ -157,8 +157,46 @@ func isLocalhostOrigin(origin string) bool {
 	if err != nil || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
-	h := u.Hostname()
+	h := strings.ToLower(u.Hostname())
 	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+}
+
+func (s *Server) expectedAPIPort(reqHost string) string {
+	if _, port, err := net.SplitHostPort(s.daemonMeta.APIAddr); err == nil && port != "" && port != "0" {
+		return port
+	}
+	if _, port, err := net.SplitHostPort(reqHost); err == nil && port != "" && port != "0" {
+		return port
+	}
+	return ""
+}
+
+func (s *Server) isAllowedHost(reqHost string) bool {
+	host := requestHostname(reqHost)
+	allowed := requestHostname(s.daemonMeta.APIAddr)
+	if host != "" && host != "localhost" && host != "127.0.0.1" && host != "::1" && host != allowed {
+		return false
+	}
+	if _, apiPort, err := net.SplitHostPort(s.daemonMeta.APIAddr); err == nil && apiPort != "" && apiPort != "0" {
+		if _, reqPort, err := net.SplitHostPort(reqHost); err == nil && reqPort != "" && reqPort != apiPort {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) isAllowedOrigin(origin, reqHost string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	h := strings.ToLower(u.Hostname())
+	allowedHost := requestHostname(s.daemonMeta.APIAddr)
+	if h != "localhost" && h != "127.0.0.1" && h != "::1" && (allowedHost == "" || h != allowedHost) {
+		return false
+	}
+	expectedPort := s.expectedAPIPort(reqHost)
+	return u.Port() == expectedPort
 }
 
 // authMiddleware wraps a handler with authentication.
@@ -166,9 +204,9 @@ func isLocalhostOrigin(origin string) bool {
 // Authentication modes (checked in order):
 // 1. Session cookie - browser sends automatically after first request
 // 2. Authorization header - for CLI/automation (curl, scripts)
-// 3. Localhost Origin - auto-sets cookie for browser's first request
+// 3. Same-origin safe browser request - auto-sets cookie for dashboard bootstrap
 //
-// SECURITY: Defense in depth - Origin check + cookie + HttpOnly + SameSite=Strict
+// SECURITY: Defense in depth - port-bound Origin check + cookie + HttpOnly + SameSite=Strict
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// SECURITY: Reject tokens in URL query params FIRST
@@ -176,6 +214,13 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if r.URL.Query().Get("token") != "" {
 			s.logger.Warn("rejected token in URL", "path", r.URL.Path, "remote", r.RemoteAddr)
 			http.Error(w, "Token in URL is not allowed. Use Authorization header instead.", http.StatusBadRequest)
+			return
+		}
+
+		origin := r.Header.Get("Origin")
+		if origin != "" && !s.isAllowedOrigin(origin, r.Host) {
+			s.logger.Warn("rejected disallowed origin", "origin", origin, "path", r.URL.Path)
+			http.Error(w, "Forbidden: non-localhost origin", http.StatusForbidden)
 			return
 		}
 
@@ -194,39 +239,18 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// 3. Check if this is a browser request from localhost (auto-set cookie)
-		origin := r.Header.Get("Origin")
-		if origin != "" {
-			if !isLocalhostOrigin(origin) {
-				s.logger.Warn("rejected non-localhost origin", "origin", origin, "path", r.URL.Path)
-				http.Error(w, "Forbidden: non-localhost origin", http.StatusForbidden)
-				return
-			}
-			// Localhost origin - set cookie and authenticate
-			http.SetCookie(w, &http.Cookie{
-				Name:     sessionCookieName,
-				Value:    s.cfg.Auth.Token,
-				Path:     "/",
-				HttpOnly: true,
-				Secure:   false,
-				SameSite: http.SameSiteLaxMode, // Lax allows same-site navigation
-			})
-			s.logger.Debug("set session cookie for localhost origin", "remote", r.RemoteAddr)
-			next(w, r)
-			return
-		}
-
-		// 4. Check for Sec-Fetch-Site header (modern browsers send this even without Origin)
+		// 3. Same-origin browser bootstrap on safe (GET/HEAD) requests only.
+		// Cross-port localhost pages send Sec-Fetch-Site: same-site and/or a mismatched Origin port,
+		// so they cannot mint a session cookie or mutate state without the token.
 		secFetchSite := r.Header.Get("Sec-Fetch-Site")
-		if secFetchSite == "same-origin" || secFetchSite == "same-site" {
-			// Same-origin browser request without cookie - set one
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && secFetchSite == "same-origin" {
 			http.SetCookie(w, &http.Cookie{
 				Name:     sessionCookieName,
 				Value:    s.cfg.Auth.Token,
 				Path:     "/",
 				HttpOnly: true,
 				Secure:   false,
-				SameSite: http.SameSiteLaxMode,
+				SameSite: http.SameSiteStrictMode,
 			})
 			s.logger.Debug("set session cookie for same-origin request", "remote", r.RemoteAddr)
 			next(w, r)
@@ -238,29 +262,23 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// corsMiddleware adds CORS headers for local development.
+// corsMiddleware enforces port-bound Host and Origin checks for local control plane security.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := requestHostname(r.Host)
-		allowed := requestHostname(s.daemonMeta.APIAddr)
-		if host != "" && host != "localhost" && host != "127.0.0.1" && host != "::1" && host != allowed {
+		if !s.isAllowedHost(r.Host) {
 			http.Error(w, "Forbidden: invalid Host", http.StatusForbidden)
 			return
 		}
 		origin := r.Header.Get("Origin")
-		switch r.Method {
-		case http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
-			if origin != "" && !isLocalhostOrigin(origin) {
-				http.Error(w, "Forbidden: non-localhost origin", http.StatusForbidden)
-				return
-			}
+		if origin != "" && !s.isAllowedOrigin(origin, r.Host) {
+			http.Error(w, "Forbidden: non-localhost origin", http.StatusForbidden)
+			return
 		}
-		// Only allow localhost origins
-		if origin != "" && isLocalhostOrigin(origin) {
+		if origin != "" {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-			w.Header().Set("Access-Control-Allow-Credentials", "true") // Allow cookies
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 		}
 

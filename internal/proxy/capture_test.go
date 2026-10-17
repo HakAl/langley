@@ -267,6 +267,8 @@ func TestCaptureStreamDraining(t *testing.T) {
 					if _, err := io.Copy(io.Discard, reader); err != nil {
 						t.Fatalf("graceful drain interrupted stream: %v", err)
 					}
+					_ = resp.Body.Close()
+					client.CloseIdleConnections()
 				} else {
 					if _, err := io.Copy(io.Discard, reader); err == nil {
 						t.Fatal("force did not interrupt stream")
@@ -414,5 +416,204 @@ func TestCaptureStatusScopeAndAddress(t *testing.T) {
 	status.InterceptHosts[0] = "mutated.test"
 	if p.CaptureStatus().InterceptHosts[0] != "api.anthropic.com" {
 		t.Fatal("status exposed mutable shared host list")
+	}
+}
+
+func TestMITMKeepAliveReadRequestCountsAsInFlight(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Persistence.BodyMaxBytes = 1 << 20
+	ca, err := langleytls.LoadOrCreateCA(filepath.Join(t.TempDir(), "proxy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstreamCA, err := langleytls.LoadOrCreateCA(filepath.Join(t.TempDir(), "upstream"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := langleytls.NewCertCache(upstreamCA, 10).GetCertificate(&tls.ClientHelloInfo{ServerName: "api.openai.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "capture.db"), &cfg.Retention)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = data.Close() })
+	redactor, err := redact.New(&cfg.Redaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewMITMProxy(MITMProxyConfig{
+		Config:                     cfg,
+		Logger:                     testLogger(),
+		CA:                         ca,
+		CertCache:                  langleytls.NewCertCache(ca, 10),
+		Redactor:                   redactor,
+		Store:                      data,
+		StartInPassthrough:         false,
+		InsecureSkipVerifyUpstream: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstreamListener := newPipeListener()
+	upstream := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})}
+	go func() {
+		_ = upstream.Serve(tls.NewListener(upstreamListener, &tls.Config{Certificates: []tls.Certificate{*cert}}))
+	}()
+	t.Cleanup(func() { _ = upstreamListener.Close(); _ = upstream.Close() })
+	p.dialHook = upstreamListener.dial
+	proxyListener := newPipeListener()
+	proxyServer := &http.Server{Handler: p}
+	go func() { _ = proxyServer.Serve(proxyListener) }()
+	t.Cleanup(func() { _ = proxyListener.Close(); _ = proxyServer.Close() })
+
+	rawConn, err := proxyListener.dial(context.Background(), "tcp", "127.0.0.1:9090")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawConn.Close()
+	if _, err := io.WriteString(rawConn, "CONNECT api.openai.com:443 HTTP/1.1\r\nHost: api.openai.com:443\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(rawConn)
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT failed: %v %+v", err, resp)
+	}
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(ca.CertPEM())
+	tlsConn := tls.Client(rawConn, &tls.Config{ServerName: "api.openai.com", RootCAs: roots})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Send first byte of HTTP request line ("P") so Peek(1) unblocks and ReadRequest is in progress.
+	if _, err := tlsConn.Write([]byte("P")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		p.captureMu.Lock()
+		inFlight := p.inFlightMITMRequests
+		p.captureMu.Unlock()
+		if inFlight == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	status := p.SetCapture(false, false)
+	if status.State != CaptureStateStopping || status.DrainingMITMRequests != 1 {
+		t.Fatalf("SetCapture(false, false) while request headers are mid-send = %+v, want State=stopping DrainingMITMRequests=1", status)
+	}
+
+	// Complete the request and verify it finishes and drains to passthrough.
+	if _, err := tlsConn.Write([]byte("OST /v1/messages HTTP/1.1\r\nHost: api.openai.com\r\nContent-Length: 2\r\n\r\n{}")); err != nil {
+		t.Fatal(err)
+	}
+	tlsReader := bufio.NewReader(tlsConn)
+	httpResp, err := http.ReadResponse(tlsReader, nil)
+	if err != nil {
+		t.Fatalf("in-flight request was killed during header send: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, httpResp.Body)
+	_ = httpResp.Body.Close()
+
+	waitCapture(t, p, CaptureStatePassthrough)
+	if n := flowCount(t, data); n != 1 {
+		t.Fatalf("expected 1 persisted flow, got %d", n)
+	}
+}
+
+func TestCaptureStateNotificationsSerializedAndMonotonic(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		observed []CaptureStatus
+		inCall   bool
+		overlap  bool
+	)
+	cfg := config.DefaultConfig()
+	ca, err := langleytls.LoadOrCreateCA(filepath.Join(t.TempDir(), "proxy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "capture.db"), &cfg.Retention)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = data.Close() })
+	redactor, err := redact.New(&cfg.Redaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewMITMProxy(MITMProxyConfig{
+		Config:             cfg,
+		Logger:             testLogger(),
+		CA:                 ca,
+		CertCache:          langleytls.NewCertCache(ca, 10),
+		Redactor:           redactor,
+		Store:              data,
+		StartInPassthrough: true,
+		OnCaptureStateChange: func(s CaptureStatus) {
+			mu.Lock()
+			if inCall {
+				overlap = true
+			}
+			inCall = true
+			mu.Unlock()
+			time.Sleep(2 * time.Millisecond)
+			mu.Lock()
+			observed = append(observed, s)
+			inCall = false
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		enabled := i%2 == 0
+		go func(en bool) {
+			defer wg.Done()
+			p.SetCapture(en, false)
+		}(enabled)
+	}
+	wg.Wait()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		p.captureMu.Lock()
+		busy := p.notifying || len(p.notifyQueue) > 0
+		p.captureMu.Unlock()
+		if !busy {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if overlap {
+		t.Fatal("OnCaptureStateChange callbacks executed concurrently")
+	}
+	if len(observed) == 0 {
+		t.Fatal("expected state change notifications")
+	}
+	for i := 1; i < len(observed); i++ {
+		if observed[i].Revision <= observed[i-1].Revision {
+			t.Fatalf("non-monotonic revision order at %d: %d -> %d", i, observed[i-1].Revision, observed[i].Revision)
+		}
+	}
+	final := p.CaptureStatus()
+	if observed[len(observed)-1].State != final.State || observed[len(observed)-1].Revision != final.Revision {
+		t.Fatalf("last notification %+v != final status %+v", observed[len(observed)-1], final)
 	}
 }

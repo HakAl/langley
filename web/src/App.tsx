@@ -464,10 +464,16 @@ function App() {
     }
   }, [applyDeltaToTotals, clampPageToTotal, currentFilterCriteria, schedulePageRefresh])
 
-  // Every authoritative capture update bumps the version; a response from a request
-  // issued before a newer update is stale and must not overwrite it.
+  // Every authoritative capture update or user mutation bumps the version; a
+  // response from a GET issued before a newer update or POST is stale and must
+  // not overwrite or invalidate the newer state.
   const captureVersionRef = useRef(0)
+  const captureRevisionRef = useRef(0)
   const applyCaptureStatus = useCallback((status: CaptureStatus) => {
+    if (typeof status.revision === 'number') {
+      if (status.revision < captureRevisionRef.current) return
+      captureRevisionRef.current = status.revision
+    }
     captureVersionRef.current += 1
     setCaptureStatus(status)
   }, [])
@@ -483,6 +489,7 @@ function App() {
     if (captureActionPendingRef.current) return
     captureActionPendingRef.current = true
     setCaptureActionPending(true)
+    captureVersionRef.current += 1
     const version = captureVersionRef.current
     try {
       const { data, error } = await api.setCaptureMode(enabled, force)

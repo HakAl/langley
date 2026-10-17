@@ -49,10 +49,7 @@ func main() {
 		case "token":
 			handleTokenCommand(os.Args[2:])
 			return
-		case "setup":
-			handleSetupCommand(os.Args[2:])
-			return
-		case "pause", "resume", "start", "dashboard", "status", "daemon", "uninstall":
+		case "pause", "resume", "start", "dashboard", "status", "daemon", "setup", "uninstall":
 			handleDaemonCLICommand(os.Args[1], os.Args[2:])
 			return
 		}
@@ -67,7 +64,11 @@ func main() {
 	showCA := flag.Bool("show-ca", false, "Show CA certificate path and exit")
 	showHelp := flag.Bool("help", false, "Show help")
 	noShell := flag.Bool("no-shell", false, "Run in foreground server mode without launching an interactive subshell")
+	foreground := flag.Bool("foreground", false, "Run the server in the foreground instead of using the background daemon")
+	shellFlag := flag.Bool("shell", false, "Launch an interactive proxied subshell")
 	noOpen := flag.Bool("no-open", false, "Do not open the dashboard in a browser on startup")
+	noBrowser := flag.Bool("no-browser", false, "Do not open the dashboard in a browser on startup")
+	forceFlag := flag.Bool("force", false, "Switch immediately instead of draining active connections")
 	noHook := flag.Bool("no-hook", false, "Do not install the temporary shell hook for new terminal tabs")
 	passthrough := flag.Bool("passthrough", false, "Start with capture paused (passthrough: TLS payloads are not decrypted or stored)")
 	flag.Parse()
@@ -81,6 +82,20 @@ func main() {
 	if *showVersion {
 		fmt.Printf("langley %s (%s)\n", version, commit)
 		os.Exit(0)
+	}
+
+	openBrowser := !*noOpen && !*noBrowser && os.Getenv("LANGLEY_NO_OPEN") == "" && !*showCA
+	inProcessServer := *foreground || *noShell || os.Getenv("LANGLEY_NO_SHELL") != "" ||
+		*shellFlag || os.Getenv("GO_WANT_MAIN_SERVER_HELPER") == "1" ||
+		*showCA || *configPath != "" || *listenAddr != "" || *apiAddr != "localhost:9091" || *debugMode
+
+	if !inProcessServer {
+		cli, err := NewDaemonCLI()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		os.Exit(cli.DefaultStart(context.Background(), *forceFlag, openBrowser, startPassthrough))
 	}
 
 	// Setup logging
@@ -102,7 +117,7 @@ func main() {
 	if stateErr == nil {
 		envActive = isLangleyEnvActive(existingStore)
 	}
-	shellMode := !*noShell && os.Getenv("LANGLEY_NO_SHELL") == "" &&
+	shellMode := !*noShell && !*foreground && os.Getenv("LANGLEY_NO_SHELL") == "" &&
 		!envActive && interactiveTTY
 	// The hook touches ~/.zshrc / ~/.bashrc for interactive top-level sessions
 	// and background daemons started via 'langley daemon start', so non-TTY test
@@ -110,14 +125,13 @@ func main() {
 	daemonMode := os.Getenv("LANGLEY_DAEMON") == "1"
 	hookEnabled := !*noHook && os.Getenv("LANGLEY_NO_HOOK") == "" &&
 		!envActive && (interactiveTTY || daemonMode) && runtime.GOOS != "windows"
-	openBrowser := !*noOpen && os.Getenv("LANGLEY_NO_OPEN") == "" && !*showCA
 
-	if interactiveTTY && !*noShell && os.Getenv("LANGLEY_NO_SHELL") == "" && !*showCA && *configPath == "" && *listenAddr == "" && *apiAddr == "localhost:9091" && os.Getenv("LANGLEY_LISTEN") == "" && os.Getenv("LANGLEY_DB_PATH") == "" && stateErr == nil {
+	if interactiveTTY && !*noShell && !*foreground && os.Getenv("LANGLEY_NO_SHELL") == "" && !*showCA && *configPath == "" && *listenAddr == "" && *apiAddr == "localhost:9091" && os.Getenv("LANGLEY_LISTEN") == "" && os.Getenv("LANGLEY_DB_PATH") == "" && stateErr == nil {
 		if state := runningInstance(context.Background(), existingStore, &HTTPHealthChecker{}); state != nil {
 			if !startPassthrough {
 				if attachCfg, err := config.Load(""); err == nil && attachCfg != nil {
 					enableCtx, enableCancel := context.WithTimeout(context.Background(), 2*time.Second)
-					_, _ = NewHTTPCaptureClient().SetCapture(enableCtx, state.APIAddr, attachCfg.Auth.Token, true, false)
+					_, _ = NewHTTPCaptureClient().SetCapture(enableCtx, state.APIAddr, attachCfg.Auth.Token, true, *forceFlag)
 					enableCancel()
 				}
 			}
@@ -328,6 +342,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	instanceID := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
+
 	// Create API server with reload and capture controller support
 	apiServer := api.NewServer(cfg, dataStore, logger,
 		api.WithConfigPath(actualConfigPath),
@@ -339,7 +355,7 @@ func main() {
 		api.WithPricingSource(pricingSource),
 		api.WithCaptureController(mitmProxy),
 		api.WithDaemonMeta(api.DaemonMeta{
-			InstanceID: fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()),
+			InstanceID: instanceID,
 			PID:        os.Getpid(),
 			ProxyAddr:  actualProxyAddr,
 			APIAddr:    actualAPIAddr,
@@ -419,11 +435,12 @@ func main() {
 		slog.Warn("failed to create state store", "error", err)
 	} else {
 		if err := stateStore.Write(ServerState{
-			ProxyAddr: actualProxyAddr,
-			APIAddr:   actualAPIAddr,
-			CAPath:    caPath,
-			PID:       os.Getpid(),
-			StartedAt: time.Now(),
+			InstanceID: instanceID,
+			ProxyAddr:  actualProxyAddr,
+			APIAddr:    actualAPIAddr,
+			CAPath:     caPath,
+			PID:        os.Getpid(),
+			StartedAt:  time.Now(),
 		}); err != nil {
 			slog.Warn("failed to write state file", "error", err)
 		}
@@ -441,7 +458,13 @@ func main() {
 	if err := hookMgr.Activate(actualProxyAddr, caPath, os.Getpid()); err != nil {
 		slog.Warn("failed to activate shell hook", "error", err)
 	}
-	defer func() { _ = hookMgr.Deactivate() }()
+	if daemonMode {
+		if activeData, err := os.ReadFile(filepath.Join(configDir, "active.env")); err == nil {
+			_ = writeFileAtomic(filepath.Join(configDir, "shell.env"), activeData, 0600)
+		}
+	} else {
+		defer func() { _ = hookMgr.Deactivate() }()
+	}
 
 	// Start proxy using the pre-created listener (langley-rla). Whichever ends
 	// first — proxy (signal/error) or interactive subshell — stops the other.
@@ -863,50 +886,6 @@ Examples:
     langley token rotate
     langley token rotate -api localhost:8080
 `)
-}
-
-// handleSetupCommand handles the "setup" subcommand for CA installation
-func handleSetupCommand(args []string) {
-	setupFlags := flag.NewFlagSet("setup", flag.ExitOnError)
-	manualOnly := setupFlags.Bool("manual", false, "Show manual instructions without installing")
-	skipMkcert := setupFlags.Bool("no-mkcert", false, "Show manual instructions without installing (alias for --manual)")
-	showHelp := setupFlags.Bool("help", false, "Show help")
-	_ = setupFlags.Parse(args)
-
-	if *showHelp {
-		printSetupHelp()
-		os.Exit(0)
-	}
-
-	// Get config directory for certs
-	configDir, err := config.ConfigDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting config directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	certsDir := filepath.Join(configDir, "certs")
-	caPath := filepath.Join(certsDir, "ca.crt")
-
-	// Ensure CA exists
-	ca, err := langleytls.LoadOrCreateCA(certsDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading/creating CA: %v\n", err)
-		os.Exit(1)
-	}
-	_ = ca // CA is loaded, cert file exists
-
-	fmt.Println("Langley Setup - CA Certificate Installation")
-	fmt.Println("============================================")
-	fmt.Println()
-	fmt.Printf("CA certificate: %s\n", caPath)
-	fmt.Println()
-
-	if !*manualOnly && !*skipMkcert {
-		installSystemCA(caPath)
-	} else {
-		printManualInstructions(caPath)
-	}
 }
 
 // installSystemCA installs the CA certificate into the OS system trust store
