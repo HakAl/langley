@@ -102,7 +102,7 @@ test.describe('Capture control bar', () => {
 
     await expect(control(page)).toHaveAttribute('data-state', 'enabling');
     await expect(control(page).locator('.capture-label')).toHaveText(
-      'Capturing (2 active connections will switch after current request)');
+      'Capturing (2 existing connections will switch when closed — or Force Switch)');
     const forceSwitch = page.getByRole('button', { name: 'Force switch active connections' });
     await expect(forceSwitch).toHaveText('Force Switch');
     await expect(page.getByRole('button', { name: 'Pause capture' })).toBeVisible();
@@ -119,7 +119,7 @@ test.describe('Capture control bar', () => {
     await mockCapture(page, status('enabling', { draining_passthrough_tunnels: 1 }), () => ({ body: status('capturing') }));
     await page.goto('/');
     await expect(control(page).locator('.capture-label')).toHaveText(
-      'Capturing (1 active connection will switch after current request)');
+      'Capturing (1 existing connection will switch when closed — or Force Switch)');
   });
 
   test('Pause Capture shows truthful stopping state until WebSocket reports passthrough', async ({ page }) => {
@@ -185,7 +185,7 @@ test.describe('Capture control bar', () => {
 
     sendCaptureState(ws(), status('enabling', { draining_passthrough_tunnels: 4 }));
     await expect(control(page).locator('.capture-label')).toHaveText(
-      'Capturing (4 active connections will switch after current request)');
+      'Capturing (4 existing connections will switch when closed — or Force Switch)');
 
     sendCaptureState(ws(), status('capturing', { intercept_hosts: ['api.anthropic.com'] }));
     await expect(control(page).locator('.capture-scope')).toContainText('Intercepting 1 host pattern');
@@ -380,6 +380,53 @@ test.describe('Capture control bar', () => {
 
     // New daemon's first WebSocket broadcast has revision 1 (< old revision 5) and must be applied.
     sendCaptureState(ws(), status('capturing', { revision: 1, instance_id: 'daemon-new' }));
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+  });
+
+  test('delayed POST from retired daemon cannot replace new daemon capture state', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    let releaseOldPost!: () => void;
+    const oldPostHeld = new Promise<void>((resolve) => { releaseOldPost = resolve; });
+    let notifyOldPostInFlight!: () => void;
+    const oldPostInFlight = new Promise<void>((resolve) => { notifyOldPostInFlight = resolve; });
+    let restarted = false;
+
+    await page.route('**/api/capture', async (route) => {
+      if (route.request().method() === 'POST') {
+        notifyOldPostInFlight();
+        await oldPostHeld;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('passthrough', { revision: 9, instance_id: 'old-daemon' })),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          restarted
+            ? status('capturing', { revision: 1, instance_id: 'new-daemon' })
+            : status('capturing', { revision: 8, instance_id: 'old-daemon' }),
+        ),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+
+    await page.getByRole('button', { name: 'Pause capture' }).click();
+    await oldPostInFlight;
+
+    restarted = true;
+    ws().close();
+    await expect(page.getByText('Disconnected')).toBeVisible();
+    await expect(page.getByText('Connected')).toBeVisible();
+
+    releaseOldPost();
+    await expect(control(page)).toHaveAttribute('aria-busy', 'false');
     await expect(control(page)).toHaveAttribute('data-state', 'capturing');
   });
 });

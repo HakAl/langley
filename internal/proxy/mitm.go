@@ -58,6 +58,21 @@ type captureSession struct {
 	client, upstream  net.Conn
 	busy              bool
 	awaitingFirstByte bool
+	readDone          chan struct{}
+}
+
+type captureAdmissionConn struct {
+	net.Conn
+	p       *MITMProxy
+	session *captureSession
+}
+
+func (c *captureAdmissionConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if n > 0 {
+		c.p.admitMITMFirstByte(c.session)
+	}
+	return n, err
 }
 
 type captureAdmissionReader struct {
@@ -84,6 +99,7 @@ type captureTunnel struct {
 type MITMProxy struct {
 	captureMu                sync.Mutex
 	captureWanted            bool
+	captureOpSeq             uint64
 	captureTunnels           map[*captureTunnel]struct{}
 	captureSessions          map[*captureSession]struct{}
 	inFlightMITMRequests     int
@@ -733,7 +749,7 @@ func (p *MITMProxy) handleConnectMITM(w http.ResponseWriter, r *http.Request) {
 		GetCertificate: p.certCache.GetCertificate,
 		NextProtos:     []string{"http/1.1"},
 	}
-	tlsConn := tls.Server(clientConn, tlsConfig)
+	tlsConn := tls.Server(&captureAdmissionConn{Conn: clientConn, p: p, session: session}, tlsConfig)
 	closers = append(closers, tlsConn)
 	if err := tlsConn.Handshake(); err != nil {
 		p.logger.Debug("TLS handshake failed", "host", r.Host, "error", err)
@@ -827,10 +843,13 @@ func (p *MITMProxy) serveTLSConnection(clientConn *tls.Conn, upstreamConn *tls.C
 
 func (p *MITMProxy) admitMITMFirstByte(session *captureSession) {
 	p.captureMu.Lock()
-	if session.awaitingFirstByte && p.captureWanted {
+	if session.awaitingFirstByte {
 		session.awaitingFirstByte = false
-		session.busy = true
-		p.inFlightMITMRequests++
+		_ = session.client.SetReadDeadline(time.Time{})
+		if !session.busy {
+			session.busy = true
+			p.inFlightMITMRequests++
+		}
 	}
 	p.captureMu.Unlock()
 }
@@ -856,6 +875,7 @@ func (p *MITMProxy) serveTLSCaptureSession(clientConn, upstreamConn *tls.Conn, h
 	upstreamReader := bufio.NewReader(upstreamConn)
 
 	for {
+		var readDone chan struct{}
 		p.captureMu.Lock()
 		if !p.captureWanted {
 			p.captureMu.Unlock()
@@ -871,18 +891,26 @@ func (p *MITMProxy) serveTLSCaptureSession(clientConn, upstreamConn *tls.Conn, h
 			p.inFlightMITMRequests++
 		} else {
 			session.awaitingFirstByte = true
+			readDone = make(chan struct{})
+			session.readDone = readDone
 		}
 		p.captureMu.Unlock()
 
 		// Wait for the first byte of a request while session.busy is false so
 		// genuinely idle keep-alive sessions can be closed immediately on pause.
-		// captureAdmissionReader marks session.busy = true inside Read() as soon
-		// as the first byte arrives, before Peek(1) returns.
-		if _, err := clientReader.Peek(1); err != nil {
-			if err != io.EOF {
-				p.logger.Debug("error awaiting request from TLS connection", "host", host, "error", err)
+		_, peekErr := clientReader.Peek(1)
+		if readDone != nil {
+			close(readDone)
+		}
+		if peekErr != nil {
+			if peekErr != io.EOF {
+				p.logger.Debug("error awaiting request from TLS connection", "host", host, "error", peekErr)
 			}
 			p.cancelMITMAdmission(session)
+			_ = session.client.Close()
+			if session.upstream != nil {
+				_ = session.upstream.Close()
+			}
 			return
 		}
 		p.captureMu.Lock()
@@ -1588,9 +1616,50 @@ func (p *MITMProxy) flushCaptureNotifications() {
 	p.captureMu.Unlock()
 }
 
+type pendingFirstByte struct {
+	session  *captureSession
+	readDone chan struct{}
+}
+
 func (p *MITMProxy) SetCapture(enabled bool, force bool) CaptureStatus {
 	p.captureMu.Lock()
+	p.captureOpSeq++
+	opSeq := p.captureOpSeq
 	before := p.captureStatusLocked()
+	var pending []pendingFirstByte
+	if !enabled && !force {
+		for session := range p.captureSessions {
+			if !session.busy && session.awaitingFirstByte && session.readDone != nil {
+				_ = session.client.SetReadDeadline(time.Now())
+				pending = append(pending, pendingFirstByte{session: session, readDone: session.readDone})
+			}
+		}
+	}
+	if len(pending) > 0 {
+		p.captureMu.Unlock()
+		for _, item := range pending {
+			select {
+			case <-item.readDone:
+			case <-time.After(15 * time.Millisecond):
+				p.captureMu.Lock()
+				if item.session.awaitingFirstByte {
+					item.session.awaitingFirstByte = false
+					_ = item.session.client.SetReadDeadline(time.Time{})
+					if !item.session.busy {
+						item.session.busy = true
+						p.inFlightMITMRequests++
+					}
+				}
+				p.captureMu.Unlock()
+			}
+		}
+		p.captureMu.Lock()
+		if p.captureOpSeq != opSeq {
+			status := p.captureStatusLocked()
+			p.captureMu.Unlock()
+			return status
+		}
+	}
 	p.captureWanted = enabled
 	for t := range p.captureTunnels {
 		if !enabled {

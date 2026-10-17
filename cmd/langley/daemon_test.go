@@ -318,7 +318,7 @@ func TestResume_StartsDaemonAndEnablesCapture(t *testing.T) {
 	if !c.isSet || !c.enabled || !c.force {
 		t.Errorf("call = %+v", c)
 	}
-	if !strings.Contains(tc.out.String(), "Capturing (2 active connection(s) will switch after current request)") {
+	if !strings.Contains(tc.out.String(), "Capturing (2 existing connection(s) will switch when closed — use --force to switch immediately)") {
 		t.Errorf("output = %q", tc.out.String())
 	}
 }
@@ -1156,6 +1156,52 @@ func TestSetup_PropagatesServiceActivationFailure(t *testing.T) {
 				t.Fatalf("stderr = %q, want Error installing user service unit", tc.errOut.String())
 			}
 		})
+	}
+}
+
+func TestSetup_ReusedServiceDaemonPausesCapture(t *testing.T) {
+	tc := newTestCLI(t)
+	tc.installCA = func(string) {}
+	tc.daemon.running = testState
+	tc.capture.status = &CaptureStatus{State: captureStopping, DrainingMITMRequests: 2}
+
+	if code := tc.Setup(context.Background(), nil); code != 0 {
+		t.Fatalf("Setup exit = %d, stderr = %s", code, tc.errOut.String())
+	}
+	paused := false
+	for _, c := range tc.capture.calls {
+		if c.isSet && !c.enabled {
+			paused = true
+		}
+	}
+	if !paused {
+		t.Fatalf("expected Setup to call SetCapture(enabled=false) on reused daemon, got %+v", tc.capture.calls)
+	}
+	if !strings.Contains(tc.out.String(), "stopping capture — finishing 2 active request(s)") {
+		t.Fatalf("expected Setup to report stopping state, got %q", tc.out.String())
+	}
+}
+
+func TestSetup_DoesNotFallbackAfterServiceActivation(t *testing.T) {
+	tc := newTestCLI(t)
+	tc.installCA = func(string) {}
+	d, store, health, sp, _ := newTestController(t)
+	d.readyTimeout = 25 * time.Millisecond
+	d.poll = time.Millisecond
+	tc.DaemonCLI.daemon = d
+	sp.onSpawn = func() *fakeProc {
+		pid := os.Getpid()
+		_ = store.Write(ServerState{PID: pid, APIAddr: "127.0.0.1:9091", ProxyAddr: "127.0.0.1:9090", StartedAt: time.Now()})
+		health.ok["127.0.0.1:9091"] = true
+		return &fakeProc{pid: pid, exited: make(chan struct{})}
+	}
+
+	code := tc.Setup(context.Background(), nil)
+	if sp.exe != "" {
+		t.Fatalf("Setup spawned independent detached process (%q) after service activation", sp.exe)
+	}
+	if code != 1 {
+		t.Fatalf("Setup exit = %d, want 1 when activated service did not become ready", code)
 	}
 }
 

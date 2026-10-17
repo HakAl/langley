@@ -6,7 +6,7 @@
 2. **Truthful State Labels:**
    - In **`passthrough`**: TLS payloads are **not** decrypted, parsed, or stored. The proxy only reads the initial HTTP `CONNECT host:port` header to open a raw TCP tunnel.
    - The UI and CLI never display **`passthrough`** while any previously intercepted MITM connection is still being decrypted, parsed, or flushed to SQLite (`stopping` is shown instead).
-   - Turning capture **ON** never aborts an active in-flight stream on an existing passthrough tunnel; idle passthrough tunnels to target hosts are closed immediately, while active tunnels drain and switch after their current turn completes (with an explicit **Force Switch** option).
+   - Turning capture **ON** never aborts an active in-flight stream on an existing passthrough tunnel; open passthrough tunnels to target hosts are marked draining and preserved until they close or hit the shared 5-minute inactivity timeout (with an explicit **Force Switch** option to close them immediately).
 3. **Scoped Interception & Safe Trust Bundle:**
    - Only hosts matching `intercept_hosts` (e.g. `api.anthropic.com`, `api.openai.com`, `generativelanguage.googleapis.com`) are ever eligible for MITM when capture is enabled. All other hosts (`github.com`, `registry.npmjs.org`, etc.) **always** use raw TCP passthrough.
    - `NODE_EXTRA_CA_CERTS` points to `ca.crt` (additive trust in Node.js).
@@ -41,7 +41,7 @@ stateDiagram-v2
 | Capture State | Proxy Behavior on New `CONNECT` | Existing Connections | UI / CLI Status Label |
 |---|---|---|---|
 | **`passthrough`** | Raw TCP tunnel for all hosts. TLS payloads are not decrypted, parsed, or stored. | Only raw TCP tunnels exist (`active_mitm_requests == 0`, persistence queue idle). | `Passthrough — TLS payloads are not decrypted, parsed, or stored` |
-| **`enabling`** | Target hosts (`intercept_hosts`) are MITM-intercepted; non-target hosts tunnel untouched. | Existing target passthrough tunnels (`draining_passthrough_tunnels > 0`) are preserved as draining so active streams (including quiet think pauses) never abort mid-turn. | `Capturing (N active connection(s) will switch after current request)` + `[Force switch now]` |
+| **`enabling`** | Target hosts (`intercept_hosts`) are MITM-intercepted; non-target hosts tunnel untouched. | Existing target passthrough tunnels (`draining_passthrough_tunnels > 0`) are preserved as draining until transport closure or shared inactivity timeout so active streams (including quiet think pauses) never abort mid-turn. | `Capturing (N existing connection(s) will switch when closed — or Force Switch)` + `[Force Switch]` |
 | **`capturing`** | Target hosts (`intercept_hosts`) are MITM-intercepted; non-target hosts tunnel untouched. | `draining_passthrough_tunnels == 0`. All target connections are MITM-intercepted. | `Capturing — intercepting configured LLM hosts` |
 | **`stopping`** | Raw TCP tunnel for all new `CONNECT` requests immediately. | Idle MITM keep-alive sockets closed immediately; `draining_mitm_requests > 0` in-flight MITM requests/streams are finishing and flushing to SQLite, then their sockets close. | `Stopping capture — finishing N active request(s)…` + `[Abort active requests]` |
 
@@ -49,8 +49,8 @@ stateDiagram-v2
 - **Passthrough → Capture (`enabling` → `capturing`):**
   - The proxy tracks open passthrough tunnels whose `host` matches `intercept_hosts`, recording shared `lastActivity` timestamps across both directions so one-way SSE streams never time out on the quiet direction while the opposite direction is active.
   - Because opaque passthrough TLS tunnels have no HTTP framing visibility to distinguish an idle keep-alive socket from an active SSE stream during a multi-second model think pause, when capture is enabled:
-    1. With `force=false` (`SetCapture(true, false)`), any open target passthrough tunnel is marked `draining` (`enabling` state with `draining_passthrough_tunnels > 0`) and preserved until natural closure (or shared idle timeout across both directions), guaranteeing that an active streamed turn is never aborted regardless of think-pause duration.
-    2. Clicking **Force switch now** (or `langley --force` / `SetCapture(true, true)`) closes remaining `draining` target passthrough tunnels immediately and transitions to `capturing`.
+    1. With `force=false` (`SetCapture(true, false)`), any open target passthrough tunnel is marked `draining` (`enabling` state with `draining_passthrough_tunnels > 0`) and preserved until natural transport closure or the shared 5-minute inactivity timeout across both directions, guaranteeing that an active streamed turn is never aborted during think pauses shorter than the 5-minute shared inactivity timeout.
+    2. Clicking **Force Switch** (or `langley --force` / `SetCapture(true, true)`) closes remaining `draining` target passthrough tunnels immediately and transitions to `capturing`.
 - **Capture → Passthrough (`stopping` → `passthrough`):**
   - In MITM mode (`internal/proxy/mitm.go`), Langley demarcates individual HTTP request/response lifecycles on each TLS connection:
     1. Idle MITM keep-alive connections (not currently between request start and response/SSE completion) are closed immediately when pause is requested.
@@ -111,7 +111,7 @@ stateDiagram-v2
 3. **Dashboard Header UX:**
    - Displays the live capture state pill and action button in the top navigation bar:
      - **`Passthrough`** (`TLS payloads not decrypted or stored`) → button: **`Start Capture`**
-     - **`Capturing (N switching…)`** → button: **`Pause Capture`** + **`Force Switch (N)`**
+     - **`Capturing (N existing connection(s) will switch when closed — or Force Switch)`** → button: **`Pause Capture`** + **`Force Switch`**
      - **`Capturing`** (`Intercepting N host pattern(s)`) → button: **`Pause Capture`**
      - **`Stopping capture (N finishing…)`** → button: **`Force Stop`**
    - Displays a scope tooltip/badge listing the configured `intercept_hosts` and noting that all other hosts tunnel through untouched.
@@ -123,13 +123,13 @@ stateDiagram-v2
 Every interactive control and state transition must be proven end-to-end before completion:
 
 1. **Go E2E Proxy & State Machine Tests (`test/e2e/` & `internal/proxy/`):**
-   - **Pre-existing client keep-alive switch (`passthrough` → `capturing`):** A persistent HTTPS client (using `http.Transport` with keep-alive enabled and `HTTPS_PROXY`) sends Request #1 while proxy is in `passthrough` (assert: upstream cert is seen directly, `0` flows stored in SQLite). Enable capture via `POST /api/capture` (`{"enabled": true}`); send Request #2 on the **same** `http.Client` without recreating it (assert: idle passthrough socket was closed, client automatically reconnected, Request #2 is MITM-intercepted with Langley CA and stored in SQLite).
-   - **Active stream preservation (`passthrough` → `enabling` → `capturing`):** Start a streaming HTTPS response in `passthrough`, enable capture mid-stream (assert: state is `enabling`, `draining_passthrough_tunnels == 1`, stream completes without error; once stream goes idle, tunnel closes and state transitions to `capturing`). Also test `{"enabled": true, "force": true}` immediately severing the tunnel and transitioning to `capturing`.
+   - **Pre-existing client keep-alive switch (`passthrough` → `enabling` → `capturing`):** A persistent HTTPS client (using `http.Transport` with keep-alive enabled and `HTTPS_PROXY`) sends Request #1 while proxy is in `passthrough` (assert: upstream cert is seen directly, `0` flows stored in SQLite). Enable capture via `POST /api/capture` (`{"enabled": true}`) to enter `enabling` while the existing tunnel remains open, then close existing connections or issue `{"enabled": true, "force": true}` (**Force Switch**) so the same `http.Client` reconnects and Request #2 is MITM-intercepted with Langley CA and stored in SQLite.
+   - **Active stream preservation (`passthrough` → `enabling` → `capturing`):** Start a streaming HTTPS response in `passthrough`, enable capture mid-stream (assert: state is `enabling`, `draining_passthrough_tunnels == 1`, stream completes without error even across multi-second think pauses; once the connection closes or hits the shared inactivity timeout, state transitions to `capturing`). Also test `{"enabled": true, "force": true}` immediately severing the tunnel and transitioning to `capturing`.
    - **Truthful pause draining (`capturing` → `stopping` → `passthrough`):** Start an SSE streaming request in `capturing` mode, call `POST /api/capture` (`{"enabled": false}`) mid-stream (assert: state is `stopping`, `draining_mitm_requests == 1`, a concurrent new `CONNECT` immediately uses passthrough without decryption, and state only transitions to `passthrough` after the in-flight SSE stream finishes and flushes to SQLite). Also test `{"enabled": false, "force": true}` aborting the in-flight MITM stream and transitioning immediately to `passthrough`.
    - **Combined CA Bundle (`ca-bundle.pem`):** Verify a TLS client configured exclusively with `RootCAs` loaded from `ca-bundle.pem` trusts both a standard non-Langley upstream CA (in `passthrough` mode) and Langley's MITM leaf cert (in `capturing` mode).
    - **Control-plane security:** Verify `POST /api/capture` and `/ws` reject requests with invalid `Host` (DNS rebinding), cross-origin `Origin`, or missing/invalid bearer token with `401`/`403`.
 2. **Playwright Browser E2E Tests (`web/tests/`):**
-   - Verify clicking **Start Capture** in `passthrough` state sends `POST /api/capture` (`{"enabled": true}`), updates the header pill and button states, and reflects live WebSocket `capture_state` broadcasts across all 4 states (`passthrough`, `enabling` with **Force Switch (N)** click, `capturing`, and `stopping` with **Force Stop** click).
+   - Verify clicking **Start Capture** in `passthrough` state sends `POST /api/capture` (`{"enabled": true}`), updates the header pill and button states, and reflects live WebSocket `capture_state` broadcasts across all 4 states (`passthrough`, `enabling` with **Force Switch** click, `capturing`, and `stopping` with **Force Stop** click).
    - Verify keyboard accessibility, focus-visible states, disabled states while a transition request is in flight, and error banner display if `POST /api/capture` returns an error.
 3. **CLI Lifecycle E2E Tests (`cmd/langley/`):**
    - Verify daemon startup defaults to `passthrough`, `langley` flips to `capturing`, `langley pause` flips to `passthrough`, `langley dashboard` preserves `passthrough`, `langley daemon restart` resets to `passthrough`, and `langley uninstall` cleanly removes service files, shell hooks, and certs.

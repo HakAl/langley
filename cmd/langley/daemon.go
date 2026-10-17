@@ -681,7 +681,7 @@ func (c *DaemonCLI) Status(ctx context.Context) int {
 func captureStateLine(cs *CaptureStatus) string {
 	switch cs.State {
 	case captureEnabling:
-		return fmt.Sprintf("%s (%d active connection(s) will switch after current request)", cs.State, cs.DrainingPassthroughTunnels)
+		return fmt.Sprintf("%s (%d existing connection(s) will switch when closed)", cs.State, cs.DrainingPassthroughTunnels)
 	case captureStopping:
 		return fmt.Sprintf("%s (finishing %d active request(s))", cs.State, cs.DrainingMITMRequests)
 	}
@@ -696,7 +696,7 @@ func captureSummary(cs *CaptureStatus) string {
 	case capturePassthrough:
 		return "Langley paused (passthrough — TLS payloads are not decrypted, parsed, or stored)"
 	case captureEnabling:
-		return fmt.Sprintf("Capturing (%d active connection(s) will switch after current request)", cs.DrainingPassthroughTunnels)
+		return fmt.Sprintf("Capturing (%d existing connection(s) will switch when closed — use --force to switch immediately)", cs.DrainingPassthroughTunnels)
 	case captureCapturing:
 		return "Capturing"
 	}
@@ -964,30 +964,37 @@ func (c *DaemonCLI) Setup(ctx context.Context, args []string) int {
 		st      *ServerState
 		started bool
 	)
-	if !manual && svcPath != "" && c.runner != nil {
-		if st = c.waitForServiceStart(ctx); st != nil {
-			started = true
+	serviceManaged := !manual && svcPath != "" && c.runner != nil
+	if serviceManaged {
+		st = c.waitForServiceStart(ctx)
+		if st == nil {
+			fmt.Fprintf(c.stderr, "Error: user service %s did not become ready\n", svcPath)
+			return 1
 		}
-	}
-	if st == nil {
+	} else {
 		st, started, err = c.daemon.Start(ctx)
 		if err != nil {
 			fmt.Fprintf(c.stderr, "Error starting daemon: %v\n", err)
 			return 1
 		}
 	}
-	mode := capturePassthrough
-	if !started && c.capture != nil {
-		cs, err := c.capture.SetCapture(ctx, st.APIAddr, c.token(), false, false)
+	var cs *CaptureStatus
+	if (serviceManaged || !started) && c.capture != nil {
+		cs, err = c.capture.SetCapture(ctx, st.APIAddr, c.token(), false, false)
 		if err != nil {
 			fmt.Fprintf(c.stderr, "Error transitioning daemon to passthrough: %v\n", err)
 			return 1
 		}
-		if cs != nil && cs.State != "" {
-			mode = cs.State
+		if cs != nil && cs.State != "" && cs.State != capturePassthrough && cs.State != captureStopping {
+			fmt.Fprintf(c.stderr, "Error: daemon remained in %s state after requesting passthrough\n", cs.State)
+			return 1
 		}
 	}
-	fmt.Fprintf(c.stdout, "  ✓ Daemon running in %s mode (PID %d, proxy http://%s)\n", mode, st.PID, st.ProxyAddr)
+	if cs != nil && cs.State == captureStopping {
+		fmt.Fprintf(c.stdout, "  ✓ Daemon stopping capture — finishing %d active request(s) (PID %d, proxy http://%s)\n", cs.DrainingMITMRequests, st.PID, st.ProxyAddr)
+	} else {
+		fmt.Fprintf(c.stdout, "  ✓ Daemon running in passthrough mode (PID %d, proxy http://%s)\n", st.PID, st.ProxyAddr)
+	}
 
 	hookMgr := NewFileShellHookManager(c.configDir, c.homeDir, c.shellPath)
 	if err := hookMgr.Activate(st.ProxyAddr, caPath, st.PID); err != nil {

@@ -84,7 +84,7 @@ function CaptureControl({ status, pending, onSetMode }: CaptureControlProps) {
       actions = button('Start Capture', 'Start capture', true, false, true)
       break
     case 'enabling':
-      label = `Capturing (${plural(status.draining_passthrough_tunnels, 'active connection')} will switch after current request)`
+      label = `Capturing (${plural(status.draining_passthrough_tunnels, 'existing connection')} will switch when closed — or Force Switch)`
       actions = <>
         {button('Force Switch', 'Force switch active connections', true, true, true)}
         {button('Pause Capture', 'Pause capture', false, false)}
@@ -467,18 +467,47 @@ function App() {
   // Every authoritative capture update or user mutation bumps the version; a
   // response from a GET issued before a newer update or POST is stale and must
   // not overwrite or invalidate the newer state. Revision high-water marks are
-  // scoped to the daemon instance epoch and reset when a reconnect snapshot
-  // observes a fresh daemon.
+  // scoped to the daemon instance epoch, reset when a reconnect snapshot
+  // observes a fresh daemon, and retired instance IDs are permanently rejected.
   const captureVersionRef = useRef(0)
+  const captureEpochRef = useRef(0)
   const captureRevisionRef = useRef(0)
   const captureInstanceRef = useRef<string | undefined>(undefined)
-  const applyCaptureStatus = useCallback((status: CaptureStatus, resetEpoch = false) => {
+  const retiredInstancesRef = useRef<Set<string>>(new Set())
+
+  const applyCaptureStatus = useCallback((
+    status: CaptureStatus,
+    source: 'get' | 'post' | 'ws' = 'ws',
+    expectedEpoch?: number,
+    expectedInstance?: string,
+  ) => {
+    if (status.instance_id && retiredInstancesRef.current.has(status.instance_id)) {
+      return
+    }
+    if (source === 'post') {
+      if (expectedEpoch !== undefined && expectedEpoch !== captureEpochRef.current) {
+        return
+      }
+      if (expectedInstance && captureInstanceRef.current && expectedInstance !== captureInstanceRef.current) {
+        return
+      }
+      if (status.instance_id && captureInstanceRef.current && status.instance_id !== captureInstanceRef.current) {
+        return
+      }
+    }
+
     const instanceChanged =
       Boolean(status.instance_id) &&
       Boolean(captureInstanceRef.current) &&
       status.instance_id !== captureInstanceRef.current
-    if (resetEpoch || instanceChanged) {
-      captureInstanceRef.current = status.instance_id
+    if (instanceChanged && captureInstanceRef.current) {
+      retiredInstancesRef.current.add(captureInstanceRef.current)
+    }
+    if (source === 'get' || instanceChanged) {
+      captureEpochRef.current += 1
+      if (status.instance_id) {
+        captureInstanceRef.current = status.instance_id
+      }
       captureRevisionRef.current = typeof status.revision === 'number' ? status.revision : 0
     } else if (typeof status.revision === 'number') {
       if (status.revision < captureRevisionRef.current) return
@@ -492,8 +521,14 @@ function App() {
   const refreshCaptureStatus = useCallback(async () => {
     const version = captureVersionRef.current
     const { data } = await api.fetchCaptureStatus()
-    if (data && captureVersionRef.current === version) {
-      applyCaptureStatus(data, true)
+    if (!data) return
+    if (data.instance_id && retiredInstancesRef.current.has(data.instance_id)) return
+    const isNewInstance =
+      Boolean(data.instance_id) &&
+      Boolean(captureInstanceRef.current) &&
+      data.instance_id !== captureInstanceRef.current
+    if (isNewInstance || captureVersionRef.current === version) {
+      applyCaptureStatus(data, 'get')
     }
   }, [api.fetchCaptureStatus, applyCaptureStatus])
 
@@ -503,12 +538,14 @@ function App() {
     captureActionPendingRef.current = true
     setCaptureActionPending(true)
     captureVersionRef.current += 1
+    const postEpoch = captureEpochRef.current
+    const postInstance = captureInstanceRef.current
     try {
       const { data, error } = await api.setCaptureMode(enabled, force)
       if (error) {
         setError(error)
       } else if (data) {
-        applyCaptureStatus(data)
+        applyCaptureStatus(data, 'post', postEpoch, postInstance)
       }
     } finally {
       captureActionPendingRef.current = false
