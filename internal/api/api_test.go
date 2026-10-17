@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,6 +140,7 @@ func TestAuthMiddleware_RejectsTokenInURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", tt.path, nil)
+			req.Host = "localhost"
 			if tt.authHeader != "" {
 				req.Header.Set("Authorization", tt.authHeader)
 			}
@@ -186,6 +188,7 @@ func TestAuthMiddleware_ConstantTimeComparison(t *testing.T) {
 
 	for _, wrongToken := range wrongTokens {
 		req := httptest.NewRequest("GET", "/api/flows", nil)
+		req.Host = "localhost"
 		req.Header.Set("Authorization", "Bearer "+wrongToken)
 
 		rr := httptest.NewRecorder()
@@ -240,6 +243,7 @@ func TestAdminReload_LocalhostOnly(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("POST", "/api/admin/reload", nil)
+			req.Host = "localhost"
 			req.Header.Set("Authorization", "Bearer test-token")
 			req.RemoteAddr = tt.remoteAddr
 
@@ -290,6 +294,7 @@ func TestExportFlows_NDJSON(t *testing.T) {
 	handler := server.Handler()
 
 	req := httptest.NewRequest("GET", "/api/flows/export?format=ndjson", nil)
+	req.Host = "localhost"
 	req.Header.Set("Authorization", "Bearer test-token")
 
 	rr := httptest.NewRecorder()
@@ -321,6 +326,7 @@ func TestExportFlows_JSON(t *testing.T) {
 	handler := server.Handler()
 
 	req := httptest.NewRequest("GET", "/api/flows/export?format=json", nil)
+	req.Host = "localhost"
 	req.Header.Set("Authorization", "Bearer test-token")
 
 	rr := httptest.NewRecorder()
@@ -368,6 +374,7 @@ func TestExportFlows_CSV(t *testing.T) {
 	handler := server.Handler()
 
 	req := httptest.NewRequest("GET", "/api/flows/export?format=csv", nil)
+	req.Host = "localhost"
 	req.Header.Set("Authorization", "Bearer test-token")
 
 	rr := httptest.NewRecorder()
@@ -399,6 +406,7 @@ func TestExportFlows_MaxRows(t *testing.T) {
 	handler := server.Handler()
 
 	req := httptest.NewRequest("GET", "/api/flows/export?format=ndjson&max_rows=3", nil)
+	req.Host = "localhost"
 	req.Header.Set("Authorization", "Bearer test-token")
 
 	rr := httptest.NewRecorder()
@@ -487,6 +495,7 @@ func TestFlowEndpoints_FilterAndSortParams(t *testing.T) {
 			handler := NewServer(cfg, ms, nil).Handler()
 
 			req := httptest.NewRequest("GET", endpoint+"?"+query, nil)
+			req.Host = "localhost"
 			req.Header.Set("Authorization", "Bearer test-token")
 			rr := httptest.NewRecorder()
 			handler.ServeHTTP(rr, req)
@@ -527,6 +536,7 @@ func TestFlowEndpoints_RejectInvalidSort(t *testing.T) {
 				handler := NewServer(cfg, ms, nil).Handler()
 
 				req := httptest.NewRequest("GET", endpoint+"?"+q, nil)
+				req.Host = "localhost"
 				req.Header.Set("Authorization", "Bearer test-token")
 				rr := httptest.NewRecorder()
 				handler.ServeHTTP(rr, req)
@@ -550,12 +560,96 @@ func TestFlowEndpoints_AcceptAllSortColumns(t *testing.T) {
 	for _, col := range store.FlowSortColumns {
 		for _, dir := range []string{"", "asc", "desc", "DESC"} {
 			req := httptest.NewRequest("GET", "/api/flows?sort_by="+col+"&sort_dir="+dir, nil)
+			req.Host = "localhost"
 			req.Header.Set("Authorization", "Bearer test-token")
 			rr := httptest.NewRecorder()
 			handler.ServeHTTP(rr, req)
 			if rr.Code != http.StatusOK {
 				t.Errorf("sort_by=%s sort_dir=%s: status = %d, want 200", col, dir, rr.Code)
 			}
+		}
+	}
+}
+
+// captureStub implements the consumer contract and records force propagation.
+type captureStub struct {
+	status CaptureStatus
+	force  bool
+}
+
+func (c *captureStub) CaptureStatus() CaptureStatus { return c.status }
+func (c *captureStub) SetCapture(enabled, force bool) CaptureStatus {
+	c.force = force
+	c.status.State = "passthrough"
+	if enabled {
+		c.status.State = "capturing"
+	}
+	return c.status
+}
+
+func TestCaptureAPIAndDaemonHealth(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Auth.Token = "test-token"
+	ctrl := &captureStub{status: CaptureStatus{State: "passthrough", InterceptHosts: []string{"api.openai.com"}}}
+	server := NewServer(cfg, &mockStore{}, nil, WithCaptureController(ctrl), WithDaemonMeta(DaemonMeta{InstanceID: "instance-1", PID: 123, ProxyAddr: "127.0.0.1:9090", APIAddr: "daemon.test:9091"}))
+	for _, tc := range []struct {
+		method, path, body, host, origin, token string
+		cookie                                  bool
+		want                                    int
+	}{
+		{method: "GET", path: "/api/capture", host: "localhost", token: "test-token", want: 200},
+		{method: "GET", path: "/api/capture", host: "localhost", want: 401},
+		{method: "POST", path: "/api/capture", body: `{"enabled":true,"force":true}`, host: "127.0.0.1:9091", token: "test-token", want: 200},
+		{method: "POST", path: "/api/capture", body: `{"force":true}`, host: "localhost", token: "test-token", want: 400},
+		{method: "POST", path: "/api/capture", body: `{"enabled":"yes"}`, host: "localhost", token: "test-token", want: 400},
+		{method: "POST", path: "/api/capture", body: `{"enabled":false}`, host: "localhost", origin: "https://evil.test", cookie: true, want: 403},
+		{method: "POST", path: "/api/capture", body: `{"enabled":false}`, host: "localhost", origin: "http://localhost.evil.test", token: "test-token", want: 403},
+		{method: "GET", path: "/api/health", host: "evil.test:9091", want: 403},
+		{method: "GET", path: "/api/health", host: "daemon.test:9091", want: 200},
+		{method: "GET", path: "/api/health", host: "[::1]:9091", want: 200},
+	} {
+		t.Run(tc.method+tc.path+tc.host+tc.origin+tc.body, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Host = tc.host
+			if tc.token != "" {
+				req.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			if tc.cookie {
+				req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cfg.Auth.Token})
+			}
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status %d, want %d: %s", rec.Code, tc.want, rec.Body.String())
+			}
+			if tc.path == "/api/health" && tc.want == 200 {
+				var health HealthResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &health); err != nil {
+					t.Fatal(err)
+				}
+				if health.Service != "langley" || health.InstanceID != "instance-1" || health.PID != 123 || health.ProxyAddr != "127.0.0.1:9090" || health.APIAddr != "daemon.test:9091" || health.CaptureState != "capturing" {
+					t.Fatalf("health: %+v", health)
+				}
+			}
+		})
+	}
+	if !ctrl.force {
+		t.Fatal("force was not forwarded")
+	}
+}
+
+func TestLocalhostOriginExactHostname(t *testing.T) {
+	for _, origin := range []string{"http://localhost:5173", "https://127.0.0.1:9091", "http://[::1]:9091"} {
+		if !isLocalhostOrigin(origin) {
+			t.Errorf("rejected %s", origin)
+		}
+	}
+	for _, origin := range []string{"http://localhost.evil.test", "http://127.0.0.1.evil.test", "http://localhost@evil.test", "null", "http://localhost/path", "http://localhost?x=1"} {
+		if isLocalhostOrigin(origin) {
+			t.Errorf("accepted %s", origin)
 		}
 	}
 }

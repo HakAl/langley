@@ -34,11 +34,19 @@ export interface FlowListResponse {
   total: number
 }
 
-export interface WSMessage {
-  type: string
-  timestamp: string
-  data: Flow
+export type CaptureState = 'passthrough' | 'enabling' | 'capturing' | 'stopping'
+
+export interface CaptureStatus {
+  state: CaptureState
+  draining_passthrough_tunnels: number
+  draining_mitm_requests: number
+  intercept_hosts: string[]
+  proxy_addr?: string
 }
+
+export type WSMessage =
+  | { type: 'flow_start' | 'flow_complete' | 'flow_update'; timestamp: string; data: Flow }
+  | { type: 'capture_state'; timestamp: string; data: CaptureStatus }
 
 export interface Stats {
   status: string

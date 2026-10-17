@@ -3366,4 +3366,3 @@ func TestShellEnvAdoptionAcrossSessions(t *testing.T) {
 		t.Fatalf("shell env adoption across sessions failed: %v: %s", err, out)
 	}
 }
-

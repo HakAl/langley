@@ -45,11 +45,12 @@ In an interactive terminal, `langley` is a single-terminal session:
 - Drops you into your `$SHELL` with the proxy environment already set, plus `LANGLEY_ACTIVE=1`.
 - Installs a temporary hook in `~/.zshrc` / `~/.bashrc` (between `# >>> langley hook >>>` markers) that sources `~/.config/langley/active.env` and registers a prompt hook (`_langley_sync`), so new terminal tabs opened while Langley runs are proxied too and automatically clear proxy variables when Langley exits.
 - In terminal tabs that were already open before Langley started, run `langley` to attach a proxied subshell to the running instance, or run `eval "$(langley env)"` to adopt the proxy environment and automatic prompt synchronization in-place.
+- You can also run a persistent background daemon in **passthrough** mode (`langley daemon start`) so any CLI started at any time routes through the proxy untouched (`TLS payloads are not decrypted, parsed, or stored`), then toggle capture on and off dynamically from the web dashboard header or via `langley resume` / `langley pause` without restarting your CLI session.
 - Writes server logs to `~/.config/langley/langley.log` so they don't interfere with interactive tools.
 
-Use `-no-shell` to run as a foreground server instead (logs to the terminal; use `langley run <cmd>` from another terminal), `-no-open` to skip opening the browser, and `-no-hook` to leave your RC files alone. The `LANGLEY_NO_SHELL`, `LANGLEY_NO_OPEN`, and `LANGLEY_NO_HOOK` environment variables do the same. Non-interactive runs (no TTY) always use foreground server mode and never touch RC files.
+Use `-no-shell` to run as a foreground server instead (logs to the terminal; use `langley run <cmd>` from another terminal), `-no-open` to skip opening the browser, `-no-hook` to leave your RC files alone, and `-passthrough` to start with capture paused. The `LANGLEY_NO_SHELL`, `LANGLEY_NO_OPEN`, `LANGLEY_NO_HOOK`, and `LANGLEY_START_PASSTHROUGH=1` environment variables do the same. Non-interactive runs (no TTY) always use foreground server mode and never touch RC files.
 
-`langley run` sets `HTTPS_PROXY`, `HTTP_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, and `REQUESTS_CA_BUNDLE` automatically. Or set them yourself:
+`langley run` sets `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS` (`ca.crt`), `SSL_CERT_FILE` (`ca-bundle.pem`), and `REQUESTS_CA_BUNDLE` (`ca-bundle.pem`) automatically. Or set them yourself:
 
 ```bash
 # Unix
@@ -72,7 +73,7 @@ Six views, all fed by real-time WebSocket updates:
 | **Anomalies** | Flagged events: large contexts (>100k tokens), slow responses (>30s), rapid retries, high-cost requests (>$1), tool failures. |
 | **Settings** | Configure task idle gap. |
 
-Keyboard navigation: `j`/`k` to move, `Enter` to select, `Esc` to close, `?` for help. Dark/light theme toggle in the header.
+Keyboard navigation: `j`/`k` to move, `Enter` to select, `Esc` to close, `?` for help. Dark/light theme toggle and live **Passthrough / Capturing** toggle in the header.
 
 ## How Task Grouping Works
 
@@ -109,6 +110,14 @@ COMMANDS:
   run <cmd> [args]    Run a command with proxy environment configured
   env                 Print shell snippet to adopt proxy & prompt sync in-place
   setup               Install CA certificate to system trust store
+  resume [--force]    Start daemon if needed and enable capture (alias: start)
+  pause [--force]     Switch to passthrough without stopping the daemon
+  dashboard           Start daemon if needed and open dashboard without changing capture state
+  status              Show daemon state, capture state, addresses, and scope
+  daemon <start|stop|restart|status>
+                      Manage the background daemon (always starts in passthrough)
+  uninstall [--keep-data] [--yes] [--no-system-trust]
+                      Stop Langley and remove hooks, service files, certificates, and state
   token show          Show the current auth token
   token rotate        Generate a new auth token
 
@@ -121,6 +130,7 @@ OPTIONS:
   -no-shell           Run as a foreground server (no interactive subshell)
   -no-open            Do not open the dashboard in a browser on startup
   -no-hook            Do not install the temporary shell hook for new tabs
+  -passthrough        Start with capture paused (passthrough)
   -help               Show help
 ```
 

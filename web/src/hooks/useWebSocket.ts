@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'react'
-import type { Flow, WSMessage } from '../types'
+import type { CaptureStatus, Flow, WSMessage } from '../types'
 
 const MAX_RECONNECT_ATTEMPTS = 5
 
@@ -8,9 +8,10 @@ interface UseWebSocketOptions {
   onConnectedChange: (connected: boolean) => void
   onError: (error: string | null) => void
   onReconnect?: () => void
+  onCaptureStateChange?: (status: CaptureStatus) => void
 }
 
-export function useWebSocket({ onFlowUpdate, onConnectedChange, onError, onReconnect }: UseWebSocketOptions) {
+export function useWebSocket({ onFlowUpdate, onConnectedChange, onError, onReconnect, onCaptureStateChange }: UseWebSocketOptions) {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
   const reconnectAttemptsRef = useRef(0)
@@ -63,6 +64,8 @@ export function useWebSocket({ onFlowUpdate, onConnectedChange, onError, onRecon
           const msg: WSMessage = JSON.parse(line)
           if (msg.type === 'flow_start' || msg.type === 'flow_complete' || msg.type === 'flow_update') {
             onFlowUpdate(msg.data)
+          } else if (msg.type === 'capture_state') {
+            onCaptureStateChange?.(msg.data)
           }
         }
       } catch (e) {
@@ -71,7 +74,7 @@ export function useWebSocket({ onFlowUpdate, onConnectedChange, onError, onRecon
     }
 
     wsRef.current = ws
-  }, [onFlowUpdate, onConnectedChange, onError, onReconnect])
+  }, [onFlowUpdate, onConnectedChange, onError, onReconnect, onCaptureStateChange])
 
   const cleanup = useCallback(() => {
     if (reconnectTimeoutRef.current) {

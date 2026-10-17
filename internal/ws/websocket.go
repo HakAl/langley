@@ -6,7 +6,9 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -22,10 +24,12 @@ const sessionCookieName = "langley_session"
 
 // isLocalhostOrigin checks if the Origin header indicates a localhost request.
 func isLocalhostOrigin(origin string) bool {
-	return strings.HasPrefix(origin, "http://localhost") ||
-		strings.HasPrefix(origin, "http://127.0.0.1") ||
-		strings.HasPrefix(origin, "https://localhost") ||
-		strings.HasPrefix(origin, "https://127.0.0.1")
+	u, err := url.Parse(origin)
+	if err != nil || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	h := u.Hostname()
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 var upgrader = websocket.Upgrader{
@@ -40,6 +44,7 @@ var upgrader = websocket.Upgrader{
 
 // Hub manages WebSocket connections and message broadcasting.
 type Hub struct {
+	apiAddr    string // protected by mu
 	cfg        *config.Config
 	logger     *slog.Logger
 	clients    map[*Client]bool
@@ -63,6 +68,7 @@ const (
 	MessageTypeFlowComplete = "flow_complete"
 	MessageTypeEvent        = "event"
 	MessageTypePing         = "ping"
+	MessageTypeCaptureState = "capture_state"
 )
 
 // Message is a WebSocket message.
@@ -224,6 +230,22 @@ func (h *Hub) ClientCount() int {
 // 3. Token query param - for CLI (WebSocket can't set headers easily)
 func (h *Hub) Handler(authToken string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.ToLower(strings.Trim(host, "[]"))
+		h.mu.RLock()
+		allowed := h.apiAddr
+		h.mu.RUnlock()
+		if a, _, err := net.SplitHostPort(allowed); err == nil {
+			allowed = a
+		}
+		allowed = strings.ToLower(strings.Trim(allowed, "[]"))
+		if host != "" && host != "localhost" && host != "127.0.0.1" && host != "::1" && host != allowed {
+			http.Error(w, "Forbidden: invalid Host", http.StatusForbidden)
+			return
+		}
 		// Read current token from config (supports hot-reload)
 		currentToken := authToken
 		if h.cfg != nil {
@@ -394,4 +416,16 @@ func flowToSummary(f *store.Flow) map[string]interface{} {
 	}
 
 	return summary
+}
+
+// BroadcastCaptureState publishes capture lifecycle updates to dashboard tabs.
+func (h *Hub) BroadcastCaptureState(status interface{}) {
+	h.Broadcast(&Message{Type: MessageTypeCaptureState, Timestamp: time.Now(), Data: status})
+}
+
+// SetAPIAddr allows the explicitly configured API hostname for WebSocket upgrades.
+func (h *Hub) SetAPIAddr(addr string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.apiAddr = addr
 }

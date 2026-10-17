@@ -4,9 +4,12 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/HakAl/langley/internal/api"
 	"github.com/HakAl/langley/internal/config"
@@ -184,7 +188,7 @@ func TestE2E_DirectHandler(t *testing.T) {
 	handler := apiServer.Handler()
 
 	// GET /api/flows (with auth)
-	apiReq := httptest.NewRequest("GET", "/api/flows", nil)
+	apiReq := httptest.NewRequest("GET", "http://localhost/api/flows", nil)
 	apiReq.Header.Set("Authorization", "Bearer test-token-123")
 	apiResp := httptest.NewRecorder()
 	handler.ServeHTTP(apiResp, apiReq)
@@ -194,7 +198,7 @@ func TestE2E_DirectHandler(t *testing.T) {
 	}
 
 	// GET /api/flows/:id (with auth)
-	apiReq = httptest.NewRequest("GET", "/api/flows/"+flow.ID, nil)
+	apiReq = httptest.NewRequest("GET", "http://localhost/api/flows/"+flow.ID, nil)
 	apiReq.Header.Set("Authorization", "Bearer test-token-123")
 	apiResp = httptest.NewRecorder()
 	handler.ServeHTTP(apiResp, apiReq)
@@ -888,4 +892,114 @@ func TestE2E_Redaction(t *testing.T) {
 	}
 
 	t.Log("E2E Redaction test passed")
+}
+
+// TestE2E_CaptureControlKeepAlive proves the public control API changes the
+// certificate and persistence behavior on a single persistent HTTPS client.
+func TestE2E_CaptureControlKeepAlive(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"capture-control","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	cfg := config.DefaultConfig()
+	cfg.Auth.Token = "test-token"
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Proxy.InterceptHosts = []string{upstreamURL.Hostname()}
+	data, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "capture.db"), &cfg.Retention)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = data.Close() }()
+	ca, err := langleytls.LoadOrCreateCA(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	redactor, err := redact.New(&cfg.Redaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := proxy.NewMITMProxy(proxy.MITMProxyConfig{Config: cfg, CA: ca, CertCache: langleytls.NewCertCache(ca, 10), Redactor: redactor, Store: data, StartInPassthrough: true, InsecureSkipVerifyUpstream: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.ServeListener(ctx, ln) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	p.SetProxyAddr(ln.Addr().String())
+	control := httptest.NewServer(api.NewServer(cfg, data, nil, api.WithCaptureController(p), api.WithDaemonMeta(api.DaemonMeta{InstanceID: "e2e-instance", PID: os.Getpid(), ProxyAddr: ln.Addr().String(), APIAddr: "127.0.0.1:0"})).Handler())
+	defer control.Close()
+	proxyURL, _ := url.Parse("http://" + ln.Addr().String())
+	roots := x509.NewCertPool()
+	roots.AddCert(upstream.Certificate())
+	roots.AppendCertsFromPEM(ca.CertPEM())
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: roots}}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	fetch := func() []byte {
+		t.Helper()
+		resp, err := client.Get(upstream.URL + "/v1/messages")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if _, err = io.Copy(io.Discard, resp.Body); err != nil {
+			t.Fatal(err)
+		}
+		return resp.TLS.PeerCertificates[0].Raw
+	}
+	first := fetch()
+	if !bytes.Equal(first, upstream.Certificate().Raw) {
+		t.Fatal("passthrough replaced upstream certificate")
+	}
+	count, err := data.CountFlows(ctx, store.FlowFilter{})
+	if err != nil || count != 0 {
+		t.Fatalf("passthrough flows=%d: %v", count, err)
+	}
+	time.Sleep(550 * time.Millisecond)
+	request, err := http.NewRequest("POST", control.URL+"/api/capture", strings.NewReader(`{"enabled":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+cfg.Auth.Token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status proxy.CaptureStatus
+	err = json.NewDecoder(response.Body).Decode(&status)
+	_ = response.Body.Close()
+	if err != nil || response.StatusCode != 200 || status.State != "capturing" {
+		t.Fatalf("capture API: %+v, HTTP %d: %v", status, response.StatusCode, err)
+	}
+	if bytes.Equal(fetch(), first) {
+		t.Fatal("same client retained upstream certificate after enable")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		count, err = data.CountFlows(ctx, store.FlowFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if count != 1 {
+		t.Fatalf("capturing flows=%d", count)
+	}
 }

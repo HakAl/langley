@@ -191,12 +191,24 @@ export const mockSettings = {
   idle_gap_minutes: 5,
 };
 
+export const mockCaptureStatus = {
+  state: 'capturing',
+  draining_passthrough_tunnels: 0,
+  draining_mitm_requests: 0,
+  intercept_hosts: ['api.anthropic.com', 'api.openai.com'],
+};
+
 // --- Helpers ---
 
 export interface SetupMocksOptions {
   emptyFlows?: boolean;
   emptyAnomalies?: boolean;
   flows?: unknown[];
+}
+
+/** Capture state reached immediately (no draining) by a POST /api/capture with the given body. */
+export function settledCaptureStatus(body: { enabled?: boolean }) {
+  return { ...mockCaptureStatus, state: body.enabled ? 'capturing' : 'passthrough' };
 }
 
 export async function setupMocks(page: Page, options: SetupMocksOptions = {}) {
@@ -337,6 +349,17 @@ export async function setupMocks(page: Page, options: SetupMocksOptions = {}) {
         body: JSON.stringify({ ...mockSettings, ...body }),
       });
     }
+  });
+
+  await page.route('**/api/capture', async (route) => {
+    const body = route.request().method() === 'POST'
+      ? settledCaptureStatus(route.request().postDataJSON())
+      : mockCaptureStatus;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    });
   });
 }
 

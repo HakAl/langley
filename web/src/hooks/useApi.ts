@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import type { Anomaly, ApiResult, CostPeriod, Flow, FlowListResponse, Settings, Stats, TaskSummary, ToolInvocation, ToolStats } from '../types'
+import type { Anomaly, ApiResult, CaptureStatus, CostPeriod, Flow, FlowListResponse, Settings, Stats, TaskSummary, ToolInvocation, ToolStats } from '../types'
 
 export interface FlowFetchParams {
   days?: number
@@ -31,6 +31,22 @@ export function useApi() {
   const apiFetch = useCallback(async <T,>(path: string): Promise<ApiResult<T>> => {
     try {
       const res = await fetch(path, { credentials: 'include' })
+      if (res.ok) return { data: await res.json(), error: null }
+      const text = await res.text().catch(() => '')
+      return { data: null, error: text || `HTTP ${res.status}` }
+    } catch (err) {
+      return { data: null, error: err instanceof Error ? err.message : 'Network error' }
+    }
+  }, [])
+
+  const apiSend = useCallback(async <T,>(method: 'POST' | 'PUT', path: string, body: unknown): Promise<ApiResult<T>> => {
+    try {
+      const res = await fetch(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body)
+      })
       if (res.ok) return { data: await res.json(), error: null }
       const text = await res.text().catch(() => '')
       return { data: null, error: text || `HTTP ${res.status}` }
@@ -93,20 +109,16 @@ export function useApi() {
   }, [apiFetch])
 
   const updateSettings = useCallback(async (newSettings: Partial<Settings>): Promise<ApiResult<Settings>> => {
-    try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(newSettings)
-      })
-      if (res.ok) return { data: await res.json(), error: null }
-      const text = await res.text().catch(() => '')
-      return { data: null, error: text || `HTTP ${res.status}` }
-    } catch (err) {
-      return { data: null, error: err instanceof Error ? err.message : 'Network error' }
-    }
-  }, [])
+    return apiSend<Settings>('PUT', '/api/settings', newSettings)
+  }, [apiSend])
+
+  const fetchCaptureStatus = useCallback(async (): Promise<ApiResult<CaptureStatus>> => {
+    return apiFetch<CaptureStatus>('/api/capture')
+  }, [apiFetch])
+
+  const setCaptureMode = useCallback(async (enabled: boolean, force?: boolean): Promise<ApiResult<CaptureStatus>> => {
+    return apiSend<CaptureStatus>('POST', '/api/capture', { enabled, force: Boolean(force) })
+  }, [apiSend])
 
   const fetchToolInvocations = useCallback(async (toolName: string, days?: number) => {
     const params = timeParams(days)
@@ -138,6 +150,8 @@ export function useApi() {
     fetchDailyCosts,
     fetchSettings,
     updateSettings,
+    fetchCaptureStatus,
+    setCaptureMode,
     fetchFlowDetail,
     fetchFlowCount,
   }

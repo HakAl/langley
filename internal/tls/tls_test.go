@@ -1,14 +1,21 @@
 package tls
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestLoadOrCreateCA_CreatesNew tests that a new CA is created when none exists.
@@ -601,4 +608,188 @@ func TestCertCache_CRLDistributionPoint(t *testing.T) {
 	} else if leafCert.CRLDistributionPoints[0] != crlURL {
 		t.Errorf("unexpected CRL URL: got %q, want %q", leafCert.CRLDistributionPoints[0], crlURL)
 	}
+}
+
+// withSystemBundlePaths points system root discovery at paths for one test.
+func withSystemBundlePaths(t *testing.T, paths ...string) {
+	t.Helper()
+	orig := systemBundlePaths
+	systemBundlePaths = paths
+	t.Cleanup(func() { systemBundlePaths = orig })
+}
+
+// newTestRootAndLeaf creates an independent (non-Langley) root CA and a leaf
+// certificate for host signed by it.
+func newTestRootAndLeaf(t *testing.T, host string) (rootPEM []byte, leaf *x509.Certificate) {
+	t.Helper()
+	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Public Test Root"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	rootDER, err := x509.CreateCertificate(rand.Reader, rootTmpl, rootTmpl, &rootKey.PublicKey, rootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := x509.ParseCertificate(rootDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: host},
+		DNSNames:     []string{host},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, root, &leafKey.PublicKey, rootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err = x509.ParseCertificate(leafDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootDER}), leaf
+}
+
+func poolFromBundle(t *testing.T, path string) *x509.CertPool {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading bundle: %v", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		t.Fatal("bundle contains no parseable certificates")
+	}
+	return pool
+}
+
+// TestCA_EnsureCombinedBundle_DualTrust proves a client trusting only
+// ca-bundle.pem accepts both a non-Langley upstream (passthrough) and a Langley
+// MITM leaf (capturing).
+func TestCA_EnsureCombinedBundle_DualTrust(t *testing.T) {
+	withSystemBundlePaths(t) // hermetic: only the explicitly passed root
+	dir := t.TempDir()
+	ca, err := LoadOrCreateCA(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootPEM, publicLeaf := newTestRootAndLeaf(t, "github.com")
+
+	path, err := ca.EnsureCombinedBundle(dir, rootPEM)
+	if err != nil {
+		t.Fatalf("EnsureCombinedBundle: %v", err)
+	}
+	if path != filepath.Join(dir, "ca-bundle.pem") || path != BundlePath(dir) {
+		t.Fatalf("bundle path = %q", path)
+	}
+	pool := poolFromBundle(t, path)
+
+	if _, err := publicLeaf.Verify(x509.VerifyOptions{DNSName: "github.com", Roots: pool}); err != nil {
+		t.Errorf("non-Langley leaf not trusted by bundle: %v", err)
+	}
+
+	mitm, err := NewCertCache(ca, 10).GetCertificate(mockClientHelloInfo("api.anthropic.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mitmLeaf, err := x509.ParseCertificate(mitm.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mitmLeaf.Verify(x509.VerifyOptions{DNSName: "api.anthropic.com", Roots: pool}); err != nil {
+		t.Errorf("Langley MITM leaf not trusted by bundle: %v", err)
+	}
+
+	// Control: ca.crt alone (the pre-bundle SSL_CERT_FILE) rejects the public leaf.
+	caOnly := poolFromBundle(t, filepath.Join(dir, "ca.crt"))
+	if _, err := publicLeaf.Verify(x509.VerifyOptions{DNSName: "github.com", Roots: caOnly}); err == nil {
+		t.Error("ca.crt alone unexpectedly trusts the non-Langley leaf")
+	}
+}
+
+func TestCA_EnsureCombinedBundle_IncludesFirstSystemBundle(t *testing.T) {
+	sysDir := t.TempDir()
+	firstRoot, firstLeaf := newTestRootAndLeaf(t, "first.example")
+	secondRoot, secondLeaf := newTestRootAndLeaf(t, "second.example")
+	first := filepath.Join(sysDir, "first.pem")
+	second := filepath.Join(sysDir, "second.pem")
+	if err := os.WriteFile(first, firstRoot, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, secondRoot, 0644); err != nil {
+		t.Fatal(err)
+	}
+	withSystemBundlePaths(t, filepath.Join(sysDir, "missing.pem"), first, second)
+
+	dir := t.TempDir()
+	ca, err := LoadOrCreateCA(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := poolFromBundle(t, BundlePath(dir))
+	if _, err := firstLeaf.Verify(x509.VerifyOptions{DNSName: "first.example", Roots: pool}); err != nil {
+		t.Errorf("first available system bundle not included: %v", err)
+	}
+	if _, err := secondLeaf.Verify(x509.VerifyOptions{DNSName: "second.example", Roots: pool}); err == nil {
+		t.Error("only the first available system bundle should be included")
+	}
+
+	data, err := os.ReadFile(BundlePath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(data), "\n# Langley CA\n"+string(ca.CertPEM())) {
+		t.Error("bundle should end with the Langley CA section")
+	}
+}
+
+func TestLoadOrCreateCA_WritesBundleForNewAndExistingCA(t *testing.T) {
+	withSystemBundlePaths(t)
+	dir := t.TempDir()
+	if _, err := LoadOrCreateCA(dir); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(BundlePath(dir))
+	if err != nil {
+		t.Fatalf("bundle not written for new CA: %v", err)
+	}
+	if runtimeSupportsPerms() && info.Mode().Perm() != 0644 {
+		t.Errorf("bundle mode = %o, want 644", info.Mode().Perm())
+	}
+
+	if err := os.Remove(BundlePath(dir)); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := LoadOrCreateCA(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(BundlePath(dir))
+	if err != nil {
+		t.Fatalf("bundle not rewritten for existing CA: %v", err)
+	}
+	if !strings.Contains(string(data), string(ca.CertPEM())) {
+		t.Error("bundle missing Langley CA")
+	}
+}
+
+func runtimeSupportsPerms() bool {
+	return filepath.Separator == '/'
 }

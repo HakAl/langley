@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"encoding/json"
@@ -29,8 +30,50 @@ import (
 	"github.com/google/uuid"
 )
 
+// CaptureController describes the capture lifecycle exposed to control planes.
+type CaptureController interface {
+	CaptureStatus() CaptureStatus
+	SetCapture(enabled bool, force bool) CaptureStatus
+}
+
+const (
+	CaptureStatePassthrough = "passthrough"
+	CaptureStateEnabling    = "enabling"
+	CaptureStateCapturing   = "capturing"
+	CaptureStateStopping    = "stopping"
+)
+
+type CaptureStatus struct {
+	State                      string   `json:"state"`
+	DrainingPassthroughTunnels int      `json:"draining_passthrough_tunnels"`
+	DrainingMITMRequests       int      `json:"draining_mitm_requests"`
+	InterceptHosts             []string `json:"intercept_hosts"`
+	ProxyAddr                  string   `json:"proxy_addr,omitempty"`
+}
+
+// captureSession owns the raw transports; busy spans processing and persistence.
+type captureSession struct {
+	client, upstream net.Conn
+	busy             bool
+}
+
+type captureTunnel struct {
+	client, upstream net.Conn
+	lastActivity     atomic.Int64
+	draining         bool // protected by captureMu
+}
+
 // MITMProxy is an intercepting proxy that captures TLS traffic.
 type MITMProxy struct {
+	captureMu                sync.Mutex
+	captureWanted            bool
+	captureTunnels           map[*captureTunnel]struct{}
+	captureSessions          map[*captureSession]struct{}
+	inFlightMITMRequests     int
+	passthroughIdleThreshold time.Duration
+	proxyAddr                string
+	onCaptureStateChange     func(CaptureStatus)
+
 	cfg          *config.Config
 	logger       *slog.Logger
 	ca           *langleytls.CA
@@ -62,6 +105,11 @@ type MITMProxy struct {
 
 // MITMProxyConfig holds configuration for creating a MITM proxy.
 type MITMProxyConfig struct {
+	StartInPassthrough       bool
+	PassthroughIdleThreshold time.Duration
+	ProxyAddr                string
+	OnCaptureStateChange     func(CaptureStatus)
+
 	Config        *config.Config
 	Logger        *slog.Logger
 	CA            *langleytls.CA
@@ -122,7 +170,16 @@ func NewMITMProxy(cfg MITMProxyConfig) (*MITMProxy, error) {
 		Timeout: 0, // No timeout for streaming
 	}
 
+	if cfg.PassthroughIdleThreshold <= 0 {
+		cfg.PassthroughIdleThreshold = 500 * time.Millisecond
+	}
 	p := &MITMProxy{
+		captureWanted:              !cfg.StartInPassthrough,
+		captureTunnels:             make(map[*captureTunnel]struct{}),
+		captureSessions:            make(map[*captureSession]struct{}),
+		passthroughIdleThreshold:   cfg.PassthroughIdleThreshold,
+		proxyAddr:                  cfg.ProxyAddr,
+		onCaptureStateChange:       cfg.OnCaptureStateChange,
 		cfg:                        cfg.Config,
 		logger:                     cfg.Logger,
 		ca:                         cfg.CA,
@@ -205,6 +262,27 @@ func (p *MITMProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleHTTP handles regular HTTP requests.
 func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	if !p.isCaptureWanted() {
+		req := r.Clone(r.Context())
+		req.RequestURI = ""
+		resp, err := p.client.Do(req)
+		if err != nil {
+			http.Error(w, "Bad gateway", http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		for k, values := range resp.Header {
+			for _, v := range values {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		if _, err := io.Copy(newFlushWriter(w), resp.Body); err != nil {
+			p.logger.Debug("passthrough HTTP copy failed", "error", err)
+		}
+		return
+	}
+
 	startTime := time.Now()
 	flowID := uuid.New().String()
 
@@ -382,7 +460,7 @@ func (p *MITMProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 func (p *MITMProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	p.logger.Debug("CONNECT request", "host", r.Host)
 
-	if p.shouldIntercept(r.Host) {
+	if p.shouldIntercept(r.Host) && p.isCaptureWanted() {
 		p.handleConnectMITM(w, r)
 		return
 	}
@@ -550,17 +628,38 @@ func (p *MITMProxy) handleConnectPassthrough(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	var target *captureTunnel
+	if p.shouldIntercept(r.Host) {
+		target = &captureTunnel{client: clientConn, upstream: upstreamConn}
+		p.captureMu.Lock()
+		p.captureTunnels[target] = struct{}{}
+		// Capture may have been enabled while CONNECT was dialing.
+		if p.captureWanted {
+			target.draining = true
+			_ = clientConn.Close()
+			_ = upstreamConn.Close()
+		}
+		p.captureMu.Unlock()
+	}
 	// Send 200 OK — upstream is reachable
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		p.logger.Error("failed to write tunnel response", "error", err)
 		p.endHijackedSession([]io.Closer{clientConn, upstreamConn}, clientConn, upstreamConn)
+		if target != nil {
+			p.finishCaptureTunnel(target)
+		}
 		return
 	}
 
 	// Hand off to bidirectional tunnel with idle timeout (langley-ga3l)
 	go func() {
 		defer p.endHijackedSession([]io.Closer{clientConn, upstreamConn}, clientConn, upstreamConn)
-		tunnel(clientConn, upstreamConn, p.logger, r.Host)
+		if target != nil {
+			defer p.finishCaptureTunnel(target)
+			p.tunnelCapture(target)
+		} else {
+			tunnel(clientConn, upstreamConn, p.logger, r.Host)
+		}
 	}()
 }
 
@@ -583,6 +682,20 @@ func (p *MITMProxy) handleConnectMITM(w http.ResponseWriter, r *http.Request) {
 	if !p.beginHijackedSession(clientConn) {
 		return
 	}
+	session := &captureSession{client: clientConn}
+	p.captureMu.Lock()
+	if p.captureSessions == nil {
+		p.captureSessions = make(map[*captureSession]struct{})
+		p.captureWanted = true
+	}
+	if !p.captureWanted {
+		p.captureMu.Unlock()
+		p.endHijackedSession([]io.Closer{clientConn}, clientConn)
+		return
+	}
+	p.captureSessions[session] = struct{}{}
+	p.captureMu.Unlock()
+	defer func() { p.captureMu.Lock(); delete(p.captureSessions, session); p.captureMu.Unlock() }()
 	closers := []io.Closer{clientConn}
 	tracked := []net.Conn{clientConn}
 	defer func() { p.endHijackedSession(closers, tracked...) }()
@@ -628,6 +741,14 @@ func (p *MITMProxy) handleConnectMITM(w http.ResponseWriter, r *http.Request) {
 	}
 	closers = append(closers, rawUpstream)
 	tracked = append(tracked, rawUpstream)
+	p.captureMu.Lock()
+	session.upstream = rawUpstream
+	wanted := p.captureWanted
+	p.captureMu.Unlock()
+	if !wanted {
+		_ = rawUpstream.Close()
+		return
+	}
 	serverName, _, err := net.SplitHostPort(host)
 	if err != nil {
 		return
@@ -644,7 +765,7 @@ func (p *MITMProxy) handleConnectMITM(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Handle requests on this connection
-	p.serveTLSConnection(tlsConn, upstreamConn, r.Host)
+	p.serveTLSCaptureSession(tlsConn, upstreamConn, r.Host, session)
 }
 
 // underlyingConn returns the raw net.Conn beneath a *tls.Conn so shutdown
@@ -668,10 +789,32 @@ func (p *MITMProxy) handleTLSConnection(clientConn *tls.Conn, upstreamConn *tls.
 }
 
 func (p *MITMProxy) serveTLSConnection(clientConn *tls.Conn, upstreamConn *tls.Conn, host string) {
+	session := &captureSession{client: underlyingConn(clientConn), upstream: underlyingConn(upstreamConn)}
+	p.captureMu.Lock()
+	if p.captureSessions == nil {
+		p.captureSessions = make(map[*captureSession]struct{})
+		p.captureWanted = true
+	}
+	p.captureSessions[session] = struct{}{}
+	p.captureMu.Unlock()
+	defer func() {
+		p.captureMu.Lock()
+		delete(p.captureSessions, session)
+		p.captureMu.Unlock()
+	}()
+	p.serveTLSCaptureSession(clientConn, upstreamConn, host, session)
+}
+
+func (p *MITMProxy) serveTLSCaptureSession(clientConn, upstreamConn *tls.Conn, host string, session *captureSession) {
 	clientReader := bufio.NewReader(clientConn)
 	upstreamReader := bufio.NewReader(upstreamConn)
 
 	for {
+		if !p.isCaptureWanted() {
+			_ = session.client.Close()
+			_ = session.upstream.Close()
+			return
+		}
 		// Read request from client
 		req, err := http.ReadRequest(clientReader)
 		if err != nil {
@@ -680,6 +823,17 @@ func (p *MITMProxy) serveTLSConnection(clientConn *tls.Conn, upstreamConn *tls.C
 			}
 			return
 		}
+		p.captureMu.Lock()
+		if !p.captureWanted {
+			p.captureMu.Unlock()
+			_ = req.Body.Close()
+			_ = session.client.Close()
+			_ = session.upstream.Close()
+			return
+		}
+		session.busy = true
+		p.inFlightMITMRequests++
+		p.captureMu.Unlock()
 		p.logger.Debug("read request from TLS connection", "host", host, "method", req.Method, "path", req.URL.Path)
 
 		// Fix up the request URL
@@ -688,6 +842,20 @@ func (p *MITMProxy) serveTLSConnection(clientConn *tls.Conn, upstreamConn *tls.C
 
 		// Handle this request
 		p.handleTLSRequest(req, clientConn, upstreamConn, upstreamReader, host)
+		p.captureMu.Lock()
+		p.inFlightMITMRequests--
+		session.busy = false
+		paused := !p.captureWanted
+		status := p.captureStatusLocked()
+		p.captureMu.Unlock()
+		if paused {
+			_ = session.client.Close()
+			_ = session.upstream.Close()
+			if status.DrainingMITMRequests == 0 {
+				p.notifyCapture(status)
+			}
+			return
+		}
 	}
 }
 
@@ -844,6 +1012,7 @@ func (p *MITMProxy) handleTLSRequest(r *http.Request, clientConn net.Conn, upstr
 		// Wrap client connection in chunked writer for proper HTTP/1.1 framing
 		chunkedWriter := newChunkedWriter(clientConn)
 		if err := p.streamSSEWithParser(flowID, flow.TaskID, resp.Body, chunkedWriter, limitedWriter); err != nil {
+			flow.FlowIntegrity = "interrupted"
 			p.logger.Debug("error streaming SSE response", "error", err)
 		}
 		// Write final chunk to signal end of response
@@ -1263,4 +1432,110 @@ func (f *flushWriter) Write(p []byte) (n int, err error) {
 		f.flusher.Flush()
 	}
 	return n, err
+}
+
+func (p *MITMProxy) isCaptureWanted() bool {
+	p.captureMu.Lock()
+	defer p.captureMu.Unlock()
+	return p.captureWanted
+}
+
+func (p *MITMProxy) SetProxyAddr(addr string) {
+	p.captureMu.Lock()
+	defer p.captureMu.Unlock()
+	p.proxyAddr = addr
+}
+
+func (p *MITMProxy) CaptureStatus() CaptureStatus {
+	p.captureMu.Lock()
+	defer p.captureMu.Unlock()
+	return p.captureStatusLocked()
+}
+
+func (p *MITMProxy) captureStatusLocked() CaptureStatus {
+	hosts := []string{"api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com", "bedrock-runtime.*.amazonaws.com"}
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(hosts)+len(p.cfg.Proxy.InterceptHosts))
+	for _, h := range append(hosts, p.cfg.Proxy.InterceptHosts...) {
+		if !seen[h] {
+			seen[h] = true
+			result = append(result, h)
+		}
+	}
+	status := CaptureStatus{State: CaptureStatePassthrough, InterceptHosts: result, ProxyAddr: p.proxyAddr}
+	if p.captureWanted {
+		status.State = CaptureStateCapturing
+		for t := range p.captureTunnels {
+			if t.draining {
+				status.DrainingPassthroughTunnels++
+			}
+		}
+		if status.DrainingPassthroughTunnels > 0 {
+			status.State = CaptureStateEnabling
+		}
+	} else {
+		status.DrainingMITMRequests = p.inFlightMITMRequests
+		if status.DrainingMITMRequests > 0 {
+			status.State = CaptureStateStopping
+		}
+	}
+	return status
+}
+
+func (p *MITMProxy) notifyCapture(status CaptureStatus) {
+	if p.onCaptureStateChange != nil {
+		p.onCaptureStateChange(status)
+	}
+}
+
+func (p *MITMProxy) SetCapture(enabled bool, force bool) CaptureStatus {
+	p.captureMu.Lock()
+	before := p.captureStatusLocked()
+	p.captureWanted = enabled
+	for t := range p.captureTunnels {
+		if !enabled {
+			t.draining = false
+			_ = t.client.SetReadDeadline(time.Time{})
+			_ = t.upstream.SetReadDeadline(time.Time{})
+			continue
+		}
+		last := t.lastActivity.Load()
+		if force || last == 0 || time.Since(time.Unix(0, last)) >= p.passthroughIdleThreshold {
+			_ = t.client.Close()
+			_ = t.upstream.Close()
+			delete(p.captureTunnels, t)
+		} else {
+			t.draining = true
+			deadline := time.Unix(0, last).Add(p.passthroughIdleThreshold)
+			_ = t.client.SetReadDeadline(deadline)
+			_ = t.upstream.SetReadDeadline(deadline)
+		}
+	}
+	if !enabled {
+		for session := range p.captureSessions {
+			if force || !session.busy {
+				_ = session.client.Close()
+				if session.upstream != nil {
+					_ = session.upstream.Close()
+				}
+			}
+		}
+	}
+	status := p.captureStatusLocked()
+	p.captureMu.Unlock()
+	if status.State != before.State || status.DrainingPassthroughTunnels != before.DrainingPassthroughTunnels || status.DrainingMITMRequests != before.DrainingMITMRequests {
+		p.notifyCapture(status)
+	}
+	return status
+}
+
+func (p *MITMProxy) finishCaptureTunnel(t *captureTunnel) {
+	p.captureMu.Lock()
+	before := p.captureStatusLocked()
+	delete(p.captureTunnels, t)
+	status := p.captureStatusLocked()
+	p.captureMu.Unlock()
+	if before.State != status.State {
+		p.notifyCapture(status)
+	}
 }

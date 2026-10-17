@@ -52,6 +52,9 @@ func main() {
 		case "setup":
 			handleSetupCommand(os.Args[2:])
 			return
+		case "pause", "resume", "start", "dashboard", "status", "daemon", "uninstall":
+			handleDaemonCLICommand(os.Args[1], os.Args[2:])
+			return
 		}
 	}
 
@@ -66,7 +69,9 @@ func main() {
 	noShell := flag.Bool("no-shell", false, "Run in foreground server mode without launching an interactive subshell")
 	noOpen := flag.Bool("no-open", false, "Do not open the dashboard in a browser on startup")
 	noHook := flag.Bool("no-hook", false, "Do not install the temporary shell hook for new terminal tabs")
+	passthrough := flag.Bool("passthrough", false, "Start with capture paused (passthrough: TLS payloads are not decrypted or stored)")
 	flag.Parse()
+	startPassthrough := *passthrough || os.Getenv("LANGLEY_START_PASSTHROUGH") == "1"
 
 	if *showHelp {
 		printHelp()
@@ -99,14 +104,23 @@ func main() {
 	}
 	shellMode := !*noShell && os.Getenv("LANGLEY_NO_SHELL") == "" &&
 		!envActive && interactiveTTY
-	// The hook only touches ~/.zshrc / ~/.bashrc for interactive top-level
-	// sessions, so non-TTY runs (CI, test/e2e) never modify the user's RC files.
+	// The hook touches ~/.zshrc / ~/.bashrc for interactive top-level sessions
+	// and background daemons started via 'langley daemon start', so non-TTY test
+	// runs never modify the user's RC files unless LANGLEY_DAEMON=1.
+	daemonMode := os.Getenv("LANGLEY_DAEMON") == "1"
 	hookEnabled := !*noHook && os.Getenv("LANGLEY_NO_HOOK") == "" &&
-		!envActive && interactiveTTY && runtime.GOOS != "windows"
+		!envActive && (interactiveTTY || daemonMode) && runtime.GOOS != "windows"
 	openBrowser := !*noOpen && os.Getenv("LANGLEY_NO_OPEN") == "" && !*showCA
 
 	if interactiveTTY && !*noShell && os.Getenv("LANGLEY_NO_SHELL") == "" && !*showCA && *configPath == "" && *listenAddr == "" && *apiAddr == "localhost:9091" && os.Getenv("LANGLEY_LISTEN") == "" && os.Getenv("LANGLEY_DB_PATH") == "" && stateErr == nil {
 		if state := runningInstance(context.Background(), existingStore, &HTTPHealthChecker{}); state != nil {
+			if !startPassthrough {
+				if attachCfg, err := config.Load(""); err == nil && attachCfg != nil {
+					enableCtx, enableCancel := context.WithTimeout(context.Background(), 2*time.Second)
+					_, _ = NewHTTPCaptureClient().SetCapture(enableCtx, state.APIAddr, attachCfg.Auth.Token, true, false)
+					enableCancel()
+				}
+			}
 			os.Exit(attachInstance(context.Background(), state, shellDetector, &ExecProcessRunner{}, &ProxyEnvBuilder{}, NewOSBrowserOpener(), openBrowser, os.Stderr))
 		}
 	}
@@ -274,9 +288,47 @@ func main() {
 
 	// Create WebSocket hub
 	wsHub := ws.NewHub(cfg, logger)
+	wsHub.SetAPIAddr(actualAPIAddr)
 	go wsHub.Run(ctx)
 
-	// Create API server with reload support
+	// Create MITM proxy so it can be wired into the API server as CaptureController
+	mitmProxy, err := proxy.NewMITMProxy(proxy.MITMProxyConfig{
+		Config:             cfg,
+		Logger:             logger,
+		CA:                 ca,
+		CertCache:          certCache,
+		Redactor:           redactor,
+		Store:              dataStore,
+		TaskAssigner:       taskAssigner,
+		PricingSource:      pricingSource,
+		StartInPassthrough: startPassthrough,
+		ProxyAddr:          actualProxyAddr,
+		OnFlow: func(flow *store.Flow) {
+			slog.Debug("flow started", "id", flow.ID, "host", flow.Host, "method", flow.Method)
+			wsHub.BroadcastFlowStart(flow)
+		},
+		OnUpdate: func(flow *store.Flow) {
+			status := 0
+			if flow.StatusCode != nil {
+				status = *flow.StatusCode
+			}
+			slog.Debug("flow completed", "id", flow.ID, "status", status, "sse", flow.IsSSE)
+			wsHub.BroadcastFlowComplete(flow)
+		},
+		OnEvent: func(event *store.Event) {
+			slog.Debug("SSE event", "flow_id", event.FlowID, "type", event.EventType, "seq", event.Sequence)
+			wsHub.BroadcastEvent(event)
+		},
+		OnCaptureStateChange: func(status proxy.CaptureStatus) {
+			wsHub.BroadcastCaptureState(status)
+		},
+	})
+	if err != nil {
+		slog.Error("failed to create proxy", "error", err)
+		os.Exit(1)
+	}
+
+	// Create API server with reload and capture controller support
 	apiServer := api.NewServer(cfg, dataStore, logger,
 		api.WithConfigPath(actualConfigPath),
 		api.WithOnReload(func(newToken string) {
@@ -285,6 +337,13 @@ func main() {
 			// which is updated by the reload handler
 		}),
 		api.WithPricingSource(pricingSource),
+		api.WithCaptureController(mitmProxy),
+		api.WithDaemonMeta(api.DaemonMeta{
+			InstanceID: fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()),
+			PID:        os.Getpid(),
+			ProxyAddr:  actualProxyAddr,
+			APIAddr:    actualAPIAddr,
+		}),
 	)
 	apiMux := http.NewServeMux()
 	apiMux.Handle("/api/", apiServer.Handler())
@@ -329,42 +388,11 @@ func main() {
 		}
 	}()
 
-	// Create and start MITM proxy
-	mitmProxy, err := proxy.NewMITMProxy(proxy.MITMProxyConfig{
-		Config:        cfg,
-		Logger:        logger,
-		CA:            ca,
-		CertCache:     certCache,
-		Redactor:      redactor,
-		Store:         dataStore,
-		TaskAssigner:  taskAssigner,
-		PricingSource: pricingSource,
-		OnFlow: func(flow *store.Flow) {
-			slog.Debug("flow started", "id", flow.ID, "host", flow.Host, "method", flow.Method)
-			wsHub.BroadcastFlowStart(flow)
-		},
-		OnUpdate: func(flow *store.Flow) {
-			status := 0
-			if flow.StatusCode != nil {
-				status = *flow.StatusCode
-			}
-			slog.Debug("flow completed", "id", flow.ID, "status", status, "sse", flow.IsSSE)
-			wsHub.BroadcastFlowComplete(flow)
-		},
-		OnEvent: func(event *store.Event) {
-			slog.Debug("SSE event", "flow_id", event.FlowID, "type", event.EventType, "seq", event.Sequence)
-			wsHub.BroadcastEvent(event)
-		},
-	})
-	if err != nil {
-		slog.Error("failed to create proxy", "error", err)
-		os.Exit(1)
-	}
-
 	// Use actual addresses after fallback (langley-rla)
 	slog.Info("starting langley",
 		"proxy", actualProxyAddr,
 		"api", actualAPIAddr,
+		"start_passthrough", startPassthrough,
 	)
 	caPath := filepath.Join(certsDir, "ca.crt")
 
@@ -598,6 +626,18 @@ COMMANDS:
     run <cmd> [args]  Run a command with proxy environment configured
     env               Print shell snippet to adopt proxy & prompt sync in-place
     setup             Install CA certificate to system trust store
+    resume [--force]  Start the daemon if needed and enable capture
+                      (alias: start; --force switches active connections now)
+    pause [--force]   Stop capturing (passthrough) without stopping the daemon
+                      (--force aborts in-flight intercepted requests)
+    dashboard         Start the daemon if needed and open the dashboard
+                      without changing capture state
+    status            Show daemon state, capture state, addresses, and scope
+    daemon <start|stop|restart|status>
+                      Manage the background daemon (always starts in passthrough)
+    uninstall [--keep-data] [--yes] [--no-system-trust]
+                      Stop Langley and remove hooks, service files, certificates,
+                      state, and (unless --keep-data) the database
     token show        Show the current auth token
     token rotate      Generate a new auth token
 
@@ -610,6 +650,7 @@ OPTIONS:
     -no-shell         Run as a foreground server (no interactive subshell)
     -no-open          Do not open the dashboard in a browser on startup
     -no-hook          Do not install the temporary shell hook for new tabs
+    -passthrough      Start with capture paused (passthrough)
     -help             Show this help message
 
 EXAMPLES:
@@ -621,6 +662,11 @@ EXAMPLES:
     langley -listen :8080       Start proxy on port 8080
     langley -config ./my.yaml   Use custom config file
     langley -show-ca            Show how to trust the CA certificate
+    langley daemon start        Start the background daemon (passthrough)
+    langley resume              Enable capture on the running daemon
+    langley pause               Stop decrypting/storing traffic
+    langley status              Show daemon and capture state
+    langley uninstall           Remove everything Langley installed
     langley token show          Show current auth token
     langley token rotate        Generate and save a new auth token
 
@@ -637,6 +683,7 @@ CONFIGURATION:
     - LANGLEY_NO_SHELL           Same as -no-shell when set
     - LANGLEY_NO_OPEN            Same as -no-open when set
     - LANGLEY_NO_HOOK            Same as -no-hook when set
+    - LANGLEY_START_PASSTHROUGH  Same as -passthrough when set to 1
     - LANGLEY_ACTIVE             Set inside Langley shells; a nested 'langley'
                                  reports the active server and dashboard
 

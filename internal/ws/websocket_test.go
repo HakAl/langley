@@ -2,7 +2,10 @@ package ws
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -373,5 +376,66 @@ func BenchmarkBroadcast(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		hub.Broadcast(msg)
+	}
+}
+
+func TestCaptureStateBroadcast(t *testing.T) {
+	hub := NewHub(testConfig(), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); hub.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+	client := &Client{hub: hub, send: make(chan []byte, 1)}
+	hub.register <- client
+	hub.BroadcastCaptureState(map[string]interface{}{"state": "stopping", "draining_mitm_requests": 2})
+	select {
+	case data := <-client.send:
+		var message struct {
+			Type string `json:"type"`
+			Data struct {
+				State string `json:"state"`
+				Count int    `json:"draining_mitm_requests"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(data, &message); err != nil {
+			t.Fatal(err)
+		}
+		if message.Type != MessageTypeCaptureState || message.Data.State != "stopping" || message.Data.Count != 2 {
+			t.Fatalf("message: %s", data)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("capture state was not delivered")
+	}
+}
+
+func TestWebSocketHostAndOriginSecurity(t *testing.T) {
+	hub := NewHub(testConfig(), nil)
+	for _, tc := range []struct {
+		host, origin, token string
+		want                int
+	}{
+		{"evil.test:9091", "", "test-token", 403},
+		{"localhost", "https://evil.test", "test-token", 403},
+		{"127.0.0.1:9091", "http://localhost.evil.test", "test-token", 403},
+		{"[::1]:9091", "http://127.0.0.1.evil.test", "test-token", 403},
+		{"localhost", "", "wrong", 401},
+		{"localhost", "", "", 401},
+	} {
+		t.Run(tc.host+tc.origin+tc.token, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://localhost/ws", nil)
+			req.Host = tc.host
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			if tc.token != "" {
+				req.Header.Set("Authorization", "Bearer "+tc.token)
+				req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: tc.token})
+			}
+			rec := httptest.NewRecorder()
+			hub.Handler("test-token")(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("status %d, want %d", rec.Code, tc.want)
+			}
+		})
 	}
 }

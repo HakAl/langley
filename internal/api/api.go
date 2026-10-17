@@ -7,8 +7,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -16,21 +19,46 @@ import (
 	"github.com/HakAl/langley/internal/analytics"
 	"github.com/HakAl/langley/internal/config"
 	"github.com/HakAl/langley/internal/pricing"
+	"github.com/HakAl/langley/internal/proxy"
 	"github.com/HakAl/langley/internal/store"
 )
 
+// CaptureStatus shares the proxy wire contract without an adapter.
+type CaptureStatus = proxy.CaptureStatus
+
+type CaptureController interface {
+	CaptureStatus() CaptureStatus
+	SetCapture(enabled bool, force bool) CaptureStatus
+}
+
+type DaemonMeta struct {
+	InstanceID string
+	PID        int
+	ProxyAddr  string
+	APIAddr    string
+}
+
+func WithCaptureController(ctrl CaptureController) ServerOption {
+	return func(s *Server) { s.captureController = ctrl }
+}
+func WithDaemonMeta(meta DaemonMeta) ServerOption {
+	return func(s *Server) { s.daemonMeta = meta }
+}
+
 // Server is the REST API server.
 type Server struct {
-	cfg           *config.Config
-	cfgPath       string // Path to config file for reload
-	store         store.Store
-	analytics     *analytics.Engine
-	pricingSource *pricing.Source
-	logger        *slog.Logger
-	mux           *http.ServeMux
-	startTime     time.Time
-	onReload      func(newToken string) // Callback when token changes
-	rateLimiter   *RateLimiter          // Rate limiter for API requests
+	captureController CaptureController
+	daemonMeta        DaemonMeta
+	cfg               *config.Config
+	cfgPath           string // Path to config file for reload
+	store             store.Store
+	analytics         *analytics.Engine
+	pricingSource     *pricing.Source
+	logger            *slog.Logger
+	mux               *http.ServeMux
+	startTime         time.Time
+	onReload          func(newToken string) // Callback when token changes
+	rateLimiter       *RateLimiter          // Rate limiter for API requests
 }
 
 // ServerOption configures the API server.
@@ -102,6 +130,8 @@ func NewServer(cfg *config.Config, dataStore store.Store, logger *slog.Logger, o
 	s.mux.HandleFunc("GET /api/analytics/cost/daily", s.authMiddleware(s.getCostByDay))
 	s.mux.HandleFunc("GET /api/analytics/cost/model", s.authMiddleware(s.getCostByModel))
 	s.mux.HandleFunc("GET /api/analytics/anomalies", s.authMiddleware(s.getAnomalies))
+	s.mux.HandleFunc("GET /api/capture", s.authMiddleware(s.getCapture))
+	s.mux.HandleFunc("POST /api/capture", s.authMiddleware(s.setCapture))
 	s.mux.HandleFunc("GET /api/health", s.healthCheck)
 	s.mux.HandleFunc("POST /api/checkpoint", s.authMiddleware(s.checkpoint))
 	s.mux.HandleFunc("POST /api/admin/reload", s.authMiddleware(s.adminReload))
@@ -123,10 +153,12 @@ const sessionCookieName = "langley_session"
 
 // isLocalhostOrigin checks if the Origin header indicates a localhost request.
 func isLocalhostOrigin(origin string) bool {
-	return strings.HasPrefix(origin, "http://localhost") ||
-		strings.HasPrefix(origin, "http://127.0.0.1") ||
-		strings.HasPrefix(origin, "https://localhost") ||
-		strings.HasPrefix(origin, "https://127.0.0.1")
+	u, err := url.Parse(origin)
+	if err != nil || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	h := u.Hostname()
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
 }
 
 // authMiddleware wraps a handler with authentication.
@@ -209,8 +241,20 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 // corsMiddleware adds CORS headers for local development.
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := requestHostname(r.Host)
+		allowed := requestHostname(s.daemonMeta.APIAddr)
+		if host != "" && host != "localhost" && host != "127.0.0.1" && host != "::1" && host != allowed {
+			http.Error(w, "Forbidden: invalid Host", http.StatusForbidden)
+			return
+		}
 		origin := r.Header.Get("Origin")
-
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
+			if origin != "" && !isLocalhostOrigin(origin) {
+				http.Error(w, "Forbidden: non-localhost origin", http.StatusForbidden)
+				return
+			}
+		}
 		// Only allow localhost origins
 		if origin != "" && isLocalhostOrigin(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
@@ -865,9 +909,15 @@ func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	health := HealthResponse{
-		Status:    "ok",
-		Timestamp: time.Now(),
-		Uptime:    time.Since(s.startTime).String(),
+		Service:      "langley",
+		InstanceID:   s.daemonMeta.InstanceID,
+		PID:          s.daemonMeta.PID,
+		ProxyAddr:    s.daemonMeta.ProxyAddr,
+		APIAddr:      s.daemonMeta.APIAddr,
+		CaptureState: s.captureStatus().State,
+		Status:       "ok",
+		Timestamp:    time.Now(),
+		Uptime:       time.Since(s.startTime).String(),
 	}
 
 	// Get WAL info and queue stats from database
@@ -1264,6 +1314,12 @@ type AnomalyResponse struct {
 
 // HealthResponse is the API response for health status.
 type HealthResponse struct {
+	Service         string    `json:"service"`
+	InstanceID      string    `json:"instance_id"`
+	PID             int       `json:"pid"`
+	ProxyAddr       string    `json:"proxy_addr"`
+	APIAddr         string    `json:"api_addr"`
+	CaptureState    string    `json:"capture_state"`
 	Status          string    `json:"status"` // "ok", "degraded", "error"
 	Timestamp       time.Time `json:"timestamp"`
 	Uptime          string    `json:"uptime"`
@@ -1396,4 +1452,44 @@ func toEventResponse(e *store.Event) EventResponse {
 		EventData: e.EventData,
 		Priority:  e.Priority,
 	}
+}
+
+func requestHostname(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return strings.ToLower(host)
+	}
+	return strings.ToLower(strings.Trim(addr, "[]"))
+}
+
+func (s *Server) captureStatus() CaptureStatus {
+	if s.captureController != nil {
+		return s.captureController.CaptureStatus()
+	}
+	return CaptureStatus{State: proxy.CaptureStatePassthrough, InterceptHosts: []string{}}
+}
+
+func (s *Server) getCapture(w http.ResponseWriter, r *http.Request) {
+	s.writeJSON(w, s.captureStatus())
+}
+
+func (s *Server) setCapture(w http.ResponseWriter, r *http.Request) {
+	if s.captureController == nil {
+		http.Error(w, "Capture controller unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+		Force   bool  `json:"force"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil || body.Enabled == nil {
+		http.Error(w, "Invalid capture request", http.StatusBadRequest)
+		return
+	}
+	if err := decoder.Decode(new(interface{})); err != io.EOF {
+		http.Error(w, "Invalid capture request", http.StatusBadRequest)
+		return
+	}
+	s.writeJSON(w, s.captureController.SetCapture(*body.Enabled, body.Force))
 }

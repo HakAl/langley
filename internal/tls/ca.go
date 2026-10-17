@@ -2,6 +2,7 @@
 package tls
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -40,6 +41,9 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 
 	// Try to load existing CA
 	if ca, err := loadCA(certPath, keyPath); err == nil {
+		// Best effort: a missing bundle only degrades SSL_CERT_FILE consumers,
+		// which fall back to ca.crt (see bundlePathForCA in cmd/langley).
+		_, _ = ca.EnsureCombinedBundle(dir)
 		return ca, nil
 	}
 
@@ -64,7 +68,82 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 		return nil, fmt.Errorf("writing CA key: %w", err)
 	}
 
+	_, _ = ca.EnsureCombinedBundle(dir)
+
 	return ca, nil
+}
+
+// systemBundlePaths lists well-known system root CA bundle locations, checked
+// in order. Overridable in tests.
+var systemBundlePaths = []string{
+	"/etc/ssl/cert.pem",                                 // macOS, Alpine, BSD
+	"/etc/ssl/certs/ca-certificates.crt",                // Debian/Ubuntu
+	"/etc/pki/tls/certs/ca-bundle.crt",                  // RHEL/Fedora
+	"/etc/ssl/ca-bundle.pem",                            // openSUSE
+	"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", // RHEL 7+
+}
+
+// BundlePath returns the combined (system roots + Langley CA) bundle path in dir.
+func BundlePath(dir string) string {
+	return filepath.Join(dir, "ca-bundle.pem")
+}
+
+// EnsureCombinedBundle writes ca-bundle.pem (first available system root
+// bundle + extraSystemPEM + Langley CA) to dir so SSL_CERT_FILE /
+// REQUESTS_CA_BUNDLE consumers keep trusting public CAs on non-intercepted
+// connections. The file is rewritten only when its content changes.
+func (ca *CA) EnsureCombinedBundle(dir string, extraSystemPEM ...[]byte) (string, error) {
+	var b bytes.Buffer
+	for _, p := range systemBundlePaths {
+		data, err := os.ReadFile(p)
+		if err != nil || len(bytes.TrimSpace(data)) == 0 {
+			continue
+		}
+		appendPEM(&b, data)
+		break
+	}
+	for _, extra := range extraSystemPEM {
+		appendPEM(&b, extra)
+	}
+	b.WriteString("\n# Langley CA\n")
+	b.Write(ca.certPEM)
+
+	path := BundlePath(dir)
+	if cur, err := os.ReadFile(path); err == nil && bytes.Equal(cur, b.Bytes()) {
+		return path, nil
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("creating cert directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".ca-bundle.pem.tmp*")
+	if err != nil {
+		return "", fmt.Errorf("creating CA bundle: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
+	if _, err := tmp.Write(b.Bytes()); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("writing CA bundle: %w", err)
+	}
+	if err := tmp.Chmod(0644); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("writing CA bundle: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("writing CA bundle: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return "", fmt.Errorf("writing CA bundle: %w", err)
+	}
+	return path, nil
+}
+
+// appendPEM appends data to b, ensuring it ends with a newline.
+func appendPEM(b *bytes.Buffer, data []byte) {
+	b.Write(data)
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		b.WriteByte('\n')
+	}
 }
 
 // loadCA loads a CA from disk.

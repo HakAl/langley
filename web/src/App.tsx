@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import type { Flow, Stats, TaskSummary, ToolStats, ToolInvocation, Anomaly, CostPeriod, Settings, ApiResult } from './types'
+import type { ReactNode } from 'react'
+import type { CaptureStatus, Flow, Stats, TaskSummary, ToolStats, ToolInvocation, Anomaly, CostPeriod, Settings, ApiResult } from './types'
 import {
   applyFlowUpdate,
   applyLiveDeltaToTotal,
@@ -50,6 +51,78 @@ function buildFlowCountSearchParams(params: FlowFetchParams): URLSearchParams {
   return qs
 }
 
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? '' : 's'}`
+}
+
+interface CaptureControlProps {
+  status: CaptureStatus
+  pending: boolean
+  onSetMode: (enabled: boolean, force: boolean) => void
+}
+
+function CaptureControl({ status, pending, onSetMode }: CaptureControlProps) {
+  const button = (label: string, ariaLabel: string, enabled: boolean, force: boolean, primary = false) => (
+    <button
+      type="button"
+      className={`${primary ? 'primary-btn' : 'secondary-btn'} capture-btn`}
+      aria-label={ariaLabel}
+      disabled={pending}
+      onClick={() => onSetMode(enabled, force)}
+    >
+      {label}
+    </button>
+  )
+
+  let label: string
+  let detail: ReactNode = null
+  let actions: ReactNode
+  switch (status.state) {
+    case 'passthrough':
+      label = 'Passthrough'
+      detail = <span className="capture-detail">TLS payloads not decrypted or stored</span>
+      actions = button('Start Capture', 'Start capture', true, false, true)
+      break
+    case 'enabling':
+      label = `Capturing (${plural(status.draining_passthrough_tunnels, 'active connection')} will switch after current request)`
+      actions = <>
+        {button('Force Switch', 'Force switch active connections', true, true, true)}
+        {button('Pause Capture', 'Pause capture', false, false)}
+      </>
+      break
+    case 'capturing': {
+      const hosts = status.intercept_hosts.join(', ')
+      const scope = `Intercepting ${hosts || 'no hosts'}; all other hosts tunnel through untouched`
+      label = 'Capturing'
+      detail = (
+        <span className="capture-detail capture-scope" title={scope}>
+          Intercepting {plural(status.intercept_hosts.length, 'host pattern')}
+        </span>
+      )
+      actions = button('Pause Capture', 'Pause capture', false, false)
+      break
+    }
+    case 'stopping':
+      label = `Stopping capture — finishing ${plural(status.draining_mitm_requests, 'active request')}…`
+      actions = <>
+        {button('Force Stop', 'Force stop active requests', false, true, true)}
+        {button('Resume Capture', 'Resume capture', true, false)}
+      </>
+      break
+  }
+
+  return (
+    <div className="capture-control" data-state={status.state} aria-busy={pending}>
+      <div className="capture-status" role="status">
+        <span className="status-dot capture-dot" aria-hidden="true"></span>
+        <span className="capture-label">{label}</span>
+        {detail}
+      </div>
+      <div className="capture-actions">{actions}</div>
+    </div>
+  )
+}
+
 function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>(getInitialTheme)
   const [flows, setFlows] = useState<Flow[]>([])
@@ -58,6 +131,8 @@ function App() {
   const [selectedFlow, setSelectedFlow] = useState<Flow | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [connected, setConnected] = useState(false)
+  const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(null)
+  const [captureActionPending, setCaptureActionPending] = useState(false)
   const [initialLoading, setInitialLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [viewError, setViewError] = useState<string | null>(null)
@@ -389,15 +464,50 @@ function App() {
     }
   }, [applyDeltaToTotals, clampPageToTotal, currentFilterCriteria, schedulePageRefresh])
 
+  // Every authoritative capture update bumps the version; a response from a request
+  // issued before a newer update is stale and must not overwrite it.
+  const captureVersionRef = useRef(0)
+  const applyCaptureStatus = useCallback((status: CaptureStatus) => {
+    captureVersionRef.current += 1
+    setCaptureStatus(status)
+  }, [])
+
+  const refreshCaptureStatus = useCallback(async () => {
+    const version = captureVersionRef.current
+    const { data } = await api.fetchCaptureStatus()
+    if (data && captureVersionRef.current === version) applyCaptureStatus(data)
+  }, [api.fetchCaptureStatus, applyCaptureStatus])
+
+  const captureActionPendingRef = useRef(false)
+  const handleSetCaptureMode = useCallback(async (enabled: boolean, force: boolean) => {
+    if (captureActionPendingRef.current) return
+    captureActionPendingRef.current = true
+    setCaptureActionPending(true)
+    const version = captureVersionRef.current
+    try {
+      const { data, error } = await api.setCaptureMode(enabled, force)
+      if (error) {
+        setError(error)
+      } else if (data && captureVersionRef.current === version) {
+        applyCaptureStatus(data)
+      }
+    } finally {
+      captureActionPendingRef.current = false
+      setCaptureActionPending(false)
+    }
+  }, [api.setCaptureMode, applyCaptureStatus])
+
   const handleReconnect = useCallback(() => {
     fetchFlowPage({ merge: true })
-  }, [fetchFlowPage])
+    void refreshCaptureStatus()
+  }, [fetchFlowPage, refreshCaptureStatus])
 
   const { connect, cleanup } = useWebSocket({
     onFlowUpdate: handleFlowUpdate,
     onConnectedChange: setConnected,
     onError: setError,
     onReconnect: handleReconnect,
+    onCaptureStateChange: applyCaptureStatus,
   })
 
   // Reset page to 0 on filter change; ignore no-op selections so viewLoading never gets stuck
@@ -463,6 +573,7 @@ function App() {
   useEffect(() => {
     fetchFlowPage({ page: 0, merge: true }).then(({ error }) => { if (error) setViewError(error); setInitialLoading(false); connect() })
     api.fetchStats(timeRange ?? undefined).then(({ data }) => { if (data) setStats(data) })
+    void refreshCaptureStatus()
     return () => {
       clearPendingQuietRefresh()
       cleanup()
@@ -862,6 +973,7 @@ function App() {
         </div>
         <Nav view={view} anomalyCount={activeAnomalyCount} onNavigate={navigateTo} />
         <div className="header-right">
+          {captureStatus && <CaptureControl status={captureStatus} pending={captureActionPending} onSetMode={handleSetCaptureMode} />}
           <button className="theme-toggle" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
             {theme === 'dark' ? '☀' : '☽'}
           </button>

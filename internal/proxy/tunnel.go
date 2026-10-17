@@ -67,3 +67,53 @@ func copyWithIdleTimeout(dst io.Writer, src net.Conn, idleTimeout time.Duration)
 		}
 	}
 }
+
+// tunnelCapture uses shared activity across both directions, so a one-way
+// stream remains active even when the other direction has no reads.
+func (p *MITMProxy) tunnelCapture(t *captureTunnel) {
+	var wg sync.WaitGroup
+	copyDirection := func(dst, src net.Conn) {
+		defer wg.Done()
+		defer func() { _ = t.client.Close() }()
+		defer func() { _ = t.upstream.Close() }()
+		buf := make([]byte, 32*1024)
+		for {
+			p.captureMu.Lock()
+			deadline := time.Now().Add(defaultIdleTimeout)
+			if t.draining {
+				deadline = time.Unix(0, t.lastActivity.Load()).Add(p.passthroughIdleThreshold)
+			}
+			_ = src.SetReadDeadline(deadline)
+			p.captureMu.Unlock()
+			n, err := src.Read(buf)
+			if n > 0 {
+				p.captureMu.Lock()
+				t.lastActivity.Store(time.Now().UnixNano())
+				if t.draining {
+					deadline := time.Now().Add(p.passthroughIdleThreshold)
+					_ = t.client.SetReadDeadline(deadline)
+					_ = t.upstream.SetReadDeadline(deadline)
+				}
+				p.captureMu.Unlock()
+				if _, werr := dst.Write(buf[:n]); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					p.captureMu.Lock()
+					keep := t.draining && time.Since(time.Unix(0, t.lastActivity.Load())) < p.passthroughIdleThreshold
+					p.captureMu.Unlock()
+					if keep {
+						continue
+					}
+				}
+				return
+			}
+		}
+	}
+	wg.Add(2)
+	go copyDirection(t.upstream, t.client)
+	go copyDirection(t.client, t.upstream)
+	wg.Wait()
+}
