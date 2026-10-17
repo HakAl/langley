@@ -470,6 +470,8 @@ function App() {
   // scoped to the daemon instance epoch, reset when a reconnect snapshot
   // observes a fresh daemon, and retired instance IDs are permanently rejected.
   const captureVersionRef = useRef(0)
+  const captureGetSeqRef = useRef(0)
+  const latestAppliedGetSeqRef = useRef(0)
   const captureEpochRef = useRef(0)
   const captureRevisionRef = useRef(0)
   const captureInstanceRef = useRef<string | undefined>(undefined)
@@ -500,10 +502,16 @@ function App() {
       Boolean(status.instance_id) &&
       Boolean(captureInstanceRef.current) &&
       status.instance_id !== captureInstanceRef.current
+    const revisionResetOnGet =
+      source === 'get' &&
+      !instanceChanged &&
+      typeof status.revision === 'number' &&
+      status.revision < captureRevisionRef.current
+
     if (instanceChanged && captureInstanceRef.current) {
       retiredInstancesRef.current.add(captureInstanceRef.current)
     }
-    if (source === 'get' || instanceChanged) {
+    if (instanceChanged || revisionResetOnGet) {
       captureEpochRef.current += 1
       if (status.instance_id) {
         captureInstanceRef.current = status.instance_id
@@ -513,23 +521,22 @@ function App() {
       if (status.revision < captureRevisionRef.current) return
       captureRevisionRef.current = status.revision
       if (status.instance_id) captureInstanceRef.current = status.instance_id
+    } else if (status.instance_id) {
+      captureInstanceRef.current = status.instance_id
     }
     captureVersionRef.current += 1
     setCaptureStatus(status)
   }, [])
 
   const refreshCaptureStatus = useCallback(async () => {
+    const getSeq = ++captureGetSeqRef.current
     const version = captureVersionRef.current
     const { data } = await api.fetchCaptureStatus()
     if (!data) return
+    if (getSeq <= latestAppliedGetSeqRef.current || captureVersionRef.current !== version) return
     if (data.instance_id && retiredInstancesRef.current.has(data.instance_id)) return
-    const isNewInstance =
-      Boolean(data.instance_id) &&
-      Boolean(captureInstanceRef.current) &&
-      data.instance_id !== captureInstanceRef.current
-    if (isNewInstance || captureVersionRef.current === version) {
-      applyCaptureStatus(data, 'get')
-    }
+    latestAppliedGetSeqRef.current = getSeq
+    applyCaptureStatus(data, 'get')
   }, [api.fetchCaptureStatus, applyCaptureStatus])
 
   const captureActionPendingRef = useRef(false)

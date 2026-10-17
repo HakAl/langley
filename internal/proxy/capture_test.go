@@ -680,3 +680,139 @@ func TestOneWayStreamUsesSharedActivity(t *testing.T) {
 	_ = upstreamPeer.Close()
 	<-done
 }
+
+func TestPauseDoesNotAdmitUnscheduledIdleSession(t *testing.T) {
+	p, _, _, _, _ := captureFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), false)
+	clientPeer, clientConn := net.Pipe()
+	upstreamPeer, upstreamConn := net.Pipe()
+	defer clientPeer.Close()
+	defer upstreamPeer.Close()
+
+	session := &captureSession{
+		client:            clientConn,
+		upstream:          upstreamConn,
+		awaitingFirstByte: true,
+		readSeq:           1,
+		readDone:          make(chan struct{}),
+	}
+	session.awaitingFirstByteAtomic.Store(true)
+
+	p.captureMu.Lock()
+	if p.captureSessions == nil {
+		p.captureSessions = make(map[*captureSession]struct{})
+	}
+	p.captureSessions[session] = struct{}{}
+	p.captureMu.Unlock()
+	defer func() {
+		p.captureMu.Lock()
+		delete(p.captureSessions, session)
+		p.captureMu.Unlock()
+	}()
+
+	status := p.SetCapture(false, false)
+	if status.State != CaptureStatePassthrough || status.DrainingMITMRequests != 0 {
+		t.Fatalf("SetCapture(false, false) on unscheduled idle session = %+v, want passthrough/0", status)
+	}
+	p.captureMu.Lock()
+	busy := session.busy
+	p.captureMu.Unlock()
+	if busy {
+		t.Fatal("idle session without firstByteRead was marked busy")
+	}
+	if _, err := clientPeer.Write([]byte("x")); err == nil {
+		t.Fatal("expected idle session client transport to be closed on pause")
+	}
+}
+
+func TestPauseAdmitsSessionWithPositiveFirstByteEvidence(t *testing.T) {
+	p, _, _, _, _ := captureFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), false)
+	clientPeer, clientConn := net.Pipe()
+	upstreamPeer, upstreamConn := net.Pipe()
+	defer clientPeer.Close()
+	defer clientConn.Close()
+	defer upstreamPeer.Close()
+	defer upstreamConn.Close()
+
+	session := &captureSession{
+		client:            clientConn,
+		upstream:          upstreamConn,
+		awaitingFirstByte: true,
+		readSeq:           1,
+		readDone:          make(chan struct{}),
+	}
+	session.awaitingFirstByteAtomic.Store(true)
+	session.firstByteRead.Store(true)
+
+	p.captureMu.Lock()
+	if p.captureSessions == nil {
+		p.captureSessions = make(map[*captureSession]struct{})
+	}
+	p.captureSessions[session] = struct{}{}
+	p.captureMu.Unlock()
+	defer func() {
+		p.captureMu.Lock()
+		delete(p.captureSessions, session)
+		p.captureMu.Unlock()
+	}()
+
+	status := p.SetCapture(false, false)
+	if status.State != CaptureStateStopping || status.DrainingMITMRequests != 1 {
+		t.Fatalf("SetCapture(false, false) with positive firstByteRead = %+v, want stopping/1", status)
+	}
+	p.finishMITMRequest(session, false)
+	if after := p.CaptureStatus(); after.State != CaptureStatePassthrough || after.DrainingMITMRequests != 0 {
+		t.Fatalf("after finishing admitted request = %+v, want passthrough/0", after)
+	}
+}
+
+func TestSupersededPauseDoesNotMutateOrLeaveDeadlineOnIdleSession(t *testing.T) {
+	p, _, _, _, _ := captureFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), false)
+	clientPeer, clientConn := net.Pipe()
+	upstreamPeer, upstreamConn := net.Pipe()
+	defer clientPeer.Close()
+	defer clientConn.Close()
+	defer upstreamPeer.Close()
+	defer upstreamConn.Close()
+
+	session := &captureSession{
+		client:            clientConn,
+		upstream:          upstreamConn,
+		awaitingFirstByte: true,
+		readSeq:           1,
+		readDone:          make(chan struct{}),
+	}
+	session.awaitingFirstByteAtomic.Store(true)
+
+	p.captureMu.Lock()
+	if p.captureSessions == nil {
+		p.captureSessions = make(map[*captureSession]struct{})
+	}
+	p.captureSessions[session] = struct{}{}
+	p.captureMu.Unlock()
+	defer func() {
+		p.captureMu.Lock()
+		delete(p.captureSessions, session)
+		p.captureMu.Unlock()
+	}()
+
+	pauseDone := make(chan CaptureStatus, 1)
+	go func() {
+		pauseDone <- p.SetCapture(false, false)
+	}()
+
+	time.Sleep(2 * time.Millisecond)
+	enableStatus := p.SetCapture(true, false)
+	if enableStatus.State != CaptureStateCapturing {
+		t.Fatalf("SetCapture(true, false) = %+v, want capturing", enableStatus)
+	}
+	<-pauseDone
+
+	if cur := p.CaptureStatus(); cur.State != CaptureStateCapturing || cur.DrainingMITMRequests != 0 {
+		t.Fatalf("final status after superseded pause = %+v, want capturing/0", cur)
+	}
+	go func() { _, _ = clientPeer.Write([]byte("G")) }()
+	buf := make([]byte, 1)
+	if _, err := clientConn.Read(buf); err != nil {
+		t.Fatalf("expected cleared read deadline on idle session after enable, got err=%v", err)
+	}
+}
