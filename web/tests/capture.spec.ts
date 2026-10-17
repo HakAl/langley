@@ -703,4 +703,184 @@ test.describe('Capture control bar', () => {
     await page.waitForTimeout(100);
     await expect(control(page)).toHaveAttribute('data-state', 'capturing');
   });
+
+  test('unseen intermediate POST cannot retire the newer current daemon', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    let releasePost!: () => void;
+    const postHeld = new Promise<void>((resolve) => { releasePost = resolve; });
+    let notifyPost!: () => void;
+    const postInFlight = new Promise<void>((resolve) => { notifyPost = resolve; });
+    let restarted = false;
+    let newGets = 0;
+
+    await page.route('**/api/capture', async (route) => {
+      if (route.request().method() === 'POST') {
+        notifyPost();
+        await postHeld;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('passthrough', { revision: 0, instance_id: 'intermediate-daemon' })),
+        });
+        return;
+      }
+      if (restarted) {
+        newGets += 1;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          restarted
+            ? status('capturing', { revision: 1, instance_id: 'new-daemon' })
+            : status('capturing', { revision: 8, instance_id: 'old-daemon' }),
+        ),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+
+    await page.getByRole('button', { name: 'Pause capture', exact: true }).click();
+    await postInFlight;
+
+    restarted = true;
+    ws().close();
+    await expect.poll(() => newGets).toBeGreaterThan(0);
+    await page.waitForTimeout(150);
+
+    releasePost();
+    await expect(control(page)).toHaveAttribute('aria-busy', 'false');
+
+    ws().send(JSON.stringify({
+      type: 'capture_state',
+      timestamp: new Date().toISOString(),
+      data: status('capturing', { revision: 2, instance_id: 'new-daemon' }),
+    }));
+    await page.waitForTimeout(100);
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+  });
+
+  test('older unseen GET cannot retire daemon learned from newer WS', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    let releaseHeld!: () => void;
+    const heldPromise = new Promise<void>((resolve) => { releaseHeld = resolve; });
+    let notifyHeld!: () => void;
+    const heldInFlight = new Promise<void>((resolve) => { notifyHeld = resolve; });
+    let gets = 0;
+
+    await page.route('**/api/capture', async (route) => {
+      gets += 1;
+      if (gets === 2) {
+        notifyHeld();
+        await heldPromise;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('passthrough', { revision: 1, instance_id: 'B' })),
+        });
+        return;
+      }
+      if (gets > 2) {
+        await route.fulfill({ status: 503, body: 'unavailable' });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(status('passthrough', { revision: 1, instance_id: 'A' })),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
+
+    ws().close();
+    await heldInFlight;
+    await expect(page.getByText('Connected')).toBeVisible();
+
+    ws().close();
+    await expect.poll(() => gets).toBeGreaterThan(2);
+    ws().send(JSON.stringify({
+      type: 'capture_state',
+      timestamp: new Date().toISOString(),
+      data: status('capturing', { revision: 1, instance_id: 'C' }),
+    }));
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+
+    releaseHeld();
+    await page.waitForTimeout(150);
+    ws().send(JSON.stringify({
+      type: 'capture_state',
+      timestamp: new Date().toISOString(),
+      data: status('capturing', { revision: 1, instance_id: 'C' }),
+    }));
+    await page.waitForTimeout(150);
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+  });
+
+  test('failed POST must not discard the only current reconnect snapshot', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    let releaseHeld!: () => void;
+    const heldPromise = new Promise<void>((resolve) => { releaseHeld = resolve; });
+    let notifyHeld!: () => void;
+    const heldInFlight = new Promise<void>((resolve) => { notifyHeld = resolve; });
+    let releasePost!: () => void;
+    const postPromise = new Promise<void>((resolve) => { releasePost = resolve; });
+    let notifyPost!: () => void;
+    const postInFlight = new Promise<void>((resolve) => { notifyPost = resolve; });
+    let gets = 0;
+
+    await page.route('**/api/capture', async (route) => {
+      if (route.request().method() === 'POST') {
+        notifyPost();
+        await postPromise;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'unavailable' }),
+        });
+        return;
+      }
+      gets += 1;
+      if (gets === 2) {
+        notifyHeld();
+        await heldPromise;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('passthrough', { revision: 2, instance_id: 'A' })),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          status(gets === 1 ? 'capturing' : 'passthrough', {
+            revision: gets === 1 ? 1 : 2,
+            instance_id: 'A',
+          }),
+        ),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+
+    ws().close();
+    await heldInFlight;
+
+    await page.getByRole('button', { name: 'Pause capture', exact: true }).click();
+    await postInFlight;
+
+    releaseHeld();
+    await page.waitForTimeout(100);
+    releasePost();
+    await expect(control(page)).toHaveAttribute('aria-busy', 'false');
+    await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
+  });
 });

@@ -464,14 +464,17 @@ function App() {
     }
   }, [applyDeltaToTotals, clampPageToTotal, currentFilterCriteria, schedulePageRefresh])
 
-  // Every authoritative capture update or user mutation bumps the version; a
-  // response from a GET issued before a newer update or POST is stale and must
-  // not overwrite or invalidate the newer state. Revision high-water marks are
-  // scoped to the daemon instance epoch, reset when a reconnect snapshot
-  // observes a fresh daemon, and retired instance IDs are permanently rejected.
+  // Capture status updates are ordered by GET issuance sequence, per-instance
+  // revision high-water marks, and daemon instance epochs. Responses predating
+  // an accepted instance transition cannot retire the current daemon, and a
+  // failed POST reconciles any reconnect snapshot deferred while it was pending.
   const captureGetSeqRef = useRef(0)
   const latestAppliedGetSeqRef = useRef(0)
+  const pendingGetCountRef = useRef(0)
   const lastPostGetSeqRef = useRef(0)
+  const lastPostInstanceRef = useRef<string | undefined>(undefined)
+  const lastInstanceChangeGetSeqRef = useRef(0)
+  const deferredGetRef = useRef<{ seq: number; status: CaptureStatus } | null>(null)
   const captureEpochRef = useRef(0)
   const captureRevisionRef = useRef(0)
   const captureInstanceRef = useRef<string | undefined>(undefined)
@@ -487,19 +490,21 @@ function App() {
       return
     }
     if (source === 'post') {
-      if (!status.instance_id && expectedEpoch !== undefined && expectedEpoch !== captureEpochRef.current) {
-        return
-      }
-      if (
-        status.instance_id &&
-        captureInstanceRef.current &&
-        status.instance_id !== captureInstanceRef.current &&
-        status.instance_id === expectedInstance
-      ) {
-        return
+      const epochMoved =
+        (expectedEpoch !== undefined && expectedEpoch !== captureEpochRef.current) ||
+        expectedInstance !== captureInstanceRef.current
+      if (epochMoved) {
+        if (!status.instance_id || status.instance_id !== captureInstanceRef.current) {
+          if (status.instance_id && status.instance_id !== captureInstanceRef.current) {
+            retiredInstancesRef.current.add(status.instance_id)
+          }
+          return
+        }
       }
     }
 
+    const firstInstanceLearned =
+      Boolean(status.instance_id) && !captureInstanceRef.current
     const instanceChanged =
       Boolean(status.instance_id) &&
       Boolean(captureInstanceRef.current) &&
@@ -514,7 +519,10 @@ function App() {
     if (instanceChanged && captureInstanceRef.current) {
       retiredInstancesRef.current.add(captureInstanceRef.current)
     }
-    if (instanceChanged || revisionResetOnGet) {
+    if (instanceChanged && source === 'ws') {
+      lastInstanceChangeGetSeqRef.current = captureGetSeqRef.current
+    }
+    if (instanceChanged || revisionResetOnGet || firstInstanceLearned) {
       captureEpochRef.current += 1
       if (status.instance_id) {
         captureInstanceRef.current = status.instance_id
@@ -532,17 +540,32 @@ function App() {
 
   const refreshCaptureStatus = useCallback(async () => {
     const getSeq = ++captureGetSeqRef.current
-    const { data } = await api.fetchCaptureStatus()
-    if (!data) return
-    if (getSeq <= latestAppliedGetSeqRef.current) return
-    if (data.instance_id && retiredInstancesRef.current.has(data.instance_id)) return
-    const isNewInstance =
-      Boolean(data.instance_id) &&
-      Boolean(captureInstanceRef.current) &&
-      data.instance_id !== captureInstanceRef.current
-    if (!isNewInstance && getSeq <= lastPostGetSeqRef.current) return
-    latestAppliedGetSeqRef.current = getSeq
-    applyCaptureStatus(data, 'get')
+    pendingGetCountRef.current += 1
+    try {
+      const { data } = await api.fetchCaptureStatus()
+      if (!data) return
+      if (getSeq <= latestAppliedGetSeqRef.current) return
+      if (data.instance_id && retiredInstancesRef.current.has(data.instance_id)) return
+      const isNewInstance =
+        Boolean(data.instance_id) &&
+        Boolean(captureInstanceRef.current) &&
+        data.instance_id !== captureInstanceRef.current
+      if (isNewInstance && getSeq <= lastInstanceChangeGetSeqRef.current) {
+        if (data.instance_id) {
+          retiredInstancesRef.current.add(data.instance_id)
+        }
+        return
+      }
+      if ((!isNewInstance || data.instance_id === lastPostInstanceRef.current) && getSeq <= lastPostGetSeqRef.current) {
+        deferredGetRef.current = { seq: getSeq, status: data }
+        return
+      }
+      deferredGetRef.current = null
+      latestAppliedGetSeqRef.current = getSeq
+      applyCaptureStatus(data, 'get')
+    } finally {
+      pendingGetCountRef.current -= 1
+    }
   }, [api.fetchCaptureStatus, applyCaptureStatus])
 
   const captureActionPendingRef = useRef(false)
@@ -550,21 +573,41 @@ function App() {
     if (captureActionPendingRef.current) return
     captureActionPendingRef.current = true
     setCaptureActionPending(true)
-    lastPostGetSeqRef.current = captureGetSeqRef.current
+    const prevPostGetSeq = lastPostGetSeqRef.current
+    const prevPostInstance = lastPostInstanceRef.current
+    const postGetSeq = captureGetSeqRef.current
     const postEpoch = captureEpochRef.current
     const postInstance = captureInstanceRef.current
+    lastPostGetSeqRef.current = postGetSeq
+    lastPostInstanceRef.current = postInstance
+    deferredGetRef.current = null
     try {
       const { data, error } = await api.setCaptureMode(enabled, force)
-      if (error) {
-        setError(error)
-      } else if (data) {
+      if (error || !data) {
+        if (error) {
+          setError(error)
+        }
+        if (lastPostGetSeqRef.current === postGetSeq) {
+          lastPostGetSeqRef.current = prevPostGetSeq
+          lastPostInstanceRef.current = prevPostInstance
+        }
+        const deferred = deferredGetRef.current as { seq: number; status: CaptureStatus } | null
+        deferredGetRef.current = null
+        if (deferred && deferred.seq > latestAppliedGetSeqRef.current) {
+          latestAppliedGetSeqRef.current = deferred.seq
+          applyCaptureStatus(deferred.status, 'get')
+        } else if (pendingGetCountRef.current === 0) {
+          void refreshCaptureStatus()
+        }
+      } else {
+        deferredGetRef.current = null
         applyCaptureStatus(data, 'post', postEpoch, postInstance)
       }
     } finally {
       captureActionPendingRef.current = false
       setCaptureActionPending(false)
     }
-  }, [api.setCaptureMode, applyCaptureStatus])
+  }, [api.setCaptureMode, applyCaptureStatus, refreshCaptureStatus])
 
   const handleReconnect = useCallback(() => {
     fetchFlowPage({ merge: true })
@@ -638,11 +681,22 @@ function App() {
     setSelectedIndex(0)
   }, [])
 
+  const initialCaptureLoadedRef = useRef(false)
+
   // Initial load
   useEffect(() => {
-    fetchFlowPage({ page: 0, merge: true }).then(({ error }) => { if (error) setViewError(error); setInitialLoading(false); connect() })
-    api.fetchStats(timeRange ?? undefined).then(({ data }) => { if (data) setStats(data) })
-    void refreshCaptureStatus()
+    fetchFlowPage({ page: 0, merge: true }).then(({ error }) => {
+      if (error) setViewError(error)
+      setInitialLoading(false)
+      connect()
+    })
+    api.fetchStats(timeRange ?? undefined).then(({ data }) => {
+      if (data) setStats(data)
+    })
+    if (!initialCaptureLoadedRef.current) {
+      initialCaptureLoadedRef.current = true
+      void refreshCaptureStatus()
+    }
     return () => {
       clearPendingQuietRefresh()
       cleanup()

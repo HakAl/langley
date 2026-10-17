@@ -18,7 +18,7 @@ export function useWebSocket({ onFlowUpdate, onConnectedChange, onError, onRecon
   const hasConnectedRef = useRef(false)
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return
 
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)

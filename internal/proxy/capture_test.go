@@ -684,6 +684,7 @@ func TestOneWayStreamUsesSharedActivity(t *testing.T) {
 type firstByteHookConn struct {
 	net.Conn
 	mu                 sync.Mutex
+	trackReads         bool
 	firstByteReads     int
 	enteredSecondRead  chan struct{}
 	enteredOnce        sync.Once
@@ -707,18 +708,18 @@ func newFirstByteHookConn(inner net.Conn) *firstByteHookConn {
 }
 
 func (c *firstByteHookConn) Read(b []byte) (int, error) {
-	isFirstByteSlot := len(b) > 0 && b[0] == unreadFirstByteSentinel
-	if isFirstByteSlot {
-		c.mu.Lock()
+	c.mu.Lock()
+	tracked := c.trackReads
+	if tracked {
 		c.firstByteReads++
-		isSecond := c.firstByteReads >= 2
-		c.mu.Unlock()
-		if isSecond {
-			c.enteredOnce.Do(func() { close(c.enteredSecondRead) })
-		}
+	}
+	isSecond := tracked && c.firstByteReads >= 2
+	c.mu.Unlock()
+	if isSecond {
+		c.enteredOnce.Do(func() { close(c.enteredSecondRead) })
 	}
 	n, err := c.Conn.Read(b)
-	if isFirstByteSlot && n > 0 {
+	if isSecond && n > 0 {
 		c.mu.Lock()
 		hold := c.holdAfterBytesRead
 		c.mu.Unlock()
@@ -789,6 +790,9 @@ func dialHookedMITMKeepAlive(t *testing.T) (*MITMProxy, store.Store, *tls.Conn, 
 	if err := tlsClient.Handshake(); err != nil {
 		t.Fatal(err)
 	}
+	hookConn.mu.Lock()
+	hookConn.trackReads = true
+	hookConn.mu.Unlock()
 
 	if _, err := io.WriteString(tlsClient, "GET /v1/models HTTP/1.1\r\nHost: api.openai.com\r\n\r\n"); err != nil {
 		t.Fatal(err)
@@ -809,59 +813,153 @@ func dialHookedMITMKeepAlive(t *testing.T) (*MITMProxy, store.Store, *tls.Conn, 
 }
 
 func TestPauseDoesNotAdmitUnscheduledIdleSession(t *testing.T) {
-	p, _, tlsClient, _, hookConn := dialHookedMITMKeepAlive(t)
-	hookConn.mu.Lock()
-	hookConn.ignoreDeadline = true
-	hookConn.mu.Unlock()
+	t.Run("descheduled before Peek enters raw read", func(t *testing.T) {
+		p, _, _, _, _ := captureFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), false)
+		clientPeer, clientConn := net.Pipe()
+		upstreamPeer, upstreamConn := net.Pipe()
+		defer clientPeer.Close()
+		defer upstreamPeer.Close()
 
-	status := p.SetCapture(false, false)
-	if status.State != CaptureStatePassthrough || status.DrainingMITMRequests != 0 {
-		t.Fatalf("SetCapture(false, false) on unscheduled idle session = %+v, want passthrough/0", status)
-	}
-	if _, err := io.WriteString(tlsClient, "GET /v1/models HTTP/1.1\r\nHost: api.openai.com\r\n\r\n"); err == nil {
-		var one [1]byte
-		if _, rerr := tlsClient.Read(one[:]); rerr == nil {
-			t.Fatal("expected idle session client transport to be closed on pause")
+		session := &captureSession{
+			client:            clientConn,
+			upstream:          upstreamConn,
+			awaitingFirstByte: true,
+			readSeq:           1,
 		}
-	}
+		session.awaitingFirstByteAtomic.Store(true)
+
+		p.captureMu.Lock()
+		if p.captureSessions == nil {
+			p.captureSessions = make(map[*captureSession]struct{})
+		}
+		p.captureSessions[session] = struct{}{}
+		p.captureMu.Unlock()
+		defer func() {
+			p.captureMu.Lock()
+			delete(p.captureSessions, session)
+			p.captureMu.Unlock()
+		}()
+
+		status := p.SetCapture(false, false)
+		if status.State != CaptureStatePassthrough || status.DrainingMITMRequests != 0 {
+			t.Fatalf("SetCapture(false, false) on pre-Peek idle session = %+v, want passthrough/0", status)
+		}
+		p.captureMu.Lock()
+		busy := session.busy
+		p.captureMu.Unlock()
+		if busy {
+			t.Fatal("pre-Peek idle session was marked busy")
+		}
+		if _, err := clientPeer.Write([]byte("x")); err == nil {
+			t.Fatal("expected pre-Peek idle session client transport to be closed on pause")
+		}
+	})
+
+	t.Run("parked in keep-alive read with no client write", func(t *testing.T) {
+		p, _, tlsClient, _, _ := dialHookedMITMKeepAlive(t)
+
+		status := p.SetCapture(false, false)
+		if status.State != CaptureStatePassthrough || status.DrainingMITMRequests != 0 {
+			t.Fatalf("SetCapture(false, false) on keep-alive idle session = %+v, want passthrough/0", status)
+		}
+		if _, err := io.WriteString(tlsClient, "GET /v1/models HTTP/1.1\r\nHost: api.openai.com\r\n\r\n"); err == nil {
+			var one [1]byte
+			if _, rerr := tlsClient.Read(one[:]); rerr == nil {
+				t.Fatal("expected idle session client transport to be closed on pause")
+			}
+		}
+	})
+}
+
+type directDeadlineConn struct {
+	net.Conn
+	raw net.Conn
+}
+
+func (c *directDeadlineConn) SetReadDeadline(d time.Time) error {
+	return c.raw.SetReadDeadline(d)
 }
 
 func TestPauseAdmitsSessionWithPositiveFirstByteEvidence(t *testing.T) {
-	p, data, tlsClient, tlsReader, hookConn := dialHookedMITMKeepAlive(t)
-	hookConn.mu.Lock()
-	hookConn.holdAfterBytesRead = true
-	hookConn.ignoreDeadline = true
-	hookConn.mu.Unlock()
+	t.Run("synchronized post-read hold", func(t *testing.T) {
+		p, data, tlsClient, tlsReader, hookConn := dialHookedMITMKeepAlive(t)
+		hookConn.mu.Lock()
+		hookConn.holdAfterBytesRead = true
+		hookConn.ignoreDeadline = true
+		hookConn.mu.Unlock()
 
-	writeDone := make(chan error, 1)
-	go func() {
-		_, err := io.WriteString(tlsClient, "GET /v1/models HTTP/1.1\r\nHost: api.openai.com\r\n\r\n")
-		writeDone <- err
-	}()
+		writeDone := make(chan error, 1)
+		go func() {
+			_, err := io.WriteString(tlsClient, "GET /v1/models HTTP/1.1\r\nHost: api.openai.com\r\n\r\n")
+			writeDone <- err
+		}()
 
-	<-hookConn.bytesReadCh
-	status := p.SetCapture(false, false)
-	if status.State != CaptureStateStopping || status.DrainingMITMRequests != 1 {
-		t.Fatalf("SetCapture(false, false) after raw Read filled first-byte slot = %+v, want stopping/1", status)
-	}
-	close(hookConn.releaseReadCh)
-	if err := <-writeDone; err != nil {
-		t.Fatalf("writing second request failed: %v", err)
-	}
-	resp2, err := http.ReadResponse(tlsReader, nil)
-	if err != nil {
-		t.Fatalf("reading second response failed: %v", err)
-	}
-	_, _ = io.ReadAll(resp2.Body)
-	_ = resp2.Body.Close()
+		<-hookConn.bytesReadCh
+		status := p.SetCapture(false, false)
+		if status.State != CaptureStateStopping || status.DrainingMITMRequests != 1 {
+			t.Fatalf("SetCapture(false, false) while first-byte read is held = %+v, want stopping/1", status)
+		}
+		close(hookConn.releaseReadCh)
+		if err := <-writeDone; err != nil {
+			t.Fatalf("writing second request failed: %v", err)
+		}
+		resp2, err := http.ReadResponse(tlsReader, nil)
+		if err != nil {
+			t.Fatalf("reading second response failed: %v", err)
+		}
+		_, _ = io.ReadAll(resp2.Body)
+		_ = resp2.Body.Close()
 
-	after := waitCapture(t, p, CaptureStatePassthrough)
-	if after.DrainingMITMRequests != 0 {
-		t.Fatalf("after finishing admitted request = %+v, want passthrough/0", after)
-	}
-	if got := flowCount(t, data); got != 2 {
-		t.Fatalf("persisted flow count = %d, want 2", got)
-	}
+		after := waitCapture(t, p, CaptureStatePassthrough)
+		if after.DrainingMITMRequests != 0 {
+			t.Fatalf("after finishing admitted request = %+v, want passthrough/0", after)
+		}
+		if got := flowCount(t, data); got != 2 {
+			t.Fatalf("persisted flow count = %d, want 2", got)
+		}
+	})
+
+	t.Run("concurrent pending read without channel handoff", func(t *testing.T) {
+		p, data, tlsClient, tlsReader, hookConn := dialHookedMITMKeepAlive(t)
+		hookConn.mu.Lock()
+		hookConn.holdAfterBytesRead = true
+		hookConn.mu.Unlock()
+		p.captureMu.Lock()
+		for s := range p.captureSessions {
+			s.client = &directDeadlineConn{Conn: s.client, raw: hookConn.Conn}
+		}
+		p.captureMu.Unlock()
+
+		writeDone := make(chan error, 1)
+		go func() {
+			_, err := io.WriteString(tlsClient, "GET /v1/models HTTP/1.1\r\nHost: api.openai.com\r\n\r\n")
+			writeDone <- err
+		}()
+
+		time.Sleep(20 * time.Millisecond)
+		status := p.SetCapture(false, false)
+		close(hookConn.releaseReadCh)
+		if err := <-writeDone; err != nil {
+			t.Fatalf("writing second request failed: %v", err)
+		}
+		if status.State != CaptureStateStopping || status.DrainingMITMRequests != 1 {
+			t.Fatalf("SetCapture(false, false) at held-read boundary = %+v, want stopping/1", status)
+		}
+		resp2, err := http.ReadResponse(tlsReader, nil)
+		if err != nil {
+			t.Fatalf("reading second response failed: %v", err)
+		}
+		_, _ = io.ReadAll(resp2.Body)
+		_ = resp2.Body.Close()
+
+		after := waitCapture(t, p, CaptureStatePassthrough)
+		if after.DrainingMITMRequests != 0 {
+			t.Fatalf("after finishing admitted request = %+v, want passthrough/0", after)
+		}
+		if got := flowCount(t, data); got != 2 {
+			t.Fatalf("persisted flow count = %d, want 2", got)
+		}
+	})
 }
 
 func TestSupersededPauseDoesNotMutateOrLeaveDeadlineOnIdleSession(t *testing.T) {

@@ -60,12 +60,9 @@ type captureSession struct {
 	awaitingFirstByte       bool
 	awaitingFirstByteAtomic atomic.Bool
 	firstByteRead           atomic.Bool
-	pendingReadByte         *byte
 	readSeq                 uint64
 	readDone                chan struct{}
 }
-
-const unreadFirstByteSentinel byte = 0xff
 
 type firstByteSlotConn struct {
 	net.Conn
@@ -74,9 +71,9 @@ type firstByteSlotConn struct {
 }
 
 func (c *firstByteSlotConn) Read(b []byte) (int, error) {
-	c.p.prepareFirstByteRead(c.session, b)
+	readDone := c.p.prepareFirstByteRead(c.session)
 	n, err := c.Conn.Read(b)
-	c.p.finishFirstByteRead(c.session, n)
+	c.p.finishFirstByteRead(c.session, readDone, n)
 	return n, err
 }
 
@@ -95,14 +92,14 @@ func (c *rawReadEvidenceConn) Read(b []byte) (int, error) {
 
 type rawReadEvidenceReader struct {
 	r       io.Reader
-	p       *MITMProxy
 	session *captureSession
 }
 
 func (r *rawReadEvidenceReader) Read(b []byte) (int, error) {
-	r.p.preparePlaintextFirstByteRead(r.session, b)
 	n, err := r.r.Read(b)
-	r.p.finishFirstByteRead(r.session, n)
+	if n > 0 && r.session.awaitingFirstByteAtomic.Load() {
+		r.session.firstByteRead.Store(true)
+	}
 	return n, err
 }
 
@@ -888,44 +885,54 @@ func (p *MITMProxy) serveTLSConnection(clientConn *tls.Conn, upstreamConn *tls.C
 	p.serveTLSCaptureSession(clientConn, upstreamConn, host, session)
 }
 
-func (p *MITMProxy) prepareFirstByteRead(session *captureSession, b []byte) {
-	if len(b) == 0 || !session.awaitingFirstByteAtomic.Load() {
-		return
+func (p *MITMProxy) prepareFirstByteRead(session *captureSession) chan struct{} {
+	if !session.awaitingFirstByteAtomic.Load() {
+		return nil
 	}
 	p.captureMu.Lock()
-	if session.awaitingFirstByte && !session.busy {
-		b[0] = unreadFirstByteSentinel
-		session.pendingReadByte = &b[0]
+	defer p.captureMu.Unlock()
+	if !p.captureWanted || !session.awaitingFirstByte || session.busy {
+		return nil
 	}
-	p.captureMu.Unlock()
+	if session.readDone == nil {
+		session.readDone = make(chan struct{})
+	}
+	return session.readDone
 }
 
-func (p *MITMProxy) preparePlaintextFirstByteRead(session *captureSession, b []byte) {
-	if len(b) == 0 || !session.awaitingFirstByteAtomic.Load() {
-		return
-	}
-	p.captureMu.Lock()
-	if session.awaitingFirstByte && !session.busy && session.pendingReadByte == nil {
-		b[0] = unreadFirstByteSentinel
-		session.pendingReadByte = &b[0]
-	}
-	p.captureMu.Unlock()
-}
-
-func (p *MITMProxy) finishFirstByteRead(session *captureSession, n int) {
+func (p *MITMProxy) finishFirstByteRead(session *captureSession, readDone chan struct{}, n int) {
 	if n > 0 && session.awaitingFirstByteAtomic.Load() {
 		session.firstByteRead.Store(true)
 	}
+	var cancelUnresolved bool
 	p.captureMu.Lock()
-	session.pendingReadByte = nil
+	if n > 0 && session.awaitingFirstByte {
+		session.firstByteRead.Store(true)
+		if session.busy {
+			p.admitMITMFirstByteLocked(session)
+		}
+	} else if n == 0 && !p.captureWanted && session.awaitingFirstByte && session.busy {
+		cancelUnresolved = true
+	}
+	if readDone != nil && session.readDone == readDone {
+		close(readDone)
+		session.readDone = nil
+	}
 	p.captureMu.Unlock()
+	if cancelUnresolved {
+		p.cancelMITMAdmission(session)
+		_ = session.client.Close()
+		if session.upstream != nil {
+			_ = session.upstream.Close()
+		}
+	}
 }
 
-func hasFirstByteEvidenceLocked(session *captureSession) bool {
-	if session.firstByteRead.Load() {
-		return true
+func (p *MITMProxy) holdUnresolvedMITMFirstByteLocked(session *captureSession) {
+	if session.awaitingFirstByte && !session.busy {
+		session.busy = true
+		p.inFlightMITMRequests++
 	}
-	return session.pendingReadByte != nil && *session.pendingReadByte != unreadFirstByteSentinel
 }
 
 func (p *MITMProxy) admitMITMFirstByteLocked(session *captureSession) {
@@ -933,7 +940,6 @@ func (p *MITMProxy) admitMITMFirstByteLocked(session *captureSession) {
 		session.awaitingFirstByte = false
 		session.awaitingFirstByteAtomic.Store(false)
 		session.firstByteRead.Store(true)
-		session.pendingReadByte = nil
 		_ = session.client.SetReadDeadline(time.Time{})
 		if !session.busy {
 			session.busy = true
@@ -953,7 +959,10 @@ func (p *MITMProxy) cancelMITMAdmission(session *captureSession) {
 	session.awaitingFirstByte = false
 	session.awaitingFirstByteAtomic.Store(false)
 	session.firstByteRead.Store(false)
-	session.pendingReadByte = nil
+	if session.readDone != nil {
+		close(session.readDone)
+		session.readDone = nil
+	}
 	wasBusy := session.busy
 	if wasBusy {
 		before := p.captureStatusLocked()
@@ -968,12 +977,11 @@ func (p *MITMProxy) cancelMITMAdmission(session *captureSession) {
 }
 
 func (p *MITMProxy) serveTLSCaptureSession(clientConn, upstreamConn *tls.Conn, host string, session *captureSession) {
-	evidenceReader := &rawReadEvidenceReader{r: clientConn, p: p, session: session}
+	evidenceReader := &rawReadEvidenceReader{r: clientConn, session: session}
 	clientReader := bufio.NewReader(&captureAdmissionReader{r: evidenceReader, p: p, session: session})
 	upstreamReader := bufio.NewReader(upstreamConn)
 
 	for {
-		var readDone chan struct{}
 		p.captureMu.Lock()
 		if !p.captureWanted {
 			p.captureMu.Unlock()
@@ -984,7 +992,7 @@ func (p *MITMProxy) serveTLSCaptureSession(clientConn, upstreamConn *tls.Conn, h
 			return
 		}
 		session.readSeq++
-		session.pendingReadByte = nil
+		session.readDone = nil
 		if clientReader.Buffered() > 0 {
 			session.awaitingFirstByte = false
 			session.awaitingFirstByteAtomic.Store(false)
@@ -995,17 +1003,12 @@ func (p *MITMProxy) serveTLSCaptureSession(clientConn, upstreamConn *tls.Conn, h
 			session.firstByteRead.Store(false)
 			session.awaitingFirstByte = true
 			session.awaitingFirstByteAtomic.Store(true)
-			readDone = make(chan struct{})
-			session.readDone = readDone
 		}
 		p.captureMu.Unlock()
 
 		// Wait for the first byte of a request while session.busy is false so
 		// genuinely idle keep-alive sessions can be closed immediately on pause.
 		_, peekErr := clientReader.Peek(1)
-		if readDone != nil {
-			close(readDone)
-		}
 		if peekErr != nil {
 			if peekErr != io.EOF {
 				p.logger.Debug("error awaiting request from TLS connection", "host", host, "error", peekErr)
@@ -1763,8 +1766,13 @@ func (p *MITMProxy) SetCapture(enabled bool, force bool) CaptureStatus {
 			return status
 		}
 		for _, item := range pending {
-			if item.session.readSeq == item.readSeq && item.session.awaitingFirstByte && hasFirstByteEvidenceLocked(item.session) {
+			if item.session.readSeq != item.readSeq || !item.session.awaitingFirstByte {
+				continue
+			}
+			if item.session.firstByteRead.Load() {
 				p.admitMITMFirstByteLocked(item.session)
+			} else if item.session.readDone == item.readDone {
+				p.holdUnresolvedMITMFirstByteLocked(item.session)
 			}
 		}
 	}
@@ -1786,6 +1794,10 @@ func (p *MITMProxy) SetCapture(enabled bool, force bool) CaptureStatus {
 		for session := range p.captureSessions {
 			if session.awaitingFirstByte {
 				_ = session.client.SetReadDeadline(time.Time{})
+				if session.busy && !session.firstByteRead.Load() {
+					session.busy = false
+					p.inFlightMITMRequests--
+				}
 			}
 		}
 	} else {
@@ -1794,7 +1806,6 @@ func (p *MITMProxy) SetCapture(enabled bool, force bool) CaptureStatus {
 				session.awaitingFirstByte = false
 				session.awaitingFirstByteAtomic.Store(false)
 				session.firstByteRead.Store(false)
-				session.pendingReadByte = nil
 				_ = session.client.Close()
 				if session.upstream != nil {
 					_ = session.upstream.Close()
