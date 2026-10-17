@@ -485,6 +485,7 @@ function App() {
     source: 'get' | 'post' | 'ws' = 'ws',
     expectedEpoch?: number,
     expectedInstance?: string,
+    expectedGetSeq?: number,
   ) => {
     if (status.instance_id && retiredInstancesRef.current.has(status.instance_id)) {
       return
@@ -519,8 +520,15 @@ function App() {
     if (instanceChanged && captureInstanceRef.current) {
       retiredInstancesRef.current.add(captureInstanceRef.current)
     }
-    if (instanceChanged && source === 'ws') {
-      lastInstanceChangeGetSeqRef.current = captureGetSeqRef.current
+    if (instanceChanged || firstInstanceLearned) {
+      if (source === 'ws') {
+        lastInstanceChangeGetSeqRef.current = captureGetSeqRef.current
+      } else if (source === 'post') {
+        lastInstanceChangeGetSeqRef.current = Math.max(
+          lastInstanceChangeGetSeqRef.current,
+          expectedGetSeq ?? captureGetSeqRef.current,
+        )
+      }
     }
     if (instanceChanged || revisionResetOnGet || firstInstanceLearned) {
       captureEpochRef.current += 1
@@ -557,7 +565,9 @@ function App() {
         return
       }
       if ((!isNewInstance || data.instance_id === lastPostInstanceRef.current) && getSeq <= lastPostGetSeqRef.current) {
-        deferredGetRef.current = { seq: getSeq, status: data }
+        if (!deferredGetRef.current || getSeq > deferredGetRef.current.seq) {
+          deferredGetRef.current = { seq: getSeq, status: data }
+        }
         return
       }
       deferredGetRef.current = null
@@ -594,14 +604,29 @@ function App() {
         const deferred = deferredGetRef.current as { seq: number; status: CaptureStatus } | null
         deferredGetRef.current = null
         if (deferred && deferred.seq > latestAppliedGetSeqRef.current) {
-          latestAppliedGetSeqRef.current = deferred.seq
-          applyCaptureStatus(deferred.status, 'get')
+          const retired = Boolean(
+            deferred.status.instance_id && retiredInstancesRef.current.has(deferred.status.instance_id),
+          )
+          const isNewInstance =
+            Boolean(deferred.status.instance_id) &&
+            Boolean(captureInstanceRef.current) &&
+            deferred.status.instance_id !== captureInstanceRef.current
+          const staleInstance = isNewInstance && deferred.seq <= lastInstanceChangeGetSeqRef.current
+          if (staleInstance && deferred.status.instance_id) {
+            retiredInstancesRef.current.add(deferred.status.instance_id)
+          }
+          if (!retired && !staleInstance) {
+            latestAppliedGetSeqRef.current = deferred.seq
+            applyCaptureStatus(deferred.status, 'get')
+          } else if (pendingGetCountRef.current === 0) {
+            void refreshCaptureStatus()
+          }
         } else if (pendingGetCountRef.current === 0) {
           void refreshCaptureStatus()
         }
       } else {
         deferredGetRef.current = null
-        applyCaptureStatus(data, 'post', postEpoch, postInstance)
+        applyCaptureStatus(data, 'post', postEpoch, postInstance, postGetSeq)
       }
     } finally {
       captureActionPendingRef.current = false

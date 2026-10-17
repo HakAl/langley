@@ -128,7 +128,7 @@ test.describe('Capture control bar', () => {
       body: status('stopping', { draining_mitm_requests: 1 }),
     }));
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
 
     await page.getByRole('button', { name: 'Pause capture' }).click();
 
@@ -180,7 +180,7 @@ test.describe('Capture control bar', () => {
     const ws = await captureWebSocket(page);
     await mockCapture(page, status('passthrough'), () => ({ body: status('capturing') }));
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
 
     sendCaptureState(ws(), status('enabling', { draining_passthrough_tunnels: 4 }));
@@ -201,7 +201,7 @@ test.describe('Capture control bar', () => {
     const ws = await captureWebSocket(page);
     const mock = await mockCapture(page, status('capturing'), () => ({ body: status('capturing') }));
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'capturing');
 
     // Daemon restarted while disconnected: it comes back in passthrough.
@@ -210,7 +210,7 @@ test.describe('Capture control bar', () => {
     await expect(page.getByText('Disconnected')).toBeVisible();
 
     await expect(control(page)).toHaveAttribute('data-state', 'passthrough', { timeout: 5000 });
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
   });
 
   test('disables capture buttons while a transition request is in flight', async ({ page }) => {
@@ -340,7 +340,7 @@ test.describe('Capture control bar', () => {
     });
 
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
 
     // Trigger WebSocket disconnect + reconnect so a second GET /api/capture starts and hangs.
@@ -367,7 +367,7 @@ test.describe('Capture control bar', () => {
     );
 
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'capturing');
 
     // Simulate daemon restart: new instance starts in passthrough at revision 0.
@@ -376,7 +376,7 @@ test.describe('Capture control bar', () => {
     await expect(page.getByText('Disconnected')).toBeVisible();
 
     await expect(control(page)).toHaveAttribute('data-state', 'passthrough', { timeout: 5000 });
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
 
     // New daemon's first WebSocket broadcast has revision 1 (< old revision 5) and must be applied.
     sendCaptureState(ws(), status('capturing', { revision: 1, instance_id: 'daemon-new' }));
@@ -414,7 +414,7 @@ test.describe('Capture control bar', () => {
     });
 
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'capturing');
 
     await page.getByRole('button', { name: 'Pause capture' }).click();
@@ -423,7 +423,7 @@ test.describe('Capture control bar', () => {
     restarted = true;
     ws().close();
     await expect(page.getByText('Disconnected')).toBeVisible();
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
 
     releaseOldPost();
     await expect(control(page)).toHaveAttribute('aria-busy', 'false');
@@ -458,7 +458,7 @@ test.describe('Capture control bar', () => {
     });
 
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
 
     await page.getByRole('button', { name: 'Start capture', exact: true }).click();
@@ -509,13 +509,13 @@ test.describe('Capture control bar', () => {
     });
 
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
 
     phase = 'hold-reconnect-1';
     ws().close();
     await secondGetInFlight;
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
 
     ws().close();
     await expect.poll(() => reconnect2Gets).toBeGreaterThan(0);
@@ -570,7 +570,7 @@ test.describe('Capture control bar', () => {
     });
 
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
 
     ws().close();
@@ -629,7 +629,7 @@ test.describe('Capture control bar', () => {
     });
 
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'capturing');
 
     ws().close();
@@ -687,12 +687,12 @@ test.describe('Capture control bar', () => {
     });
 
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
 
     ws().close();
     await olderInFlight;
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
 
     ws().close();
     await newerInFlight;
@@ -739,7 +739,7 @@ test.describe('Capture control bar', () => {
     });
 
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'capturing');
 
     await page.getByRole('button', { name: 'Pause capture', exact: true }).click();
@@ -794,12 +794,12 @@ test.describe('Capture control bar', () => {
     });
 
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
 
     ws().close();
     await heldInFlight;
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
 
     ws().close();
     await expect.poll(() => gets).toBeGreaterThan(2);
@@ -868,7 +868,7 @@ test.describe('Capture control bar', () => {
     });
 
     await page.goto('/');
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     await expect(control(page)).toHaveAttribute('data-state', 'capturing');
 
     ws().close();
@@ -882,5 +882,176 @@ test.describe('Capture control bar', () => {
     releasePost();
     await expect(control(page)).toHaveAttribute('aria-busy', 'false');
     await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
+  });
+
+  test('old unseen GET cannot replace a newer instance accepted by POST', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    let releaseHeld!: () => void;
+    const heldPromise = new Promise<void>((resolve) => { releaseHeld = resolve; });
+    let notifyHeld!: () => void;
+    const heldInFlight = new Promise<void>((resolve) => { notifyHeld = resolve; });
+    let releasePost!: () => void;
+    const postPromise = new Promise<void>((resolve) => { releasePost = resolve; });
+    let notifyPost!: () => void;
+    const postInFlight = new Promise<void>((resolve) => { notifyPost = resolve; });
+    let gets = 0;
+
+    await page.route('**/api/capture', async (route) => {
+      if (route.request().method() === 'POST') {
+        notifyPost();
+        await postPromise;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('capturing', { revision: 1, instance_id: 'C' })),
+        });
+        return;
+      }
+      gets += 1;
+      if (gets === 2) {
+        notifyHeld();
+        await heldPromise;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('passthrough', { revision: 0, instance_id: 'B' })),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(status('passthrough', { revision: 0, instance_id: 'A' })),
+      });
+    });
+
+    await page.goto('/');
+    await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+
+    ws().close();
+    await heldInFlight;
+
+    await page.getByRole('button', { name: 'Start capture', exact: true }).click();
+    await postInFlight;
+    releasePost();
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+    await expect(control(page)).toHaveAttribute('aria-busy', 'false');
+
+    releaseHeld();
+    await page.waitForTimeout(100);
+    sendCaptureState(ws(), status('capturing', { revision: 2, instance_id: 'C' }));
+    await page.waitForTimeout(100);
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+  });
+
+  test('initial GET cannot retire the first instance learned from WS', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    let releaseHeld!: () => void;
+    const heldPromise = new Promise<void>((resolve) => { releaseHeld = resolve; });
+    let notifyHeld!: () => void;
+    const heldInFlight = new Promise<void>((resolve) => { notifyHeld = resolve; });
+
+    await page.route('**/api/capture', async (route) => {
+      notifyHeld();
+      await heldPromise;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(status('passthrough', { revision: 1, instance_id: 'A' })),
+      });
+    });
+
+    await page.goto('/');
+    await heldInFlight;
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+
+    sendCaptureState(ws(), status('capturing', { revision: 1, instance_id: 'B' }));
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+
+    releaseHeld();
+    await page.waitForTimeout(100);
+    sendCaptureState(ws(), status('capturing', { revision: 1, instance_id: 'B' }));
+    await page.waitForTimeout(100);
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+  });
+
+  test('failed POST must use newest deferred snapshot despite reversed GET completion', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    let releaseOlder!: () => void;
+    const olderPromise = new Promise<void>((resolve) => { releaseOlder = resolve; });
+    let notifyOlder!: () => void;
+    const olderInFlight = new Promise<void>((resolve) => { notifyOlder = resolve; });
+    let releaseNewer!: () => void;
+    const newerPromise = new Promise<void>((resolve) => { releaseNewer = resolve; });
+    let notifyNewer!: () => void;
+    const newerInFlight = new Promise<void>((resolve) => { notifyNewer = resolve; });
+    let releasePost!: () => void;
+    const postPromise = new Promise<void>((resolve) => { releasePost = resolve; });
+    let notifyPost!: () => void;
+    const postInFlight = new Promise<void>((resolve) => { notifyPost = resolve; });
+    let gets = 0;
+
+    await page.route('**/api/capture', async (route) => {
+      if (route.request().method() === 'POST') {
+        notifyPost();
+        await postPromise;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'unavailable' }),
+        });
+        return;
+      }
+      gets += 1;
+      if (gets === 2) {
+        notifyOlder();
+        await olderPromise;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('passthrough', { revision: 2, instance_id: 'A' })),
+        });
+        return;
+      }
+      if (gets === 3) {
+        notifyNewer();
+        await newerPromise;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('capturing', { revision: 3, instance_id: 'A' })),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(status('capturing', { revision: gets === 1 ? 1 : 3, instance_id: 'A' })),
+      });
+    });
+
+    await page.goto('/');
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+
+    ws().close();
+    await olderInFlight;
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+
+    ws().close();
+    await newerInFlight;
+
+    await page.getByRole('button', { name: 'Pause capture', exact: true }).click();
+    await postInFlight;
+
+    releaseNewer();
+    await page.waitForTimeout(100);
+    releaseOlder();
+    await page.waitForTimeout(100);
+    releasePost();
+
+    await expect(control(page)).toHaveAttribute('aria-busy', 'false');
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
   });
 });

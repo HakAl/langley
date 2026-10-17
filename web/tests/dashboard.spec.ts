@@ -1124,7 +1124,10 @@ test.describe('Flow Inspector & Time Range UX (langley-63xq)', () => {
       const sockets: unknown[] = [];
       (window as unknown as { __sockets: unknown[] }).__sockets = sockets;
       class FakeSocket {
+        static CONNECTING = 0;
         static OPEN = 1;
+        static CLOSING = 2;
+        static CLOSED = 3;
         readyState = 1;
         onopen?: (ev: unknown) => void;
         onclose?: (ev: unknown) => void;

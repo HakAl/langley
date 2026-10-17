@@ -960,6 +960,88 @@ func TestPauseAdmitsSessionWithPositiveFirstByteEvidence(t *testing.T) {
 			t.Fatalf("persisted flow count = %d, want 2", got)
 		}
 	})
+
+	t.Run("buffered TLS plaintext read without new raw read", func(t *testing.T) {
+		p, _, _, _, _ := captureFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), false)
+		clientPeer, clientConn := net.Pipe()
+		upstreamPeer, upstreamConn := net.Pipe()
+		defer clientPeer.Close()
+		defer upstreamPeer.Close()
+
+		session := &captureSession{
+			client:            clientConn,
+			upstream:          upstreamConn,
+			awaitingFirstByte: true,
+			readSeq:           1,
+		}
+		session.awaitingFirstByteAtomic.Store(true)
+
+		p.captureMu.Lock()
+		if p.captureSessions == nil {
+			p.captureSessions = make(map[*captureSession]struct{})
+		}
+		p.captureSessions[session] = struct{}{}
+		p.captureMu.Unlock()
+		defer func() {
+			p.captureMu.Lock()
+			delete(p.captureSessions, session)
+			p.captureMu.Unlock()
+		}()
+
+		enteredPlaintextRead := make(chan struct{})
+		releasePlaintextRead := make(chan struct{})
+		bufferedTLS := readerFunc(func(b []byte) (int, error) {
+			n := copy(b, "GET /v1/messages HTTP/1.1\r\nHost: api.openai.com\r\nX-Partial: ")
+			close(enteredPlaintextRead)
+			<-releasePlaintextRead
+			return n, nil
+		})
+		evidenceReader := &rawReadEvidenceReader{r: bufferedTLS, p: p, session: session}
+		admReader := &captureAdmissionReader{r: evidenceReader, p: p, session: session}
+
+		readDone := make(chan error, 1)
+		go func() {
+			buf := make([]byte, 128)
+			_, err := admReader.Read(buf)
+			readDone <- err
+		}()
+
+		<-enteredPlaintextRead
+		status := p.SetCapture(false, false)
+		if status.State != CaptureStateStopping || status.DrainingMITMRequests != 1 {
+			close(releasePlaintextRead)
+			t.Fatalf("SetCapture(false, false) during buffered TLS plaintext read = %+v, want stopping/1", status)
+		}
+		close(releasePlaintextRead)
+		if err := <-readDone; err != nil {
+			t.Fatalf("buffered TLS plaintext read failed: %v", err)
+		}
+
+		// Verify the read deadline on the underlying client transport was cleared
+		// so the remainder of the partial request can be read from the socket.
+		writeErr := make(chan error, 1)
+		go func() {
+			_, err := io.WriteString(clientPeer, "finished\r\n\r\n")
+			writeErr <- err
+		}()
+		remBuf := make([]byte, 32)
+		if _, err := clientConn.Read(remBuf); err != nil {
+			t.Fatalf("reading remainder of partial request after buffered TLS admission failed: %v", err)
+		}
+		if err := <-writeErr; err != nil {
+			t.Fatalf("client write of request remainder failed: %v", err)
+		}
+		p.finishMITMRequest(session, true)
+		if after := p.CaptureStatus(); after.State != CaptureStatePassthrough || after.DrainingMITMRequests != 0 {
+			t.Fatalf("after finishing buffered TLS request = %+v, want passthrough/0", after)
+		}
+	})
+}
+
+type readerFunc func(b []byte) (int, error)
+
+func (f readerFunc) Read(b []byte) (int, error) {
+	return f(b)
 }
 
 func TestSupersededPauseDoesNotMutateOrLeaveDeadlineOnIdleSession(t *testing.T) {

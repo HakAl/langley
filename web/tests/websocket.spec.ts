@@ -14,7 +14,7 @@ test.describe('WebSocket Real-time Updates', () => {
     await authenticate(page);
 
     await expect(page.locator('.status-dot.connected')).toBeVisible();
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
   });
 
   test('shows Disconnected when WS closes', async ({ page }) => {
@@ -26,7 +26,7 @@ test.describe('WebSocket Real-time Updates', () => {
     await page.goto('/');
     await authenticate(page);
 
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
 
     serverWs!.close();
 
@@ -202,12 +202,12 @@ test.describe('WebSocket Real-time Updates', () => {
     await page.goto('/');
     await authenticate(page);
 
-    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
     const initialFetches = flowsFetchCount;
 
     // Close and let reconnect happen
     serverWs!.close();
-    await expect(page.getByText('Connected')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible({ timeout: 10000 });
 
     // After reconnect, flows should have been refetched
     await expect.poll(() => flowsFetchCount, { timeout: 5000 }).toBeGreaterThan(initialFetches);

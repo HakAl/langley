@@ -92,14 +92,17 @@ func (c *rawReadEvidenceConn) Read(b []byte) (int, error) {
 
 type rawReadEvidenceReader struct {
 	r       io.Reader
+	p       *MITMProxy
 	session *captureSession
 }
 
 func (r *rawReadEvidenceReader) Read(b []byte) (int, error) {
+	readDone := r.p.prepareFirstByteRead(r.session)
 	n, err := r.r.Read(b)
 	if n > 0 && r.session.awaitingFirstByteAtomic.Load() {
 		r.session.firstByteRead.Store(true)
 	}
+	r.p.finishFirstByteRead(r.session, readDone, n)
 	return n, err
 }
 
@@ -908,6 +911,7 @@ func (p *MITMProxy) finishFirstByteRead(session *captureSession, readDone chan s
 	p.captureMu.Lock()
 	if n > 0 && session.awaitingFirstByte {
 		session.firstByteRead.Store(true)
+		_ = session.client.SetReadDeadline(time.Time{})
 		if session.busy {
 			p.admitMITMFirstByteLocked(session)
 		}
@@ -977,7 +981,7 @@ func (p *MITMProxy) cancelMITMAdmission(session *captureSession) {
 }
 
 func (p *MITMProxy) serveTLSCaptureSession(clientConn, upstreamConn *tls.Conn, host string, session *captureSession) {
-	evidenceReader := &rawReadEvidenceReader{r: clientConn, session: session}
+	evidenceReader := &rawReadEvidenceReader{r: clientConn, p: p, session: session}
 	clientReader := bufio.NewReader(&captureAdmissionReader{r: evidenceReader, p: p, session: session})
 	upstreamReader := bufio.NewReader(upstreamConn)
 
