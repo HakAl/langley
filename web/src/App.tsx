@@ -469,9 +469,9 @@ function App() {
   // not overwrite or invalidate the newer state. Revision high-water marks are
   // scoped to the daemon instance epoch, reset when a reconnect snapshot
   // observes a fresh daemon, and retired instance IDs are permanently rejected.
-  const captureVersionRef = useRef(0)
   const captureGetSeqRef = useRef(0)
   const latestAppliedGetSeqRef = useRef(0)
+  const lastPostGetSeqRef = useRef(0)
   const captureEpochRef = useRef(0)
   const captureRevisionRef = useRef(0)
   const captureInstanceRef = useRef<string | undefined>(undefined)
@@ -487,13 +487,15 @@ function App() {
       return
     }
     if (source === 'post') {
-      if (expectedEpoch !== undefined && expectedEpoch !== captureEpochRef.current) {
+      if (!status.instance_id && expectedEpoch !== undefined && expectedEpoch !== captureEpochRef.current) {
         return
       }
-      if (expectedInstance && captureInstanceRef.current && expectedInstance !== captureInstanceRef.current) {
-        return
-      }
-      if (status.instance_id && captureInstanceRef.current && status.instance_id !== captureInstanceRef.current) {
+      if (
+        status.instance_id &&
+        captureInstanceRef.current &&
+        status.instance_id !== captureInstanceRef.current &&
+        status.instance_id === expectedInstance
+      ) {
         return
       }
     }
@@ -504,7 +506,8 @@ function App() {
       status.instance_id !== captureInstanceRef.current
     const revisionResetOnGet =
       source === 'get' &&
-      !instanceChanged &&
+      !status.instance_id &&
+      !captureInstanceRef.current &&
       typeof status.revision === 'number' &&
       status.revision < captureRevisionRef.current
 
@@ -524,17 +527,20 @@ function App() {
     } else if (status.instance_id) {
       captureInstanceRef.current = status.instance_id
     }
-    captureVersionRef.current += 1
     setCaptureStatus(status)
   }, [])
 
   const refreshCaptureStatus = useCallback(async () => {
     const getSeq = ++captureGetSeqRef.current
-    const version = captureVersionRef.current
     const { data } = await api.fetchCaptureStatus()
     if (!data) return
-    if (getSeq <= latestAppliedGetSeqRef.current || captureVersionRef.current !== version) return
+    if (getSeq <= latestAppliedGetSeqRef.current) return
     if (data.instance_id && retiredInstancesRef.current.has(data.instance_id)) return
+    const isNewInstance =
+      Boolean(data.instance_id) &&
+      Boolean(captureInstanceRef.current) &&
+      data.instance_id !== captureInstanceRef.current
+    if (!isNewInstance && getSeq <= lastPostGetSeqRef.current) return
     latestAppliedGetSeqRef.current = getSeq
     applyCaptureStatus(data, 'get')
   }, [api.fetchCaptureStatus, applyCaptureStatus])
@@ -544,7 +550,7 @@ function App() {
     if (captureActionPendingRef.current) return
     captureActionPendingRef.current = true
     setCaptureActionPending(true)
-    captureVersionRef.current += 1
+    lastPostGetSeqRef.current = captureGetSeqRef.current
     const postEpoch = captureEpochRef.current
     const postInstance = captureInstanceRef.current
     try {

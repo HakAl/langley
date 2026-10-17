@@ -527,6 +527,180 @@ test.describe('Capture control bar', () => {
     sendCaptureState(ws(), status('capturing', { revision: 1, instance_id: 'daemon-C' }));
     await expect(control(page)).toHaveAttribute('data-state', 'capturing');
   });
+
+  test('new daemon GET superseded by a POST must still reconcile current state', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    let releaseGet!: () => void;
+    const getHeld = new Promise<void>((resolve) => { releaseGet = resolve; });
+    let notifyGet!: () => void;
+    const getInFlight = new Promise<void>((resolve) => { notifyGet = resolve; });
+    let releasePost!: () => void;
+    const postHeld = new Promise<void>((resolve) => { releasePost = resolve; });
+    let notifyPost!: () => void;
+    const postInFlight = new Promise<void>((resolve) => { notifyPost = resolve; });
+    let gets = 0;
+
+    await page.route('**/api/capture', async (route) => {
+      if (route.request().method() === 'POST') {
+        notifyPost();
+        await postHeld;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('capturing', { revision: 1, instance_id: 'daemon-B' })),
+        });
+        return;
+      }
+      gets += 1;
+      if (gets === 1) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('passthrough', { revision: 0, instance_id: 'daemon-A' })),
+        });
+        return;
+      }
+      notifyGet();
+      await getHeld;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(status('capturing', { revision: 1, instance_id: 'daemon-B' })),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
+
+    ws().close();
+    await getInFlight;
+
+    await page.getByRole('button', { name: 'Start capture', exact: true }).click();
+    await postInFlight;
+
+    releasePost();
+    await expect(control(page)).toHaveAttribute('aria-busy', 'false');
+
+    releaseGet();
+    await page.waitForTimeout(100);
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+  });
+
+  test('new daemon no-op pause during reconnect must reconcile without a WS change', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    let releaseGet!: () => void;
+    const getHeld = new Promise<void>((resolve) => { releaseGet = resolve; });
+    let notifyGet!: () => void;
+    const getInFlight = new Promise<void>((resolve) => { notifyGet = resolve; });
+    let releasePost!: () => void;
+    const postHeld = new Promise<void>((resolve) => { releasePost = resolve; });
+    let notifyPost!: () => void;
+    const postInFlight = new Promise<void>((resolve) => { notifyPost = resolve; });
+    let gets = 0;
+
+    await page.route('**/api/capture', async (route) => {
+      if (route.request().method() === 'POST') {
+        notifyPost();
+        await postHeld;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('passthrough', { revision: 0, instance_id: 'daemon-B' })),
+        });
+        return;
+      }
+      gets += 1;
+      if (gets === 1) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('capturing', { revision: 3, instance_id: 'daemon-A' })),
+        });
+        return;
+      }
+      notifyGet();
+      await getHeld;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(status('passthrough', { revision: 0, instance_id: 'daemon-B' })),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+
+    ws().close();
+    await getInFlight;
+
+    await page.getByRole('button', { name: 'Pause capture', exact: true }).click();
+    await postInFlight;
+
+    releaseGet();
+    await page.waitForTimeout(100);
+    releasePost();
+    await expect(control(page)).toHaveAttribute('aria-busy', 'false');
+    await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
+  });
+
+  test('newer reconnect GET must survive completion of the older GET', async ({ page }) => {
+    const ws = await captureWebSocket(page);
+    let releaseOlder!: () => void;
+    const olderHeld = new Promise<void>((resolve) => { releaseOlder = resolve; });
+    let notifyOlder!: () => void;
+    const olderInFlight = new Promise<void>((resolve) => { notifyOlder = resolve; });
+    let releaseNewer!: () => void;
+    const newerHeld = new Promise<void>((resolve) => { releaseNewer = resolve; });
+    let notifyNewer!: () => void;
+    const newerInFlight = new Promise<void>((resolve) => { notifyNewer = resolve; });
+    let gets = 0;
+
+    await page.route('**/api/capture', async (route) => {
+      gets += 1;
+      if (gets === 1) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('passthrough', { revision: 1, instance_id: 'daemon-A' })),
+        });
+        return;
+      }
+      if (gets === 2) {
+        notifyOlder();
+        await olderHeld;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(status('passthrough', { revision: 1, instance_id: 'daemon-B' })),
+        });
+        return;
+      }
+      notifyNewer();
+      await newerHeld;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(status('capturing', { revision: 1, instance_id: 'daemon-C' })),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.getByText('Connected')).toBeVisible();
+    await expect(control(page)).toHaveAttribute('data-state', 'passthrough');
+
+    ws().close();
+    await olderInFlight;
+    await expect(page.getByText('Connected')).toBeVisible();
+
+    ws().close();
+    await newerInFlight;
+
+    releaseOlder();
+    await page.waitForTimeout(100);
+    releaseNewer();
+    await page.waitForTimeout(100);
+    await expect(control(page)).toHaveAttribute('data-state', 'capturing');
+  });
 });
-
-
